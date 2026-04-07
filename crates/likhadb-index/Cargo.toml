@@ -1,0 +1,8 @@
+[package]
+name    = "likhadb-index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+likhadb-core  = { path = "../likhadb-core" }
+ordered-float = { workspace = true }

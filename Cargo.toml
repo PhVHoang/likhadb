@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/likhadb-core",
+    "crates/likhadb-index",
+    "crates/likhadb-store",
+    "crates/likhadb-bench",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+thiserror     = "1"
+ordered-float = "4"
+rand          = "0.8"
+criterion     = { version = "0.5", features = ["html_reports"] }
