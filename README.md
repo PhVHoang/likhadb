@@ -143,13 +143,6 @@ SIMD distance kernels are Tier 2 scope.
 
 All future tiers implement `VectorIndex` — the store layer is unchanged.
 
----
-
-## Contributing
-
-Pull requests welcome. Run `cargo test --workspace && cargo clippy --workspace -- -D warnings`
-before opening a PR.
-
 ## License
 
 MIT
