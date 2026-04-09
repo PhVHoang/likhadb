@@ -6,10 +6,23 @@ use likhadb_core::{distance, FilterFn, LikhaDbError, Metric, Result, ScoredResul
 
 use crate::traits::VectorIndex;
 
+/// Brute-force exact index with a cache-friendly flat buffer layout.
+///
+/// All vector data lives in a single contiguous `Vec<f32>` slab:
+///   `data[i * dim .. (i + 1) * dim]`  ←→  vector for `ids[i]`
+///
+/// This eliminates the N separate heap allocations of the old `Vec<(VecId, Vec<f32>)>`
+/// layout, allowing the hardware prefetcher to stream through the entire dataset
+/// sequentially during search.
+///
+/// TODO(tier-2): add SIMD distance kernels that operate on this same strided layout.
 pub struct FlatIndex {
     dim: usize,
     metric: Metric,
-    vectors: Vec<(VecId, Vector)>, // ordered by insertion; never sorted
+    /// Parallel to `data` blocks: `ids[i]` owns `data[i*dim..(i+1)*dim]`.
+    ids: Vec<VecId>,
+    /// Flat slab: all vectors concatenated. Length is always `ids.len() * dim`.
+    data: Vec<f32>,
 }
 
 impl FlatIndex {
@@ -17,9 +30,16 @@ impl FlatIndex {
         Self {
             dim,
             metric,
-            vectors: Vec::new(),
+            ids: Vec::new(),
+            data: Vec::new(),
         }
     }
+
+    /// Return the slot index for `id`, if present.
+    fn position(&self, id: VecId) -> Option<usize> {
+        self.ids.iter().position(|&eid| eid == id)
+    }
+
 }
 
 impl VectorIndex for FlatIndex {
@@ -30,22 +50,33 @@ impl VectorIndex for FlatIndex {
                 got: vec.len(),
             });
         }
-        // Overwrite if id already exists
-        if let Some(entry) = self.vectors.iter_mut().find(|(eid, _)| *eid == id) {
-            entry.1 = vec;
+        if let Some(pos) = self.position(id) {
+            // Overwrite in-place — no allocation needed.
+            self.data[pos * self.dim..(pos + 1) * self.dim].copy_from_slice(&vec);
         } else {
-            self.vectors.push((id, vec));
+            self.ids.push(id);
+            self.data.extend_from_slice(&vec);
         }
         Ok(())
     }
 
     fn delete(&mut self, id: VecId) -> bool {
-        if let Some(pos) = self.vectors.iter().position(|(eid, _)| *eid == id) {
-            self.vectors.swap_remove(pos);
-            true
-        } else {
-            false
+        let Some(pos) = self.position(id) else {
+            return false;
+        };
+        let last = self.ids.len() - 1;
+
+        // Swap-remove the id.
+        self.ids.swap_remove(pos);
+
+        // Move the last vector's data into the vacated slot, then truncate.
+        if pos != last {
+            let (lo, hi) = self.data.split_at_mut(last * self.dim);
+            lo[pos * self.dim..(pos + 1) * self.dim].copy_from_slice(&hi[..self.dim]);
         }
+        self.data.truncate(last * self.dim);
+
+        true
     }
 
     fn search(
@@ -60,29 +91,29 @@ impl VectorIndex for FlatIndex {
                 got: query.len(),
             });
         }
-        if k == 0 || self.vectors.is_empty() {
+        if k == 0 || self.ids.is_empty() {
             return Ok(vec![]);
         }
 
-        // Max-heap keyed by distance so we can pop the worst (largest distance) candidate.
-        // Capacity bounded to k+1 to keep it tight.
+        // Max-heap of size k keyed by distance — lets us drop the worst candidate cheaply.
         let mut heap: BinaryHeap<(OrderedFloat<f32>, VecId)> = BinaryHeap::with_capacity(k + 1);
 
-        for (id, vec) in &self.vectors {
+        // `chunks_exact` yields contiguous &[f32; dim] slices in order — fully
+        // prefetchable by the hardware, no pointer chasing.
+        for (id, chunk) in self.ids.iter().zip(self.data.chunks_exact(self.dim)) {
             if let Some(f) = filter {
                 if !f(*id) {
                     continue;
                 }
             }
-            let dist = distance(self.metric, query, vec);
-            let dist_of = OrderedFloat(dist);
+            let dist = OrderedFloat(distance(self.metric, query, chunk));
 
             if heap.len() < k {
-                heap.push((dist_of, *id));
+                heap.push((dist, *id));
             } else if let Some(&(worst, _)) = heap.peek() {
-                if dist_of < worst {
+                if dist < worst {
                     heap.pop();
-                    heap.push((dist_of, *id));
+                    heap.push((dist, *id));
                 }
             }
         }
@@ -95,7 +126,7 @@ impl VectorIndex for FlatIndex {
             })
             .collect();
 
-        // Sort ascending by score (best first)
+        // Sort ascending by score (best first).
         results.sort_by(|a, b| {
             OrderedFloat(a.score)
                 .partial_cmp(&OrderedFloat(b.score))
@@ -106,7 +137,7 @@ impl VectorIndex for FlatIndex {
     }
 
     fn len(&self) -> usize {
-        self.vectors.len()
+        self.ids.len()
     }
 
     fn dim(&self) -> usize {
@@ -139,13 +170,10 @@ mod tests {
         let mut idx = make_index();
         insert_n(&mut idx, 10);
 
-        // Query closest to id=0 => [0,0,0,0]
         let query = [0.1_f32, 0.0, 0.0, 0.0];
         let results = idx.search(&query, 3, None).unwrap();
         assert_eq!(results.len(), 3);
-        // id 0 should be closest
         assert_eq!(results[0].id, 0);
-        // results must be sorted ascending
         for w in results.windows(2) {
             assert!(w[0].score <= w[1].score);
         }
@@ -156,8 +184,7 @@ mod tests {
         let mut idx = make_index();
         insert_n(&mut idx, 10);
 
-        let deleted = idx.delete(0);
-        assert!(deleted);
+        assert!(idx.delete(0));
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let results = idx.search(&query, 3, None).unwrap();
@@ -171,9 +198,34 @@ mod tests {
     }
 
     #[test]
+    fn delete_swap_preserves_remaining_vectors() {
+        // Delete the first element (not the last) to exercise the swap-copy path.
+        let mut idx = make_index();
+        insert_n(&mut idx, 5); // ids 0..4, data=[0,0,0,0, 1,0,0,0, ...]
+
+        assert!(idx.delete(0));
+        assert_eq!(idx.len(), 4);
+
+        // All ids 1..4 must still be findable with correct data.
+        let query = [3.0_f32, 0.0, 0.0, 0.0];
+        let results = idx.search(&query, 1, None).unwrap();
+        assert_eq!(results[0].id, 3);
+        assert!(results[0].score < 1e-4);
+    }
+
+    #[test]
+    fn delete_last_element() {
+        let mut idx = make_index();
+        insert_n(&mut idx, 3);
+        assert!(idx.delete(2)); // delete the last slot directly
+        assert_eq!(idx.len(), 2);
+        assert_eq!(idx.data.len(), 2 * idx.dim);
+    }
+
+    #[test]
     fn insert_dim_mismatch_returns_error() {
         let mut idx = make_index();
-        let result = idx.insert(1, vec![1.0, 2.0]); // wrong dim
+        let result = idx.insert(1, vec![1.0, 2.0]);
         assert!(matches!(result, Err(LikhaDbError::DimMismatch { .. })));
     }
 
@@ -183,7 +235,6 @@ mod tests {
         insert_n(&mut idx, 10);
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        // Only allow even ids
         let results = idx
             .search(&query, 5, Some(&|id: VecId| id % 2 == 0))
             .unwrap();
@@ -194,8 +245,7 @@ mod tests {
     fn search_empty_index_returns_empty() {
         let idx = make_index();
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        let results = idx.search(&query, 3, None).unwrap();
-        assert!(results.is_empty());
+        assert!(idx.search(&query, 3, None).unwrap().is_empty());
     }
 
     #[test]
@@ -203,20 +253,30 @@ mod tests {
         let mut idx = make_index();
         insert_n(&mut idx, 3);
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        let results = idx.search(&query, 10, None).unwrap();
-        assert_eq!(results.len(), 3);
+        assert_eq!(idx.search(&query, 10, None).unwrap().len(), 3);
     }
 
     #[test]
     fn insert_overwrites_existing_id() {
         let mut idx = make_index();
         idx.insert(1, vec![10.0, 0.0, 0.0, 0.0]).unwrap();
-        idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap(); // overwrite
+        idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 1);
+        assert_eq!(idx.data.len(), idx.dim); // still one slot
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let results = idx.search(&query, 1, None).unwrap();
-        // The overwritten vector [0.1, 0, 0, 0] should be closer than [10, 0, 0, 0]
         assert!((results[0].score - 0.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn data_invariant_len_equals_ids_times_dim() {
+        let mut idx = make_index();
+        insert_n(&mut idx, 7);
+        assert_eq!(idx.data.len(), idx.ids.len() * idx.dim);
+        idx.delete(3);
+        assert_eq!(idx.data.len(), idx.ids.len() * idx.dim);
+        idx.delete(0);
+        assert_eq!(idx.data.len(), idx.ids.len() * idx.dim);
     }
 }
