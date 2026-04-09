@@ -8,8 +8,6 @@ behind the same `VectorIndex` trait without touching the public API or store lay
   <img src="images/vecdb_tier_overview.svg" alt="Tier overview — Tier 1 through Tier 4 roadmap" width="720" />
 </p>
 
----
-
 ## Overview
 
 likhadb stores float vectors alongside arbitrary JSON payloads, searches them with
@@ -23,8 +21,6 @@ HNSW) can be dropped in without changing the store or API layers.
 <p align="center">
   <img src="images/vecdb_mvp_internals.svg" alt="MVP internal architecture — CollectionManager → Collection → FlatIndex + MetaStore → distance kernels" width="720" />
 </p>
-
----
 
 ## Workspace layout
 
@@ -45,8 +41,6 @@ likhadb/
 | `likhadb-store` | `Collection` wraps an index + metadata; `CollectionManager` names them |
 | `likhadb-bench` | Criterion benchmarks for 1 k / 10 k / 100 k vectors |
 
----
-
 ## Features (Tier 1)
 
 - **Exact k-NN search** via brute-force over all stored vectors
@@ -55,8 +49,6 @@ likhadb/
 - **Metadata filtering** — `eq`, `ne`, `exists` predicates evaluated at query time
 - **Serde-ready result types** — `ScoredResult` serialises/deserialises out of the box
 - **No unsafe code**, no SIMD, no `unwrap()` in library paths
-
----
 
 ## Getting started
 
@@ -72,8 +64,6 @@ cargo bench -p likhadb-bench
 # Lint (zero warnings enforced)
 cargo clippy --workspace -- -D warnings
 ```
-
----
 
 ## Quick usage
 
@@ -106,8 +96,6 @@ fn main() {
 }
 ```
 
----
-
 ## Distance metrics
 
 | Metric | Formula | Best for |
@@ -115,8 +103,6 @@ fn main() {
 | `Metric::L2` | `sqrt(Σ(aᵢ - bᵢ)²)` | General-purpose, unnormalised embeddings |
 | `Metric::Cosine` | `1 - dot(a,b) / (‖a‖·‖b‖)` | Semantic similarity, text embeddings |
 | `Metric::Dot` | `-Σ(aᵢ·bᵢ)` (negated so lower = better) | Pre-normalised vectors, recommendation |
-
----
 
 ## Benchmark results
 
