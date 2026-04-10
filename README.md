@@ -107,7 +107,7 @@ fn main() {
 
 ## Benchmark results
 
-Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON on aarch64).
+Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/NumKong) (NEON on aarch64).
 
 | Benchmark | Vectors | Dim | k | Scalar | SIMD | Speedup |
 |---|---|---|---|---|---|---|
