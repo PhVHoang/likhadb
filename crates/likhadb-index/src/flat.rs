@@ -2,11 +2,41 @@ use std::collections::BinaryHeap;
 
 use ordered_float::OrderedFloat;
 
-use likhadb_core::{distance, FilterFn, LikhaDbError, Metric, Result, ScoredResult, VecId, Vector};
+use likhadb_core::{
+    cosine_distance, dot_product, l2_distance, FilterFn, LikhaDbError, Metric, Result,
+    ScoredResult, VecId, Vector,
+};
+use simsimd::SpatialSimilarity;
 
 use crate::traits::VectorIndex;
 
-/// Brute-force exact index with a cache-friendly flat buffer layout.
+/// Hardware-accelerated distance via `simsimd`, with scalar fallback.
+///
+/// Returns a value where **lower = more similar** across all metrics:
+/// - `Cosine`  → cosine distance (1 − similarity)
+/// - `Dot`     → negated dot product
+/// - `L2`      → Euclidean distance (sqrt of squared Euclidean from simsimd)
+#[inline]
+fn simd_distance(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
+    match metric {
+        Metric::Dot => {
+            let v = <f32 as SpatialSimilarity>::dot(a, b)
+                .unwrap_or_else(|| dot_product(a, b) as f64);
+            -(v as f32)
+        }
+        Metric::Cosine => {
+            <f32 as SpatialSimilarity>::cosine(a, b)
+                .unwrap_or_else(|| cosine_distance(a, b) as f64) as f32
+        }
+        Metric::L2 => {
+            let sq = <f32 as SpatialSimilarity>::sqeuclidean(a, b)
+                .unwrap_or_else(|| l2_distance(a, b).powi(2) as f64);
+            (sq as f32).sqrt()
+        }
+    }
+}
+
+/// Brute-force exact index with a cache-friendly flat buffer layout and SIMD distance kernels.
 ///
 /// All vector data lives in a single contiguous `Vec<f32>` slab:
 ///   `data[i * dim .. (i + 1) * dim]`  ←→  vector for `ids[i]`
@@ -15,7 +45,9 @@ use crate::traits::VectorIndex;
 /// layout, allowing the hardware prefetcher to stream through the entire dataset
 /// sequentially during search.
 ///
-/// TODO(tier-2): add SIMD distance kernels that operate on this same strided layout.
+/// Distance computation uses `simsimd` for hardware-accelerated kernels (NEON on
+/// aarch64/M2, AVX-512 on x86). A scalar fallback is used when `simsimd` returns
+/// `None` (empty slices or unsupported targets).
 pub struct FlatIndex {
     dim: usize,
     metric: Metric,
@@ -106,7 +138,7 @@ impl VectorIndex for FlatIndex {
                     continue;
                 }
             }
-            let dist = OrderedFloat(distance(self.metric, query, chunk));
+            let dist = OrderedFloat(simd_distance(self.metric, query, chunk));
 
             if heap.len() < k {
                 heap.push((dist, *id));

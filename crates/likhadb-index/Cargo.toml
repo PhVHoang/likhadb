@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
 ordered-float = { workspace = true }
+simsimd       = { workspace = true }

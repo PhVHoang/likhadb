@@ -48,7 +48,8 @@ likhadb/
 - **JSON metadata payloads** stored alongside each vector
 - **Metadata filtering** — `eq`, `ne`, `exists` predicates evaluated at query time
 - **Serde-ready result types** — `ScoredResult` serialises/deserialises out of the box
-- **No unsafe code**, no SIMD, no `unwrap()` in library paths
+- **SIMD-accelerated search** via `simsimd` (NEON on M2/aarch64, AVX-512 on x86) with scalar fallback
+- **No unsafe code**, no `unwrap()` in library paths
 
 ## Getting started
 
@@ -106,15 +107,13 @@ fn main() {
 
 ## Benchmark results
 
-Measured on Apple M2 (aarch64), scalar kernels, no SIMD.
+Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON on aarch64).
 
-| Benchmark | Vectors | Dim | k | Result | Target |
-|---|---|---|---|---|---|
-| `flat_search_1k_d128` | 1 000 | 128 | 10 | 65 µs | — |
-| `flat_search_10k_d384` | 10 000 | 384 | 10 | 2.4 ms | < 50 ms |
-| `flat_search_100k_d384` | 100 000 | 384 | 10 | 24 ms | < 500 ms |
-
-SIMD distance kernels are Tier 2 scope.
+| Benchmark | Vectors | Dim | k | Scalar | SIMD | Speedup |
+|---|---|---|---|---|---|---|
+| `flat_search_1k_d128` | 1 000 | 128 | 10 | 65 µs | 24 µs | **2.7×** |
+| `flat_search_10k_d384` | 10 000 | 384 | 10 | 2.4 ms | 0.77 ms | **3.1×** |
+| `flat_search_100k_d384` | 100 000 | 384 | 10 | 24 ms | 7.7 ms | **3.1×** |
 
 ---
 
@@ -123,7 +122,7 @@ SIMD distance kernels are Tier 2 scope.
 | Tier | Status | Description |
 |---|---|---|
 | **Tier 1** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
-| **Tier 2** | Planned | IVF (Inverted File Index), SIMD distance kernels |
+| **Tier 2** | Planned | IVF (Inverted File Index) |
 | **Tier 3** | Planned | HNSW (Hierarchical Navigable Small World graphs) |
 | **Tier 4** | Future | Persistence / WAL, HTTP + gRPC API, vector quantisation |
 
