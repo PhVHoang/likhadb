@@ -18,7 +18,7 @@ use crate::traits::VectorIndex;
 /// - `Dot`     → negated dot product
 /// - `L2`      → Euclidean distance (sqrt of squared Euclidean from simsimd)
 #[inline]
-fn simd_distance(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn simd_distance(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
     match metric {
         Metric::Dot => {
             let v = <f32 as SpatialSimilarity>::dot(a, b)

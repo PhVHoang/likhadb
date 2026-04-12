@@ -1,8 +1,8 @@
 # likhadb
 
 A progressively-layered, in-memory vector database written in Rust.
-Tier 1 is an exact brute-force search MVP. Tier 2 (IVF) and Tier 3 (HNSW) slot in
-behind the same `VectorIndex` trait without touching the public API or store layer.
+Tier 1 is an exact brute-force search MVP. Tier 2 adds an IVF approximate index.
+Tier 3 (HNSW) slots in behind the same `VectorIndex` trait without touching the public API or store layer.
 
 <p align="center">
   <img src="images/vecdb_tier_overview.svg" alt="Tier overview — Tier 1 through Tier 4 roadmap" width="720" />
@@ -11,10 +11,10 @@ behind the same `VectorIndex` trait without touching the public API or store lay
 ## Overview
 
 likhadb stores float vectors alongside arbitrary JSON payloads, searches them with
-exact k-nearest-neighbour queries, and filters candidates using a simple JSON
-predicate language. The internal design is a clean stack of crates with one
-extension seam — the `VectorIndex` trait — so future index implementations (IVF,
-HNSW) can be dropped in without changing the store or API layers.
+k-nearest-neighbour queries, and filters candidates using a simple JSON predicate language.
+The internal design is a clean stack of crates with one extension seam — the `VectorIndex`
+trait — so index implementations (FlatIndex, IvfIndex, future HNSW) slot in without changing
+the store or API layers.
 
 ### MVP internals
 
@@ -28,7 +28,7 @@ HNSW) can be dropped in without changing the store or API layers.
 likhadb/
 ├── crates/
 │   ├── likhadb-core/    # Primitives: VecId, Vector, ScoredResult, Metric, distance kernels
-│   ├── likhadb-index/   # VectorIndex trait + FlatIndex (brute-force, BinaryHeap)
+│   ├── likhadb-index/   # VectorIndex trait + FlatIndex + IvfIndex
 │   ├── likhadb-store/   # Collection, CollectionManager, MetaStore (JSON filtering)
 │   └── likhadb-bench/   # Criterion benchmarks
 └── images/
@@ -37,11 +37,13 @@ likhadb/
 | Crate | Role |
 |---|---|
 | `likhadb-core` | Shared primitives and error types — no index logic |
-| `likhadb-index` | `VectorIndex` trait (the Tier 2/3 seam) + `FlatIndex` |
+| `likhadb-index` | `VectorIndex` trait (the extension seam) + `FlatIndex` + `IvfIndex` |
 | `likhadb-store` | `Collection` wraps an index + metadata; `CollectionManager` names them |
 | `likhadb-bench` | Criterion benchmarks for 1 k / 10 k / 100 k vectors |
 
-## Features (Tier 1)
+## Features
+
+### Tier 1 — Exact brute-force (`FlatIndex`)
 
 - **Exact k-NN search** via brute-force over all stored vectors
 - **Three distance metrics** — Cosine, Dot product, L2 (Euclidean)
@@ -51,6 +53,14 @@ likhadb/
 - **SIMD-accelerated search** via `simsimd` (NEON on M2/aarch64, AVX-512 on x86) with scalar fallback
 - **Parallel search** via `rayon` — each thread builds a local top-k heap; heaps are merged at the end
 - **No unsafe code**, no `unwrap()` in library paths
+
+### Tier 2 — Approximate search (`IvfIndex`)
+
+- **IVF (Inverted File Index)** — vectors clustered into `nlist` buckets via k-means
+- **Configurable recall/speed tradeoff** via `nprobe` (buckets searched per query)
+- **Automatic training** — k-means fires once `nlist` vectors have been inserted; searches before that fall back to brute-force
+- **Exact recall mode** — set `nprobe == nlist` to search all buckets (equivalent to brute-force)
+- **Same API** — drop-in replacement for `FlatIndex` via `create_ivf_collection`
 
 ## Getting started
 
@@ -68,6 +78,8 @@ cargo clippy --workspace -- -D warnings
 ```
 
 ## Quick usage
+
+### Tier 1 — Exact search (FlatIndex)
 
 ```rust
 use likhadb_core::Metric;
@@ -98,6 +110,41 @@ fn main() {
 }
 ```
 
+### Tier 2 — Approximate search (IvfIndex)
+
+```rust
+use likhadb_core::Metric;
+use likhadb_store::CollectionManager;
+
+fn main() {
+    let mut mgr = CollectionManager::new();
+
+    // nlist=1024: number of k-means clusters (also the training trigger threshold)
+    // nprobe=16:  clusters searched per query — higher = better recall, slower queries
+    mgr.create_ivf_collection("docs", 384, Metric::L2, 1024, 16).unwrap();
+
+    let col = mgr.get_mut("docs").unwrap();
+
+    // Insert vectors — training fires automatically when the 1024th vector is added
+    for i in 0..100_000u64 {
+        col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
+    }
+
+    // Search — only probes 16 of 1024 clusters (~10× faster than brute-force)
+    let query = vec![0.5; 384];
+    let results = col.search(&query, 10, None).unwrap();
+
+    for r in &results {
+        println!("id={} score={:.4}", r.id, r.score);
+    }
+}
+```
+
+**nlist / nprobe guidance:**
+- `nlist`: typically `sqrt(N)` to `4 * sqrt(N)`. For 100 k vectors, 256–1024 is a good range.
+- `nprobe`: start at `nlist / 64` for speed, increase toward `nlist / 8` for higher recall.
+- `nprobe == nlist` gives exact recall identical to `FlatIndex`.
+
 ## Distance metrics
 
 | Metric | Formula | Best for |
@@ -108,19 +155,31 @@ fn main() {
 
 ## Benchmark results
 
-Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/NumKong) (NEON on aarch64).
+Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON on aarch64).
 Rayon uses the default thread pool (all available cores).
+
+### FlatIndex (exact search)
 
 | Benchmark | Vectors | Dim | k | Scalar | SIMD (1 thread) | SIMD + rayon | vs scalar |
 |---|---|---|---|---|---|---|---|
-| `1k_d128`   |   1 000 | 128 | 10 |  70.0 µs |  46.1 µs | 52.4 µs | **1.3×** |
-| `10k_d384`  |  10 000 | 384 | 10 |  2.71 ms | 0.858 ms | 0.370 ms | **7.3×** |
-| `100k_d384` | 100 000 | 384 | 10 | 28.8 ms  |  8.78 ms |  2.60 ms | **11×** |
+| `1k_d128`   |   1 000 | 128 | 10 |  70.2 µs |  45.7 µs |  54.8 µs | **1.3×** |
+| `10k_d384`  |  10 000 | 384 | 10 |  2.55 ms | 0.883 ms | 0.342 ms | **7.5×** |
+| `100k_d384` | 100 000 | 384 | 10 | 26.9 ms  |  8.50 ms |  2.67 ms | **10×** |
+
+### IvfIndex (approximate search)
+
+| Vectors | Dim | nlist | nprobe | Training (one-time) | Query latency | vs FlatIndex SIMD+rayon |
+|---|---|---|---|---|---|---|
+|  10 000 | 384 |  256 |  8 | 16.8 ms |  87.7 µs | **3.9×** |
+|  10 000 | 384 |  256 | 32 | 16.8 ms | 122.6 µs | **2.8×** |
+| 100 000 | 384 | 1024 | 16 | 261 ms  |   263 µs | **10×**  |
+| 100 000 | 384 | 1024 | 64 | 261 ms  |   626 µs | **4.3×** |
 
 **Notes:**
+- Training is a one-time amortised cost per collection. At 100 k × d384 with nlist=1024 it takes ~260 ms.
+- `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **10× speedup** over exact SIMD+rayon search.
+- Increasing `nprobe` improves recall at the cost of latency — the `nprobe=64` row searches 4× more clusters.
 - At 1 k vectors, rayon's dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
-- The crossover point is around 5–10 k vectors, where multi-core scaling starts to dominate.
-- At 100 k the combination of SIMD + 8-core parallelism delivers an **11× end-to-end speedup** over scalar.
 
 ---
 
@@ -129,7 +188,7 @@ Rayon uses the default thread pool (all available cores).
 | Tier | Status | Description |
 |---|---|---|
 | **Tier 1** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
-| **Tier 2** | Planned | IVF (Inverted File Index) |
+| **Tier 2** | Done | IVF (Inverted File Index) — approximate k-NN with k-means clustering |
 | **Tier 3** | Planned | HNSW (Hierarchical Navigable Small World graphs) |
 | **Tier 4** | Future | Persistence / WAL, HTTP + gRPC API, vector quantisation |
 

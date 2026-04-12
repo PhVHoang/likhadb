@@ -13,14 +13,24 @@ pub struct Collection {
 }
 
 impl Collection {
-    /// Creates a new Collection backed by a FlatIndex.
-    /// TODO(tier-2): accept Box<dyn VectorIndex> to support IVF/HNSW.
+    /// Creates a new Collection backed by a `FlatIndex` (exact brute-force search).
     pub fn new(name: String, dim: usize, metric: Metric) -> Self {
+        Self::with_index(name, dim, metric, Box::new(FlatIndex::new(dim, metric)))
+    }
+
+    /// Creates a Collection backed by a caller-supplied index implementation.
+    /// Use this to inject `IvfIndex`, or any future `VectorIndex` implementation.
+    pub fn with_index(
+        name: String,
+        dim: usize,
+        metric: Metric,
+        index: Box<dyn VectorIndex>,
+    ) -> Self {
         Self {
             name,
             dim,
             metric,
-            index: Box::new(FlatIndex::new(dim, metric)),
+            index,
             meta: MetaStore::new(),
         }
     }

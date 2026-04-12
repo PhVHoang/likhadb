@@ -7,6 +7,7 @@ edition = "2021"
 criterion     = { workspace = true }
 rand          = { workspace = true }
 likhadb-store = { path = "../likhadb-store" }
+likhadb-index = { path = "../likhadb-index" }
 likhadb-core  = { path = "../likhadb-core" }
 rayon         = { workspace = true }
 

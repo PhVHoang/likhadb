@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use likhadb_core::Metric;
+use likhadb_index::{IvfIndex, VectorIndex};
 use likhadb_store::CollectionManager;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -114,7 +115,81 @@ fn bench_simd_rayon(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usi
     });
 }
 
+/// Measures k-means training latency in isolation.
+/// Setup builds an IvfIndex with nlist-1 vectors already inserted; the
+/// measured call inserts the nth vector, which triggers training.
+fn bench_ivf_training(
+    c: &mut Criterion,
+    label: &str,
+    n: usize,
+    dim: usize,
+    nlist: usize,
+) {
+    let mut rng = StdRng::seed_from_u64(42);
+    // Pre-generate all vectors so setup overhead is deterministic.
+    let vecs: Vec<Vec<f32>> = (0..n).map(|_| random_vec(&mut rng, dim)).collect();
+
+    c.bench_with_input(
+        BenchmarkId::new("ivf_training", label),
+        &vecs,
+        |b, vecs| {
+            b.iter_batched(
+                || {
+                    // Setup: insert nlist-1 vectors into a fresh index.
+                    let mut idx =
+                        IvfIndex::new(dim, Metric::L2, nlist, nlist / 4).unwrap();
+                    for i in 0..(nlist - 1) {
+                        idx.insert(i as u64, vecs[i].clone()).unwrap();
+                    }
+                    idx
+                },
+                |mut idx| {
+                    // Measured: the nlist-th insert triggers k-means.
+                    idx.insert(black_box((nlist - 1) as u64), black_box(vecs[nlist - 1].clone()))
+                        .unwrap();
+                    black_box(idx);
+                },
+                BatchSize::SmallInput,
+            );
+        },
+    );
+}
+
+/// Measures post-training query latency at a given nprobe.
+/// Training is amortised before the bench loop begins.
+fn bench_ivf_search(
+    c: &mut Criterion,
+    label: &str,
+    n: usize,
+    dim: usize,
+    nlist: usize,
+    nprobe: usize,
+) {
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let mut mgr = CollectionManager::new();
+    let col_name = format!("ivf_{label}_np{nprobe}");
+    mgr.create_ivf_collection(&col_name, dim, Metric::L2, nlist, nprobe)
+        .unwrap();
+    let col = mgr.get_mut(&col_name).unwrap();
+    for i in 0..n as u64 {
+        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+    }
+    let query = random_vec(&mut rng, dim);
+
+    // Warm up: first search triggers nothing (training already happened at insert time).
+    let bench_label = format!("ivf_search/np{nprobe}");
+    c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
+        let col = mgr.get(&col_name).unwrap();
+        b.iter(|| {
+            let results = col.search(black_box(q), 10, None).unwrap();
+            black_box(results);
+        });
+    });
+}
+
 fn benchmarks(c: &mut Criterion) {
+    // FlatIndex baselines (scalar / SIMD / SIMD+rayon)
     for &(label, n, dim) in &[
         ("1k_d128", 1_000usize, 128usize),
         ("10k_d384", 10_000, 384),
@@ -123,6 +198,24 @@ fn benchmarks(c: &mut Criterion) {
         bench_scalar(c, label, n, dim, 10);
         bench_simd(c, label, n, dim, 10);
         bench_simd_rayon(c, label, n, dim, 10);
+    }
+
+    // IVF training cost
+    for &(label, n, dim, nlist) in &[
+        ("10k_d384_nl256",  10_000usize, 384usize, 256usize),
+        ("100k_d384_nl1024", 100_000, 384, 1024),
+    ] {
+        bench_ivf_training(c, label, n, dim, nlist);
+    }
+
+    // IVF search at varying nprobe
+    for &(label, n, dim, nlist, nprobe) in &[
+        ("10k_d384_nl256",    10_000usize, 384usize, 256usize,   8usize),
+        ("10k_d384_nl256",    10_000, 384, 256,  32),
+        ("100k_d384_nl1024", 100_000, 384, 1024,  16),
+        ("100k_d384_nl1024", 100_000, 384, 1024,  64),
+    ] {
+        bench_ivf_search(c, label, n, dim, nlist, nprobe);
     }
 }
 

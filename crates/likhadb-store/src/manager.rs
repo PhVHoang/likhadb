@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use likhadb_core::{LikhaDbError, Metric, Result};
+use likhadb_index::IvfIndex;
 
 use crate::collection::Collection;
 
@@ -53,6 +54,33 @@ impl CollectionManager {
         let mut names: Vec<&str> = self.collections.keys().map(String::as_str).collect();
         names.sort_unstable();
         names
+    }
+
+    /// Creates a collection backed by an IVF (Inverted File Index) for approximate
+    /// nearest-neighbour search.
+    ///
+    /// - `nlist`: number of k-means clusters. Training fires automatically once this
+    ///   many vectors have been inserted. Before that threshold, searches fall back to
+    ///   brute-force over the staging area.
+    /// - `nprobe`: clusters searched per query. Must satisfy `1 <= nprobe <= nlist`.
+    ///   Higher `nprobe` → better recall, higher latency. Set `nprobe == nlist` for
+    ///   exact recall equivalent to `FlatIndex`.
+    pub fn create_ivf_collection(
+        &mut self,
+        name: impl Into<String>,
+        dim: usize,
+        metric: Metric,
+        nlist: usize,
+        nprobe: usize,
+    ) -> Result<()> {
+        let name = name.into();
+        if self.collections.contains_key(&name) {
+            return Err(LikhaDbError::CollectionAlreadyExists(name));
+        }
+        let index = IvfIndex::new(dim, metric, nlist, nprobe)?;
+        let collection = Collection::with_index(name.clone(), dim, metric, Box::new(index));
+        self.collections.insert(name, collection);
+        Ok(())
     }
 }
 
@@ -172,5 +200,52 @@ mod tests {
         let col = mgr.get("tagged").unwrap();
         let results = col.search(&query, 5, Some(&pred)).unwrap();
         assert!(results.iter().all(|r| r.id % 2 == 0));
+    }
+
+    // --- IVF integration tests ---
+
+    #[test]
+    fn create_ivf_collection_duplicate_errors() {
+        let mut mgr = CollectionManager::new();
+        mgr.create_ivf_collection("ivf", 4, Metric::L2, 4, 2).unwrap();
+        assert!(matches!(
+            mgr.create_ivf_collection("ivf", 4, Metric::L2, 4, 2),
+            Err(LikhaDbError::CollectionAlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn create_ivf_collection_bad_params() {
+        let mut mgr = CollectionManager::new();
+        assert!(matches!(
+            mgr.create_ivf_collection("ivf", 4, Metric::L2, 4, 5), // nprobe > nlist
+            Err(LikhaDbError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn ivf_collection_end_to_end() {
+        let nlist = 8usize;
+        let mut mgr = CollectionManager::new();
+        mgr.create_ivf_collection("ivf", 4, Metric::L2, nlist, nlist)
+            .unwrap();
+        let col = mgr.get_mut("ivf").unwrap();
+
+        for i in 0..(nlist + 50) as u64 {
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+        }
+
+        let query = [0.0_f32, 0.0, 0.0, 0.0];
+        let results = mgr.get("ivf").unwrap().search(&query, 5, None).unwrap();
+        assert_eq!(results.len(), 5);
+        for w in results.windows(2) {
+            assert!(w[0].score <= w[1].score, "results not sorted");
+        }
+
+        // Delete the nearest vector and verify it disappears.
+        let nearest_id = results[0].id;
+        mgr.get_mut("ivf").unwrap().delete(nearest_id).unwrap();
+        let results2 = mgr.get("ivf").unwrap().search(&query, 5, None).unwrap();
+        assert!(results2.iter().all(|r| r.id != nearest_id));
     }
 }
