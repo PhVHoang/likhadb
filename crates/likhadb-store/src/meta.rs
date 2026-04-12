@@ -39,7 +39,7 @@ impl MetaStore {
     pub fn make_filter(
         &self,
         predicate: Option<&Value>,
-    ) -> Option<Box<dyn Fn(VecId) -> bool + '_>> {
+    ) -> Option<Box<dyn Fn(VecId) -> bool + Send + Sync + '_>> {
         let pred = predicate?;
 
         let field = pred.get("field")?.as_str()?.to_owned();

@@ -8,6 +8,7 @@ criterion     = { workspace = true }
 rand          = { workspace = true }
 likhadb-store = { path = "../likhadb-store" }
 likhadb-core  = { path = "../likhadb-core" }
+rayon         = { workspace = true }
 
 [[bench]]
 name    = "search_bench"

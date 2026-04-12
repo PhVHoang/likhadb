@@ -2,7 +2,7 @@ pub type VecId = u64;
 pub type Vector = Vec<f32>;
 
 /// A filter predicate over VecId. Evaluated against MetaStore at query time.
-pub type FilterFn<'a> = &'a dyn Fn(VecId) -> bool;
+pub type FilterFn<'a> = &'a (dyn Fn(VecId) -> bool + Send + Sync);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScoredResult {

@@ -7,3 +7,4 @@ edition = "2021"
 likhadb-core  = { path = "../likhadb-core" }
 ordered-float = { workspace = true }
 simsimd       = { workspace = true }
+rayon         = { workspace = true }

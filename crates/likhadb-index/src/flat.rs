@@ -1,6 +1,7 @@
 use std::collections::BinaryHeap;
 
 use ordered_float::OrderedFloat;
+use rayon::prelude::*;
 
 use likhadb_core::{
     cosine_distance, dot_product, l2_distance, FilterFn, LikhaDbError, Metric, Result,
@@ -127,28 +128,46 @@ impl VectorIndex for FlatIndex {
             return Ok(vec![]);
         }
 
-        // Max-heap of size k keyed by distance — lets us drop the worst candidate cheaply.
-        let mut heap: BinaryHeap<(OrderedFloat<f32>, VecId)> = BinaryHeap::with_capacity(k + 1);
-
-        // `chunks_exact` yields contiguous &[f32; dim] slices in order — fully
-        // prefetchable by the hardware, no pointer chasing.
-        for (id, chunk) in self.ids.iter().zip(self.data.chunks_exact(self.dim)) {
-            if let Some(f) = filter {
-                if !f(*id) {
-                    continue;
-                }
-            }
-            let dist = OrderedFloat(simd_distance(self.metric, query, chunk));
-
-            if heap.len() < k {
-                heap.push((dist, *id));
-            } else if let Some(&(worst, _)) = heap.peek() {
-                if dist < worst {
-                    heap.pop();
-                    heap.push((dist, *id));
-                }
-            }
-        }
+        // Each rayon thread maintains a local top-k max-heap, then the per-thread
+        // heaps are merged in the reduce step. This keeps allocations at O(T·k)
+        // rather than O(N) and avoids any shared mutable state.
+        let heap = self
+            .ids
+            .par_iter()
+            .zip(self.data.par_chunks_exact(self.dim))
+            .fold(
+                || BinaryHeap::with_capacity(k + 1),
+                |mut local, (id, chunk)| {
+                    if filter.is_none_or(|f| f(*id)) {
+                        let dist = OrderedFloat(simd_distance(self.metric, query, chunk));
+                        if local.len() < k {
+                            local.push((dist, *id));
+                        } else if let Some(&(worst, _)) = local.peek() {
+                            if dist < worst {
+                                local.pop();
+                                local.push((dist, *id));
+                            }
+                        }
+                    }
+                    local
+                },
+            )
+            .reduce(
+                || BinaryHeap::with_capacity(k + 1),
+                |mut a, b| {
+                    for item in b {
+                        if a.len() < k {
+                            a.push(item);
+                        } else if let Some(&(worst, _)) = a.peek() {
+                            if item.0 < worst {
+                                a.pop();
+                                a.push(item);
+                            }
+                        }
+                    }
+                    a
+                },
+            );
 
         let mut results: Vec<ScoredResult> = heap
             .into_iter()

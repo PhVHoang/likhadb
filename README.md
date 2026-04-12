@@ -49,6 +49,7 @@ likhadb/
 - **Metadata filtering** — `eq`, `ne`, `exists` predicates evaluated at query time
 - **Serde-ready result types** — `ScoredResult` serialises/deserialises out of the box
 - **SIMD-accelerated search** via `simsimd` (NEON on M2/aarch64, AVX-512 on x86) with scalar fallback
+- **Parallel search** via `rayon` — each thread builds a local top-k heap; heaps are merged at the end
 - **No unsafe code**, no `unwrap()` in library paths
 
 ## Getting started
@@ -108,12 +109,18 @@ fn main() {
 ## Benchmark results
 
 Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/NumKong) (NEON on aarch64).
+Rayon uses the default thread pool (all available cores).
 
-| Benchmark | Vectors | Dim | k | Scalar | SIMD | Speedup |
-|---|---|---|---|---|---|---|
-| `flat_search_1k_d128` | 1 000 | 128 | 10 | 65 µs | 24 µs | **2.7×** |
-| `flat_search_10k_d384` | 10 000 | 384 | 10 | 2.4 ms | 0.77 ms | **3.1×** |
-| `flat_search_100k_d384` | 100 000 | 384 | 10 | 24 ms | 7.7 ms | **3.1×** |
+| Benchmark | Vectors | Dim | k | Scalar | SIMD (1 thread) | SIMD + rayon | vs scalar |
+|---|---|---|---|---|---|---|---|
+| `1k_d128`   |   1 000 | 128 | 10 |  70.0 µs |  46.1 µs | 52.4 µs | **1.3×** |
+| `10k_d384`  |  10 000 | 384 | 10 |  2.71 ms | 0.858 ms | 0.370 ms | **7.3×** |
+| `100k_d384` | 100 000 | 384 | 10 | 28.8 ms  |  8.78 ms |  2.60 ms | **11×** |
+
+**Notes:**
+- At 1 k vectors, rayon's dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
+- The crossover point is around 5–10 k vectors, where multi-core scaling starts to dominate.
+- At 100 k the combination of SIMD + 8-core parallelism delivers an **11× end-to-end speedup** over scalar.
 
 ---
 
