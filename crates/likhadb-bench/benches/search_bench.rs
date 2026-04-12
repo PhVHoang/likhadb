@@ -155,6 +155,37 @@ fn bench_ivf_training(
     );
 }
 
+/// Measures post-training query latency for an IVF-SQ8 collection at a given nprobe.
+fn bench_ivf_sq8_search(
+    c: &mut Criterion,
+    label: &str,
+    n: usize,
+    dim: usize,
+    nlist: usize,
+    nprobe: usize,
+) {
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let mut mgr = CollectionManager::new();
+    let col_name = format!("ivf_sq8_{label}_np{nprobe}");
+    mgr.create_ivf_sq8_collection(&col_name, dim, Metric::L2, nlist, nprobe)
+        .unwrap();
+    let col = mgr.get_mut(&col_name).unwrap();
+    for i in 0..n as u64 {
+        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+    }
+    let query = random_vec(&mut rng, dim);
+
+    let bench_label = format!("ivf_sq8_search/np{nprobe}");
+    c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
+        let col = mgr.get(&col_name).unwrap();
+        b.iter(|| {
+            let results = col.search(black_box(q), 10, None).unwrap();
+            black_box(results);
+        });
+    });
+}
+
 /// Measures post-training query latency at a given nprobe.
 /// Training is amortised before the bench loop begins.
 fn bench_ivf_search(
@@ -216,6 +247,16 @@ fn benchmarks(c: &mut Criterion) {
         ("100k_d384_nl1024", 100_000, 384, 1024,  64),
     ] {
         bench_ivf_search(c, label, n, dim, nlist, nprobe);
+    }
+
+    // IVF-SQ8 search at varying nprobe (same matrix for direct comparison)
+    for &(label, n, dim, nlist, nprobe) in &[
+        ("10k_d384_nl256",    10_000usize, 384usize, 256usize,   8usize),
+        ("10k_d384_nl256",    10_000, 384, 256,  32),
+        ("100k_d384_nl1024", 100_000, 384, 1024,  16),
+        ("100k_d384_nl1024", 100_000, 384, 1024,  64),
+    ] {
+        bench_ivf_sq8_search(c, label, n, dim, nlist, nprobe);
     }
 }
 

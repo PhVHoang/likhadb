@@ -82,6 +82,31 @@ impl CollectionManager {
         self.collections.insert(name, collection);
         Ok(())
     }
+
+    /// Creates a collection backed by an IVF index with SQ8 scalar quantization.
+    ///
+    /// Identical to [`create_ivf_collection`](Self::create_ivf_collection) except
+    /// that after training, each stored vector is compressed from `dim × 4` bytes
+    /// (f32) to `dim × 1` byte (u8), giving a 4× memory reduction. Distances at
+    /// query time use asymmetric computation: the query stays in f32 while stored
+    /// codes are decoded on-the-fly.
+    pub fn create_ivf_sq8_collection(
+        &mut self,
+        name: impl Into<String>,
+        dim: usize,
+        metric: Metric,
+        nlist: usize,
+        nprobe: usize,
+    ) -> Result<()> {
+        let name = name.into();
+        if self.collections.contains_key(&name) {
+            return Err(LikhaDbError::CollectionAlreadyExists(name));
+        }
+        let index = IvfIndex::new_sq8(dim, metric, nlist, nprobe)?;
+        let collection = Collection::with_index(name.clone(), dim, metric, Box::new(index));
+        self.collections.insert(name, collection);
+        Ok(())
+    }
 }
 
 impl Default for CollectionManager {
@@ -247,5 +272,41 @@ mod tests {
         mgr.get_mut("ivf").unwrap().delete(nearest_id).unwrap();
         let results2 = mgr.get("ivf").unwrap().search(&query, 5, None).unwrap();
         assert!(results2.iter().all(|r| r.id != nearest_id));
+    }
+
+    #[test]
+    fn create_ivf_sq8_collection_end_to_end() {
+        let nlist = 8usize;
+        let mut mgr = CollectionManager::new();
+        mgr.create_ivf_sq8_collection("ivf_sq8", 4, Metric::L2, nlist, nlist)
+            .unwrap();
+        let col = mgr.get_mut("ivf_sq8").unwrap();
+
+        for i in 0..(nlist + 50) as u64 {
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+        }
+
+        let query = [0.0_f32, 0.0, 0.0, 0.0];
+        let results = mgr.get("ivf_sq8").unwrap().search(&query, 5, None).unwrap();
+        assert_eq!(results.len(), 5);
+        for w in results.windows(2) {
+            assert!(w[0].score <= w[1].score, "SQ8 results not sorted");
+        }
+
+        // Delete the nearest vector and verify it disappears.
+        let nearest_id = results[0].id;
+        mgr.get_mut("ivf_sq8").unwrap().delete(nearest_id).unwrap();
+        let results2 = mgr.get("ivf_sq8").unwrap().search(&query, 5, None).unwrap();
+        assert!(results2.iter().all(|r| r.id != nearest_id));
+    }
+
+    #[test]
+    fn create_ivf_sq8_collection_duplicate_errors() {
+        let mut mgr = CollectionManager::new();
+        mgr.create_ivf_sq8_collection("sq8", 4, Metric::L2, 4, 2).unwrap();
+        assert!(matches!(
+            mgr.create_ivf_sq8_collection("sq8", 4, Metric::L2, 4, 2),
+            Err(LikhaDbError::CollectionAlreadyExists(_))
+        ));
     }
 }

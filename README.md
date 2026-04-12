@@ -61,6 +61,7 @@ likhadb/
 - **Automatic training** — k-means fires once `nlist` vectors have been inserted; searches before that fall back to brute-force
 - **Exact recall mode** — set `nprobe == nlist` to search all buckets (equivalent to brute-force)
 - **Same API** — drop-in replacement for `FlatIndex` via `create_ivf_collection`
+- **SQ8 scalar quantization** — opt-in 4× memory reduction via `create_ivf_sq8_collection`; posting lists store `u8` codes instead of `f32`; distances use asymmetric computation (query stays `f32`)
 
 ## Getting started
 
@@ -144,6 +145,40 @@ fn main() {
 - `nlist`: typically `sqrt(N)` to `4 * sqrt(N)`. For 100 k vectors, 256–1024 is a good range.
 - `nprobe`: start at `nlist / 64` for speed, increase toward `nlist / 8` for higher recall.
 - `nprobe == nlist` gives exact recall identical to `FlatIndex`.
+
+### Tier 2 with SQ8 — Approximate search + 4× memory reduction
+
+```rust
+use likhadb_core::Metric;
+use likhadb_store::CollectionManager;
+
+fn main() {
+    let mut mgr = CollectionManager::new();
+
+    // Same parameters as IvfIndex — just swap create_ivf_collection for create_ivf_sq8_collection.
+    // After training, each vector is stored as dim × u8 instead of dim × f32 (4× smaller).
+    mgr.create_ivf_sq8_collection("docs_sq8", 384, Metric::L2, 1024, 16).unwrap();
+
+    let col = mgr.get_mut("docs_sq8").unwrap();
+
+    for i in 0..100_000u64 {
+        col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
+    }
+
+    let query = vec![0.5; 384];
+    let results = col.search(&query, 10, None).unwrap();
+
+    for r in &results {
+        println!("id={} score={:.4}", r.id, r.score);
+    }
+}
+```
+
+**SQ8 details:**
+- Per-dimension min/max ranges are learned from the training (staging) data when k-means fires.
+- Distance at query time uses asymmetric computation: query stays `f32`, stored codes decoded on-the-fly.
+- Memory: 100k × d384 goes from ~146 MB (f32) to ~36 MB (u8).
+- Recall: typically >97% at d384 for normalized embeddings. Recall is lower for post-training inserts whose values fall outside the training distribution's range.
 
 ## Distance metrics
 
