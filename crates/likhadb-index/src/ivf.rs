@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -54,17 +55,20 @@ impl Sq8Quantizer {
             .collect()
     }
 
-    fn decode(&self, codes: &[u8]) -> Vec<f32> {
-        codes
-            .iter()
-            .enumerate()
-            .map(|(i, &c)| self.mins[i] + c as f32 * self.scales[i])
-            .collect()
-    }
-
-    /// Asymmetric distance: query stays f32, stored codes decoded on-the-fly.
+    /// Asymmetric distance: query stays f32, stored codes decoded into a
+    /// thread-local buffer to avoid a heap allocation per vector.
     fn asym_distance(&self, metric: Metric, query: &[f32], codes: &[u8]) -> f32 {
-        simd_distance(metric, query, &self.decode(codes))
+        thread_local! {
+            static DECODE_BUF: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+        }
+        DECODE_BUF.with(|buf| {
+            let mut buf = buf.borrow_mut();
+            buf.clear();
+            buf.extend(
+                codes.iter().enumerate().map(|(i, &c)| self.mins[i] + c as f32 * self.scales[i]),
+            );
+            simd_distance(metric, query, &buf)
+        })
     }
 }
 
@@ -588,6 +592,18 @@ impl VectorIndex for IvfIndex {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// decode is only needed in tests (asym_distance uses a thread-local buffer instead).
+#[cfg(test)]
+impl Sq8Quantizer {
+    fn decode(&self, codes: &[u8]) -> Vec<f32> {
+        codes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| self.mins[i] + c as f32 * self.scales[i])
+            .collect()
+    }
+}
 
 #[cfg(test)]
 mod tests {
