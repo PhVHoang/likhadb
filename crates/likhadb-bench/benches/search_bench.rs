@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BatchSize, Benchmark
 use likhadb_core::Metric;
 use likhadb_index::{IvfIndex, VectorIndex};
 use likhadb_store::CollectionManager;
+use likhadb_index::HnswIndex;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 fn random_vec(rng: &mut StdRng, dim: usize) -> Vec<f32> {
@@ -219,6 +220,63 @@ fn bench_ivf_search(
     });
 }
 
+/// Measures cumulative HNSW build time: inserts n vectors one by one, timed as a whole.
+fn bench_hnsw_build(c: &mut Criterion, label: &str, n: usize, dim: usize, m: usize, ef_construction: usize) {
+    let mut rng = StdRng::seed_from_u64(42);
+    let vecs: Vec<Vec<f32>> = (0..n).map(|_| random_vec(&mut rng, dim)).collect();
+
+    c.bench_with_input(
+        BenchmarkId::new("hnsw_build", label),
+        &vecs,
+        |b, vecs| {
+            b.iter_batched(
+                || (),
+                |()| {
+                    let mut idx =
+                        HnswIndex::new(dim, Metric::L2, m, ef_construction, 50).unwrap();
+                    for (i, v) in vecs.iter().enumerate() {
+                        idx.insert(i as u64, v.clone()).unwrap();
+                    }
+                    black_box(idx);
+                },
+                BatchSize::SmallInput,
+            );
+        },
+    );
+}
+
+/// Measures post-build HNSW query latency at a given ef_search.
+fn bench_hnsw_search(
+    c: &mut Criterion,
+    label: &str,
+    n: usize,
+    dim: usize,
+    m: usize,
+    ef_construction: usize,
+    ef_search: usize,
+) {
+    let mut rng = StdRng::seed_from_u64(42);
+
+    let mut mgr = CollectionManager::new();
+    let col_name = format!("hnsw_{label}_ef{ef_search}");
+    mgr.create_hnsw_collection(&col_name, dim, Metric::L2, m, ef_construction, ef_search)
+        .unwrap();
+    let col = mgr.get_mut(&col_name).unwrap();
+    for i in 0..n as u64 {
+        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+    }
+    let query = random_vec(&mut rng, dim);
+
+    let bench_label = format!("hnsw_search/ef{ef_search}");
+    c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
+        let col = mgr.get(&col_name).unwrap();
+        b.iter(|| {
+            let results = col.search(black_box(q), 10, None).unwrap();
+            black_box(results);
+        });
+    });
+}
+
 fn benchmarks(c: &mut Criterion) {
     // FlatIndex baselines (scalar / SIMD / SIMD+rayon)
     for &(label, n, dim) in &[
@@ -257,6 +315,24 @@ fn benchmarks(c: &mut Criterion) {
         ("100k_d384_nl1024", 100_000, 384, 1024,  64),
     ] {
         bench_ivf_sq8_search(c, label, n, dim, nlist, nprobe);
+    }
+
+    // HNSW build cost (one-time construction)
+    for &(label, n, dim) in &[
+        ("10k_d384", 10_000usize, 384usize),
+        ("100k_d384", 100_000, 384),
+    ] {
+        bench_hnsw_build(c, label, n, dim, 16, 200);
+    }
+
+    // HNSW search at varying ef_search
+    for &(label, n, dim, ef_search) in &[
+        ("10k_d384",  10_000usize, 384usize,  50usize),
+        ("10k_d384",  10_000, 384, 100),
+        ("100k_d384", 100_000, 384,  50),
+        ("100k_d384", 100_000, 384, 100),
+    ] {
+        bench_hnsw_search(c, label, n, dim, 16, 200, ef_search);
     }
 }
 

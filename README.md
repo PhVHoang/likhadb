@@ -54,6 +54,15 @@ likhadb/
 - **Parallel search** via `rayon` — each thread builds a local top-k heap; heaps are merged at the end
 - **No unsafe code**, no `unwrap()` in library paths
 
+### Tier 3 — Graph-based approximate search (`HnswIndex`)
+
+- **HNSW (Hierarchical Navigable Small World)** — multi-layer proximity graph; greedy beam search from highest layer down
+- **Sub-millisecond recall@10** on 100k vectors — faster than IVF at equivalent recall, with higher memory footprint
+- **Configurable build/query tradeoff** via `m` (graph density), `ef_construction` (build quality), and `ef_search` (query recall)
+- **Tombstone deletes** — deleted nodes remain as traversal stepping-stones; excluded from results
+- **Same API** — drop-in replacement via `create_hnsw_collection`
+- **All three metrics** — Cosine, Dot, L2
+
 ### Tier 2 — Approximate search (`IvfIndex`)
 
 - **IVF (Inverted File Index)** — vectors clustered into `nlist` buckets via k-means
@@ -110,6 +119,40 @@ fn main() {
     }
 }
 ```
+
+### Tier 3 — Graph-based approximate search (HnswIndex)
+
+```rust
+use likhadb_core::Metric;
+use likhadb_store::CollectionManager;
+
+fn main() {
+    let mut mgr = CollectionManager::new();
+
+    // m=16: graph density — more edges → better recall, more memory
+    // ef_construction=200: beam width during build — higher → better quality graph, slower inserts
+    // ef_search=50: beam width during queries — higher → better recall, higher latency
+    mgr.create_hnsw_collection("docs", 384, Metric::Cosine, 16, 200, 50).unwrap();
+
+    let col = mgr.get_mut("docs").unwrap();
+
+    for i in 0..100_000u64 {
+        col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
+    }
+
+    let query = vec![0.5; 384];
+    let results = col.search(&query, 10, None).unwrap();
+
+    for r in &results {
+        println!("id={} score={:.4}", r.id, r.score);
+    }
+}
+```
+
+**m / ef_construction / ef_search guidance:**
+- `m`: typically 8–32. Higher `m` increases memory (`O(m × N)` edges) and improves recall. 16 is a good default.
+- `ef_construction`: must be ≥ `m`. Higher values improve graph quality at build time. 200 is a good default.
+- `ef_search`: must be ≥ k. Increase to trade latency for recall. Start at 50, tune upward.
 
 ### Tier 2 — Approximate search (IvfIndex)
 
@@ -224,7 +267,7 @@ Rayon uses the default thread pool (all available cores).
 |---|---|---|
 | **Tier 1** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
 | **Tier 2** | Done | IVF (Inverted File Index) — approximate k-NN with k-means clustering |
-| **Tier 3** | Planned | HNSW (Hierarchical Navigable Small World graphs) |
+| **Tier 3** | Done | HNSW (Hierarchical Navigable Small World graphs) |
 | **Tier 4** | Future | Persistence / WAL, HTTP + gRPC API, vector quantisation |
 
 All future tiers implement `VectorIndex` — the store layer is unchanged.

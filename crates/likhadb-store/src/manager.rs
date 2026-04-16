@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use likhadb_core::{LikhaDbError, Metric, Result};
-use likhadb_index::IvfIndex;
+use likhadb_index::{HnswIndex, IvfIndex};
 
 use crate::collection::Collection;
 
@@ -103,6 +103,31 @@ impl CollectionManager {
             return Err(LikhaDbError::CollectionAlreadyExists(name));
         }
         let index = IvfIndex::new_sq8(dim, metric, nlist, nprobe)?;
+        let collection = Collection::with_index(name.clone(), dim, metric, Box::new(index));
+        self.collections.insert(name, collection);
+        Ok(())
+    }
+
+    /// Creates a collection backed by an HNSW (Hierarchical Navigable Small World) graph
+    /// for approximate nearest-neighbour search.
+    ///
+    /// - `m`: max edges per node per layer (layer 0 uses `2 * m`). Typical: 16.
+    /// - `ef_construction`: beam width during graph construction. Typical: 200. Must be ≥ `m`.
+    /// - `ef_search`: beam width during queries. Must be ≥ 1. Higher → better recall, higher latency.
+    pub fn create_hnsw_collection(
+        &mut self,
+        name: impl Into<String>,
+        dim: usize,
+        metric: Metric,
+        m: usize,
+        ef_construction: usize,
+        ef_search: usize,
+    ) -> Result<()> {
+        let name = name.into();
+        if self.collections.contains_key(&name) {
+            return Err(LikhaDbError::CollectionAlreadyExists(name));
+        }
+        let index = HnswIndex::new(dim, metric, m, ef_construction, ef_search)?;
         let collection = Collection::with_index(name.clone(), dim, metric, Box::new(index));
         self.collections.insert(name, collection);
         Ok(())
@@ -308,5 +333,56 @@ mod tests {
             mgr.create_ivf_sq8_collection("sq8", 4, Metric::L2, 4, 2),
             Err(LikhaDbError::CollectionAlreadyExists(_))
         ));
+    }
+
+    // --- HNSW integration tests ---
+
+    #[test]
+    fn create_hnsw_collection_duplicate_errors() {
+        let mut mgr = CollectionManager::new();
+        mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10).unwrap();
+        assert!(matches!(
+            mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10),
+            Err(LikhaDbError::CollectionAlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn create_hnsw_collection_bad_params() {
+        let mut mgr = CollectionManager::new();
+        // m < 2
+        assert!(matches!(
+            mgr.create_hnsw_collection("h", 4, Metric::L2, 1, 8, 10),
+            Err(LikhaDbError::InvalidArgument(_))
+        ));
+        // ef_construction < m
+        assert!(matches!(
+            mgr.create_hnsw_collection("h2", 4, Metric::L2, 8, 4, 10),
+            Err(LikhaDbError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn hnsw_collection_end_to_end() {
+        let mut mgr = CollectionManager::new();
+        mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10).unwrap();
+        let col = mgr.get_mut("hnsw").unwrap();
+
+        for i in 0..50u64 {
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+        }
+
+        let query = [0.0_f32, 0.0, 0.0, 0.0];
+        let results = mgr.get("hnsw").unwrap().search(&query, 5, None).unwrap();
+        assert_eq!(results.len(), 5);
+        for w in results.windows(2) {
+            assert!(w[0].score <= w[1].score, "results not sorted");
+        }
+
+        // Delete the nearest vector and verify it disappears.
+        let nearest_id = results[0].id;
+        mgr.get_mut("hnsw").unwrap().delete(nearest_id).unwrap();
+        let results2 = mgr.get("hnsw").unwrap().search(&query, 5, None).unwrap();
+        assert!(results2.iter().all(|r| r.id != nearest_id));
     }
 }
