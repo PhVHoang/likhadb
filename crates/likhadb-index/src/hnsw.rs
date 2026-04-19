@@ -394,6 +394,7 @@ impl VectorIndex for HnswIndex {
             .map(|(d, idx)| ScoredResult {
                 id: self.nodes[idx].id,
                 score: d.into_inner(),
+                payload: None,
             })
             .collect();
 

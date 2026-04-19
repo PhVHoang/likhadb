@@ -88,7 +88,7 @@ fn bench_simd(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usize) {
         let col = mgr.get("bench_simd").unwrap();
         b.iter(|| {
             pool.install(|| {
-                let results = col.search(black_box(q), k, None).unwrap();
+                let results = col.search(black_box(q), k, None, false).unwrap();
                 black_box(results);
             });
         });
@@ -110,7 +110,7 @@ fn bench_simd_rayon(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usi
     c.bench_with_input(BenchmarkId::new("simd_rayon", label), &query, |b, q| {
         let col = mgr.get("bench_rayon").unwrap();
         b.iter(|| {
-            let results = col.search(black_box(q), k, None).unwrap();
+            let results = col.search(black_box(q), k, None, false).unwrap();
             black_box(results);
         });
     });
@@ -181,7 +181,7 @@ fn bench_ivf_sq8_search(
     c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
         let col = mgr.get(&col_name).unwrap();
         b.iter(|| {
-            let results = col.search(black_box(q), 10, None).unwrap();
+            let results = col.search(black_box(q), 10, None, false).unwrap();
             black_box(results);
         });
     });
@@ -214,7 +214,7 @@ fn bench_ivf_search(
     c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
         let col = mgr.get(&col_name).unwrap();
         b.iter(|| {
-            let results = col.search(black_box(q), 10, None).unwrap();
+            let results = col.search(black_box(q), 10, None, false).unwrap();
             black_box(results);
         });
     });
@@ -271,7 +271,7 @@ fn bench_hnsw_search(
     c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
         let col = mgr.get(&col_name).unwrap();
         b.iter(|| {
-            let results = col.search(black_box(q), 10, None).unwrap();
+            let results = col.search(black_box(q), 10, None, false).unwrap();
             black_box(results);
         });
     });

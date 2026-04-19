@@ -54,10 +54,17 @@ impl Collection {
         query: &[f32],
         k: usize,
         predicate: Option<&Value>,
+        include_payload: bool,
     ) -> Result<Vec<ScoredResult>> {
         let filter_box = self.meta.make_filter(predicate);
         let filter = filter_box.as_deref();
-        self.index.search(query, k, filter)
+        let mut results = self.index.search(query, k, filter)?;
+        if include_payload {
+            for r in &mut results {
+                r.payload = self.meta.get(r.id).cloned();
+            }
+        }
+        Ok(results)
     }
 
     pub fn len(&self) -> usize {
