@@ -8,6 +8,8 @@ pub type FilterFn<'a> = &'a (dyn Fn(VecId) -> bool + Send + Sync);
 pub struct ScoredResult {
     pub id: VecId,
     pub score: f32, // lower = better for L2/cosine distance; higher = better for dot
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, thiserror::Error)]

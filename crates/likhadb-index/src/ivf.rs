@@ -471,7 +471,7 @@ impl IvfIndex {
 fn sorted_results(heap: BinaryHeap<(OrderedFloat<f32>, VecId)>) -> Vec<ScoredResult> {
     let mut results: Vec<ScoredResult> = heap
         .into_iter()
-        .map(|(d, id)| ScoredResult { id, score: d.into_inner() })
+        .map(|(d, id)| ScoredResult { id, score: d.into_inner(), payload: None })
         .collect();
     results.sort_by(|a, b| {
         OrderedFloat(a.score)

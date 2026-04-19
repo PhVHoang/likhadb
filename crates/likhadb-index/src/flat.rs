@@ -174,6 +174,7 @@ impl VectorIndex for FlatIndex {
             .map(|(d, id)| ScoredResult {
                 id,
                 score: d.into_inner(),
+                payload: None,
             })
             .collect();
 
