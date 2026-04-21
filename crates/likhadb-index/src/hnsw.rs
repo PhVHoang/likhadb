@@ -245,6 +245,14 @@ impl HnswIndex {
 // ---------------------------------------------------------------------------
 
 impl VectorIndex for HnswIndex {
+    fn get(&self, id: VecId) -> Option<Vector> {
+        if self.deleted.contains(&id) {
+            return None;
+        }
+        let &node_idx = self.id_to_node.get(&id)?;
+        Some(self.data[node_idx * self.dim..(node_idx + 1) * self.dim].to_vec())
+    }
+
     fn insert(&mut self, id: VecId, vec: Vector) -> Result<()> {
         if vec.len() != self.dim {
             return Err(LikhaDbError::DimMismatch {
@@ -665,5 +673,26 @@ mod tests {
         assert_eq!(idx.len(), 5);
         idx.delete(999); // nonexistent
         assert_eq!(idx.len(), 5);
+    }
+
+    #[test]
+    fn get_returns_vector_for_existing_id() {
+        let mut idx = make_hnsw(4, 16, 10);
+        idx.insert(3, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        assert_eq!(idx.get(3).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn get_returns_none_for_missing_id() {
+        let idx = make_hnsw(4, 16, 10);
+        assert!(idx.get(99).is_none());
+    }
+
+    #[test]
+    fn get_returns_none_after_delete() {
+        let mut idx = make_hnsw(4, 16, 10);
+        idx.insert(5, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        idx.delete(5);
+        assert!(idx.get(5).is_none());
     }
 }

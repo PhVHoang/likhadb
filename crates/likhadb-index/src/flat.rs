@@ -76,6 +76,11 @@ impl FlatIndex {
 }
 
 impl VectorIndex for FlatIndex {
+    fn get(&self, id: VecId) -> Option<Vector> {
+        let pos = self.position(id)?;
+        Some(self.data[pos * self.dim..(pos + 1) * self.dim].to_vec())
+    }
+
     fn insert(&mut self, id: VecId, vec: Vector) -> Result<()> {
         if vec.len() != self.dim {
             return Err(LikhaDbError::DimMismatch {
@@ -319,6 +324,28 @@ mod tests {
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let results = idx.search(&query, 1, None).unwrap();
         assert!((results[0].score - 0.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn get_returns_vector_for_existing_id() {
+        let mut idx = make_index();
+        idx.insert(7, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let v = idx.get(7).unwrap();
+        assert_eq!(v, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn get_returns_none_for_missing_id() {
+        let idx = make_index();
+        assert!(idx.get(99).is_none());
+    }
+
+    #[test]
+    fn get_returns_none_after_delete() {
+        let mut idx = make_index();
+        idx.insert(3, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
+        idx.delete(3);
+        assert!(idx.get(3).is_none());
     }
 
     #[test]

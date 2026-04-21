@@ -21,7 +21,7 @@ the next begins.
 | HTTP / gRPC API | **None** | — |
 | Concurrent access | **None** | — |
 | Payload in search results | **Missing** | `ScoredResult` lacks `payload` field |
-| Vector retrieval by ID | **Missing** | No `get(id)` on `Collection` |
+| Vector retrieval by ID | Done | `crates/likhadb-store/src/collection.rs` |
 | Rich filtering | **Partial** | No `gt`/`lt`/`and`/`or` |
 | Full-text search | **None** | — |
 | Lakehouse I/O (Parquet) | **None** | — |

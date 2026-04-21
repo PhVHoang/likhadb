@@ -67,11 +67,74 @@ impl Collection {
         Ok(results)
     }
 
+    pub fn get(&self, id: VecId) -> Result<Option<(Vector, Option<Value>)>> {
+        let Some(vec) = self.index.get(id) else {
+            return Ok(None);
+        };
+        Ok(Some((vec, self.meta.get(id).cloned())))
+    }
+
+    pub fn get_batch(&self, ids: &[VecId]) -> Result<Vec<Option<(Vector, Option<Value>)>>> {
+        ids.iter().map(|&id| self.get(id)).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_collection() -> Collection {
+        Collection::new("test".into(), 3, Metric::L2)
+    }
+
+    #[test]
+    fn get_returns_vector_and_payload() {
+        let mut c = make_collection();
+        c.insert(1, vec![1.0, 2.0, 3.0], Some(json!({"tag": "a"}))).unwrap();
+        let (vec, payload) = c.get(1).unwrap().unwrap();
+        assert_eq!(vec, vec![1.0, 2.0, 3.0]);
+        assert_eq!(payload.unwrap()["tag"], "a");
+    }
+
+    #[test]
+    fn get_returns_none_for_missing_id() {
+        let c = make_collection();
+        assert!(c.get(99).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_returns_none_after_delete() {
+        let mut c = make_collection();
+        c.insert(2, vec![0.0, 1.0, 0.0], None).unwrap();
+        c.delete(2).unwrap();
+        assert!(c.get(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_payload_is_none_when_not_set() {
+        let mut c = make_collection();
+        c.insert(3, vec![1.0, 0.0, 0.0], None).unwrap();
+        let (_, payload) = c.get(3).unwrap().unwrap();
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn get_batch_returns_mixed_some_and_none() {
+        let mut c = make_collection();
+        c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"x": 1}))).unwrap();
+        c.insert(3, vec![3.0, 0.0, 0.0], None).unwrap();
+        let results = c.get_batch(&[1, 2, 3]).unwrap();
+        assert!(results[0].is_some());
+        assert!(results[1].is_none());
+        assert!(results[2].is_some());
     }
 }

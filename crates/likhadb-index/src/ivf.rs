@@ -136,6 +136,18 @@ impl PostingList {
     fn ids_and_codes(&self, dim: usize) -> impl Iterator<Item = (VecId, &[u8])> {
         self.ids.iter().copied().zip(self.codes.chunks_exact(dim))
     }
+
+    /// Return the raw f32 slice for `id` (unquantized path), or `None` if not present.
+    fn get_f32_by_id(&self, id: VecId, dim: usize) -> Option<&[f32]> {
+        let pos = self.ids.iter().position(|&eid| eid == id)?;
+        Some(&self.data[pos * dim..(pos + 1) * dim])
+    }
+
+    /// Return the u8 code slice for `id` (SQ8 path), or `None` if not present.
+    fn get_codes_by_id(&self, id: VecId, dim: usize) -> Option<&[u8]> {
+        let pos = self.ids.iter().position(|&eid| eid == id)?;
+        Some(&self.codes[pos * dim..(pos + 1) * dim])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +498,22 @@ fn sorted_results(heap: BinaryHeap<(OrderedFloat<f32>, VecId)>) -> Vec<ScoredRes
 // ---------------------------------------------------------------------------
 
 impl VectorIndex for IvfIndex {
+    fn get(&self, id: VecId) -> Option<Vector> {
+        if !self.trained {
+            // Pre-training: linear scan of staging buffer.
+            let pos = self.staging_ids.iter().position(|&eid| eid == id)?;
+            return Some(self.staging_data[pos * self.dim..(pos + 1) * self.dim].to_vec());
+        }
+        let &list_idx = self.id_to_list.get(&id)?;
+        if let Some(q) = &self.quantizer {
+            // SQ8 path: decode codes back to approximate f32.
+            let codes = self.lists[list_idx].get_codes_by_id(id, self.dim)?;
+            Some(codes.iter().enumerate().map(|(i, &c)| q.mins[i] + c as f32 * q.scales[i]).collect())
+        } else {
+            Some(self.lists[list_idx].get_f32_by_id(id, self.dim)?.to_vec())
+        }
+    }
+
     fn insert(&mut self, id: VecId, vec: Vector) -> Result<()> {
         if vec.len() != self.dim {
             return Err(LikhaDbError::DimMismatch { expected: self.dim, got: vec.len() });
@@ -1089,6 +1117,49 @@ mod tests {
             idx.search(&[1.0_f32, 2.0], 1, None),
             Err(LikhaDbError::DimMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn get_staging_returns_vector() {
+        let mut idx = make_ivf(4, 2);
+        idx.insert(5, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        assert!(!idx.trained);
+        assert_eq!(idx.get(5).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn get_staging_returns_none_for_missing() {
+        let idx = make_ivf(4, 2);
+        assert!(idx.get(99).is_none());
+    }
+
+    #[test]
+    fn get_post_training_returns_vector() {
+        let mut idx = make_ivf(4, 2);
+        insert_n(&mut idx, 5); // nlist=4 → training fires at 4th insert
+        assert!(idx.trained);
+        let v = idx.get(2).unwrap();
+        // insert_n stores [i, 0, 0, 0] for id=i
+        assert_eq!(v, vec![2.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn get_post_training_returns_none_after_delete() {
+        let mut idx = make_ivf(4, 2);
+        insert_n(&mut idx, 5);
+        assert!(idx.trained);
+        idx.delete(1);
+        assert!(idx.get(1).is_none());
+    }
+
+    #[test]
+    fn get_sq8_returns_approximate_vector() {
+        let mut idx = make_ivf_sq8(4, 4);
+        insert_n_sq8(&mut idx, 4); // nlist=4 → training fires
+        assert!(idx.trained);
+        // Decoded value should be close to the original [2, 0, 0, 0]
+        let v = idx.get(2).unwrap();
+        assert!((v[0] - 2.0_f32).abs() < 1.0, "decoded x={} should be near 2.0", v[0]);
     }
 
     #[test]
