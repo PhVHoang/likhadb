@@ -23,6 +23,10 @@ the next begins.
 | Payload in search results | **Missing** | `ScoredResult` lacks `payload` field |
 | Vector retrieval by ID | **Missing** | No `get(id)` on `Collection` |
 | Rich filtering | **Partial** | No `gt`/`lt`/`and`/`or` |
+| Full-text search | **None** | — |
+| Lakehouse I/O (Parquet) | **None** | — |
+| Vector transforms | **None** | — |
+| Hybrid search (vec + FTS) | **None** | — |
 
 ---
 
@@ -232,6 +236,149 @@ JSON formatting for production log aggregation (Datadog, Loki, etc.).
 
 ---
 
+## Tier F — Full-Text Search
+
+New crate: `crates/likhadb-fts/` (depends on `tantivy`)
+
+### F1 — Tantivy-backed FTS index
+
+**Goal:** Give each collection an optional full-text index alongside the vector index.
+
+**Approach:**
+- Wrap `tantivy::Index` behind a new `FtsIndex` trait (analogous to `VectorIndex`)
+- `Collection` gains `fts_index: Option<Box<dyn FtsIndex>>`
+- Insert path: if FTS enabled, index the `payload` string fields via Tantivy
+- FTS query: `collection.fts_search(query_str, k) -> Vec<FtsResult>`
+
+**New files:**
+- `crates/likhadb-fts/src/lib.rs` — FtsIndex trait
+- `crates/likhadb-fts/src/tantivy_index.rs` — Tantivy wrapper
+- `crates/likhadb-store/src/collection.rs` — add `fts_index` field
+
+**New dependency:** `tantivy = "0.22"`
+
+---
+
+### F2 — Hybrid search (vector + FTS)
+
+**Goal:** Single query that fuses vector similarity scores with BM25 text scores using Reciprocal Rank Fusion (RRF):
+
+```
+rrf_score(id) = 1/(k + rank_vector(id)) + 1/(k + rank_fts(id))
+```
+
+**New types in `crates/likhadb-core/src/types.rs`:**
+```rust
+pub struct HybridQuery<'a> {
+    pub vector: &'a [f32],
+    pub text: &'a str,
+    pub k: usize,
+    pub rrf_k: u32,           // default 60
+    pub filter: Option<&'a Value>,
+    pub include_payload: bool,
+}
+```
+
+**Files to change:**
+- `crates/likhadb-core/src/types.rs` — add `HybridQuery`
+- `crates/likhadb-store/src/collection.rs` — add `hybrid_search()`
+
+---
+
+## Tier L — Lakehouse I/O
+
+New crate: `crates/likhadb-lakehouse/` (depends on `arrow-rs`, `parquet`, `delta-rs`, `object_store`)
+
+### L1 — Parquet import / export
+
+**Goal:** Load vectors + metadata from Parquet files; export collections back to Parquet.
+
+**API:**
+```rust
+// Import: read a Parquet file into a collection
+manager.import_parquet(
+    collection_name: &str,
+    path: &Path,
+    id_col: &str,
+    vector_col: &str,        // Arrow FixedSizeList<f32>
+    payload_cols: &[&str],
+) -> Result<usize>           // returns number of vectors imported
+
+// Export: write a collection's vectors + metadata to Parquet
+manager.export_parquet(collection_name: &str, path: &Path) -> Result<()>
+```
+
+**New files:**
+- `crates/likhadb-lakehouse/src/parquet_io.rs`
+
+**New dependencies:** `arrow = "53"`, `parquet = "53"`
+
+---
+
+### L2 — Object storage (S3 / GCS / ADLS)
+
+**Goal:** Read/write Parquet directly from cloud object storage without local download.
+
+**API extension:**
+```rust
+manager.import_parquet_url("s3://bucket/path/vectors.parquet", ...) -> Result<usize>
+manager.export_parquet_url("gs://bucket/out/", ...) -> Result<()>
+```
+
+**New dependency:** `object_store = "0.10"` (AWS, GCS, Azure features)
+
+---
+
+### L3 — Delta Lake integration
+
+**Goal:** Scan a Delta table as the source for vectors + metadata; support incremental sync.
+
+**API:**
+```rust
+// Full load from a Delta table
+manager.import_delta(collection_name: &str, table_uri: &str, ...) -> Result<usize>
+
+// Incremental sync: load only rows added since last_version
+manager.sync_delta(collection_name: &str, table_uri: &str, since_version: u64) -> Result<usize>
+```
+
+**New dependency:** `deltalake = "0.18"` (with `datafusion` feature for predicate pushdown)
+
+---
+
+## Tier T — Vector Transforms
+
+New crate: `crates/likhadb-transform/`
+
+### T1 — Pluggable insert-time transforms
+
+**Goal:** Apply a transformation to vectors at insert time (normalize, scale, project).
+
+**Trait:**
+```rust
+pub trait VectorTransform: Send + Sync {
+    fn transform(&self, vec: &[f32]) -> Vec<f32>;
+}
+```
+
+**Built-in transforms:**
+- `L2Normalizer` — normalize to unit length before storage (common for cosine search)
+- `ScalarScaler { scale: f32 }` — multiply all dimensions by a constant
+
+**Files to change:**
+- `crates/likhadb-transform/src/lib.rs` — trait + built-ins
+- `crates/likhadb-store/src/collection.rs` — `transform: Option<Box<dyn VectorTransform>>`
+
+---
+
+### T2 — Derived metadata fields
+
+**Goal:** Compute metadata fields from the raw vector at insert time (e.g., L2 norm, max component).
+
+**Example:** Auto-store `{"norm": 1.0, "max_dim": 3}` alongside each vector for filter-friendly access.
+
+---
+
 ## New workspace layout (after all tiers)
 
 ```
@@ -242,6 +389,9 @@ likhadb/
 │   ├── likhadb-store/     # Collection, CollectionManager, MetaStore
 │   ├── likhadb-persist/   # Snapshot + WAL  [NEW — Tier B]
 │   ├── likhadb-server/    # axum HTTP server + shared state  [NEW — Tier D]
+│   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query [NEW — Tier F]
+│   ├── likhadb-lakehouse/ # Parquet / Delta Lake import-export [NEW — Tier L]
+│   ├── likhadb-transform/ # Insert-time vector transforms      [NEW — Tier T]
 │   └── likhadb-bench/     # Criterion benchmarks
 ```
 
@@ -250,13 +400,19 @@ likhadb/
 ## Build order summary
 
 ```
-A1 → A2 → A3          (library — no new crates)
+A1 → A2 → A3
          ↓
     B1 → B2            (likhadb-persist)
          ↓
          C1            (shared state in likhadb-server)
          ↓
-         D1 → E1 → E2  (likhadb-server complete)
+    D1 → D2 → E1 → E2  (likhadb-server complete)
+         ↓
+    F1 → F2            (full-text + hybrid search)
+         ↓
+    L1 → L2 → L3       (parquet → object store → delta lake)
+         ↓
+    T1 → T2            (vector transforms)
 ```
 
 ---
@@ -284,4 +440,19 @@ curl -s -X POST localhost:8080/collections/smoke/vectors \
 curl -s -X POST localhost:8080/collections/smoke/query \
      -H 'Content-Type: application/json' \
      -d '{"vector":[1,2,3,4],"k":1,"include_payload":true}' | jq .
+
+# After F1 (Tantivy FTS)
+# Insert 1k docs with text payloads, run FTS query, assert top result is the best text match.
+
+# After F2 (Hybrid search)
+# Run hybrid query; verify merged results contain top vector AND top FTS hits.
+
+# After L1 (Parquet)
+# Round-trip: insert 10k vectors → export to Parquet → import into new collection → assert identical search results.
+
+# After L3 (Delta Lake)
+# Incremental sync: import Delta table v0, add rows, sync with since_version=1, verify new vectors searchable.
+
+# After T1 (transforms)
+# Insert un-normalized vectors with L2Normalizer; assert stored vectors have unit length (norm ≈ 1.0).
 ```
