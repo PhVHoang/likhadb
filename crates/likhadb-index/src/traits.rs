@@ -18,6 +18,11 @@ pub trait VectorIndex: Send + Sync {
         filter: Option<FilterFn<'_>>,
     ) -> Result<Vec<ScoredResult>>;
 
+    /// Retrieve a stored vector by ID. Returns `None` if the ID does not exist
+    /// (or has been deleted). For SQ8-quantized indices the returned vector is
+    /// decoded from 8-bit codes and is therefore an approximation of the original.
+    fn get(&self, id: VecId) -> Option<Vector>;
+
     fn len(&self) -> usize;
     fn dim(&self) -> usize;
     fn is_empty(&self) -> bool {
