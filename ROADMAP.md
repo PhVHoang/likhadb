@@ -22,7 +22,7 @@ the next begins.
 | Concurrent access | **None** | — |
 | Payload in search results | **Missing** | `ScoredResult` lacks `payload` field |
 | Vector retrieval by ID | Done | `crates/likhadb-store/src/collection.rs` |
-| Rich filtering | **Partial** | No `gt`/`lt`/`and`/`or` |
+| Rich filtering | Done | `crates/likhadb-store/src/meta.rs` |
 | Full-text search | **None** | — |
 | Lakehouse I/O (Parquet) | **None** | — |
 | Vector transforms | **None** | — |
