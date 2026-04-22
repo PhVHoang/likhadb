@@ -29,44 +29,98 @@ impl MetaStore {
 
     /// Build a FilterFn closure for use in VectorIndex::search.
     ///
-    /// Accepted predicate shape:
+    /// ## Leaf predicates
     /// ```json
-    /// { "field": "<key>", "op": "eq" | "ne" | "exists", "value": <json> }
+    /// { "op": "eq",     "field": "tag",   "value": "sports" }
+    /// { "op": "ne",     "field": "tag",   "value": "sports" }
+    /// { "op": "exists", "field": "score" }
+    /// { "op": "gt",     "field": "price", "value": 10.0 }
+    /// { "op": "lt",     "field": "year",  "value": 2024 }
+    /// { "op": "gte",    "field": "score", "value": 0.5 }
+    /// { "op": "lte",    "field": "rank",  "value": 100 }
+    /// { "op": "in",     "field": "tag",   "value": ["sports", "news"] }
     /// ```
     ///
-    /// Tier 1 supports: "eq", "ne", "exists".
-    /// TODO(tier-2): add "gt", "lt", "in", compound "and"/"or" predicates.
+    /// ## Compound predicates
+    /// ```json
+    /// { "op": "and", "filters": [ <pred>, ... ] }
+    /// { "op": "or",  "filters": [ <pred>, ... ] }
+    /// ```
+    /// Compounds can be nested to arbitrary depth.
     pub fn make_filter(
         &self,
         predicate: Option<&Value>,
     ) -> Option<Box<dyn Fn(VecId) -> bool + Send + Sync + '_>> {
-        let pred = predicate?;
+        let pred = predicate?.clone();
+        Some(Box::new(move |id: VecId| match self.payloads.get(&id) {
+            Some(payload) => eval_predicate(payload, &pred),
+            None => false,
+        }))
+    }
+}
 
-        let field = pred.get("field")?.as_str()?.to_owned();
-        let op = pred.get("op")?.as_str()?.to_owned();
-        let value = pred.get("value").cloned();
+/// Recursively evaluate a predicate JSON object against a payload.
+fn eval_predicate(payload: &Value, pred: &Value) -> bool {
+    let op = match pred.get("op").and_then(|v| v.as_str()) {
+        Some(op) => op,
+        None => return false,
+    };
 
-        Some(Box::new(move |id: VecId| {
-            let payload = match self.payloads.get(&id) {
-                Some(p) => p,
+    match op {
+        "and" => pred
+            .get("filters")
+            .and_then(|v| v.as_array())
+            .map_or(false, |filters| {
+                filters.iter().all(|f| eval_predicate(payload, f))
+            }),
+        "or" => pred
+            .get("filters")
+            .and_then(|v| v.as_array())
+            .map_or(false, |filters| {
+                filters.iter().any(|f| eval_predicate(payload, f))
+            }),
+        leaf_op => {
+            let field = match pred.get("field").and_then(|v| v.as_str()) {
+                Some(f) => f,
                 None => return false,
             };
+            let field_val = payload.get(field);
+            let value = pred.get("value");
 
-            let field_val = payload.get(&field);
-
-            match op.as_str() {
-                "eq" => {
-                    let Some(v) = value.as_ref() else { return false };
-                    field_val == Some(v)
-                }
-                "ne" => {
-                    let Some(v) = value.as_ref() else { return false };
-                    field_val != Some(v)
-                }
+            match leaf_op {
+                "eq" => match value {
+                    Some(v) => field_val == Some(v),
+                    None => false,
+                },
+                "ne" => match value {
+                    Some(v) => field_val != Some(v),
+                    None => false,
+                },
                 "exists" => field_val.is_some(),
+                "gt" | "lt" | "gte" | "lte" => {
+                    let a = field_val.and_then(|v| v.as_f64());
+                    let b = value.and_then(|v| v.as_f64());
+                    match (a, b) {
+                        (Some(a), Some(b)) => match leaf_op {
+                            "gt" => a > b,
+                            "lt" => a < b,
+                            "gte" => a >= b,
+                            "lte" => a <= b,
+                            _ => unreachable!(),
+                        },
+                        _ => false,
+                    }
+                }
+                "in" => {
+                    let arr = match value.and_then(|v| v.as_array()) {
+                        Some(a) => a,
+                        None => return false,
+                    };
+                    field_val.map_or(false, |fv| arr.contains(fv))
+                }
                 _ => false,
             }
-        }))
+        }
     }
 }
 
@@ -130,5 +184,135 @@ mod tests {
     fn filter_none_predicate_returns_none() {
         let store = MetaStore::new();
         assert!(store.make_filter(None).is_none());
+    }
+
+    fn make_store() -> MetaStore {
+        let mut s = MetaStore::new();
+        s.set(1, json!({"price": 5.0,  "tag": "sports", "rank": 1}));
+        s.set(2, json!({"price": 15.0, "tag": "news",   "rank": 2}));
+        s.set(3, json!({"price": 25.0, "tag": "sports", "rank": 3}));
+        s.set(4, json!({"other": true}));
+        s
+    }
+
+    #[test]
+    fn filter_gt() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"gt","field":"price","value":10.0}))).unwrap();
+        assert!(!f(1));
+        assert!(f(2));
+        assert!(f(3));
+        assert!(!f(4)); // field missing → false
+    }
+
+    #[test]
+    fn filter_lt() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"lt","field":"price","value":10.0}))).unwrap();
+        assert!(f(1));
+        assert!(!f(2));
+        assert!(!f(3));
+    }
+
+    #[test]
+    fn filter_gte() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"gte","field":"price","value":15.0}))).unwrap();
+        assert!(!f(1));
+        assert!(f(2));  // 15.0 >= 15.0
+        assert!(f(3));
+    }
+
+    #[test]
+    fn filter_lte() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"lte","field":"price","value":15.0}))).unwrap();
+        assert!(f(1));
+        assert!(f(2));  // 15.0 <= 15.0
+        assert!(!f(3));
+    }
+
+    #[test]
+    fn filter_in() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"in","field":"tag","value":["sports","tech"]}))).unwrap();
+        assert!(f(1));  // "sports" in list
+        assert!(!f(2)); // "news" not in list
+        assert!(f(3));
+        assert!(!f(4)); // field missing
+    }
+
+    #[test]
+    fn filter_in_missing_value_key_returns_false() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"in","field":"tag"}))).unwrap();
+        assert!(!f(1));
+    }
+
+    #[test]
+    fn filter_and() {
+        let s = make_store();
+        let pred = json!({
+            "op": "and",
+            "filters": [
+                {"op": "eq",  "field": "tag",   "value": "sports"},
+                {"op": "gt",  "field": "price", "value": 10.0}
+            ]
+        });
+        let f = s.make_filter(Some(&pred)).unwrap();
+        assert!(!f(1)); // sports but price=5 not > 10
+        assert!(!f(2)); // price > 10 but tag=news
+        assert!(f(3));  // sports AND price=25 > 10
+    }
+
+    #[test]
+    fn filter_or() {
+        let s = make_store();
+        let pred = json!({
+            "op": "or",
+            "filters": [
+                {"op": "eq", "field": "tag",   "value": "news"},
+                {"op": "gt", "field": "price", "value": 20.0}
+            ]
+        });
+        let f = s.make_filter(Some(&pred)).unwrap();
+        assert!(!f(1)); // neither
+        assert!(f(2));  // tag=news
+        assert!(f(3));  // price=25 > 20
+    }
+
+    #[test]
+    fn filter_nested_compound() {
+        let s = make_store();
+        // (tag=sports OR tag=news) AND price <= 15
+        let pred = json!({
+            "op": "and",
+            "filters": [
+                {"op": "or", "filters": [
+                    {"op": "eq", "field": "tag", "value": "sports"},
+                    {"op": "eq", "field": "tag", "value": "news"}
+                ]},
+                {"op": "lte", "field": "price", "value": 15.0}
+            ]
+        });
+        let f = s.make_filter(Some(&pred)).unwrap();
+        assert!(f(1));  // sports, price=5  ✓
+        assert!(f(2));  // news,   price=15 ✓
+        assert!(!f(3)); // sports, price=25 ✗
+        assert!(!f(4)); // no tag field
+    }
+
+    #[test]
+    fn filter_numeric_missing_field_returns_false() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"gt","field":"price","value":1.0}))).unwrap();
+        assert!(!f(4)); // id=4 has no "price" field
+    }
+
+    #[test]
+    fn filter_unknown_op_returns_false() {
+        let s = make_store();
+        let f = s.make_filter(Some(&json!({"op":"regex","field":"tag","value":".*"}))).unwrap();
+        assert!(!f(1));
     }
 }
