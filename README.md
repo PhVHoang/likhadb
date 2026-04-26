@@ -22,6 +22,134 @@ the store or API layers.
   <img src="images/vecdb_mvp_internals.svg" alt="MVP internal architecture — CollectionManager → Collection → FlatIndex + MetaStore → distance kernels" width="720" />
 </p>
 
+## Query flows
+
+### Entry path (all index types)
+
+Every query enters through the same store-layer path regardless of index type.
+
+```mermaid
+flowchart TD
+    U([User]) -->|"mgr.get(&quot;col&quot;)?.search(query, k, predicate, include_payload)"| CM[CollectionManager]
+    CM --> C[Collection::search]
+    C --> MF["MetaStore::make_filter(predicate)\nOption&lt;Box&lt;dyn Fn(VecId) → bool&gt;&gt;"]
+    MF --> IDX{"index.search(query, k, filter)"}
+    IDX -->|FlatIndex| FL[FlatIndex]
+    IDX -->|IvfIndex| IV[IvfIndex]
+    IDX -->|HnswIndex| HN[HnswIndex]
+    FL & IV & HN --> RES["Vec&lt;ScoredResult&gt; { id, score, payload: None }"]
+    RES --> PL{"include_payload?"}
+    PL -->|yes| META["MetaStore::get(id)\nattach payload to each result"]
+    PL -->|no| OUT
+    META --> OUT([Vec&lt;ScoredResult&gt; returned to user])
+```
+
+---
+
+### FlatIndex — exact brute-force
+
+Every vector is scored. Filter is applied **before** distance computation; excluded vectors never reach the SIMD kernel.
+
+```mermaid
+flowchart TD
+    A[FlatIndex::search] --> B{"k == 0 or\nindex empty?"}
+    B -->|yes| EMPTY([return empty])
+    B -->|no| PAR["Rayon: ids.par_iter().zip(data.par_chunks_exact(dim))"]
+    PAR --> FOLD["fold — per-thread local top-k max-heap"]
+    FOLD --> FIL{"filter(id) passes?"}
+    FIL -->|no| SKIP[skip]
+    FIL -->|yes| SIMD["simd_distance(metric, query, chunk)\nL2 → simsimd sqeuclidean + √\nCosine → simsimd cosine\nDot → −simsimd dot\nscalar fallback if simsimd returns None"]
+    SIMD --> HEAP["update local top-k heap"]
+    HEAP --> FOLD
+    FOLD --> RED["reduce — merge per-thread heaps → global top-k"]
+    RED --> SORT["sort ascending by score · truncate to k"]
+    SORT --> OUT([Vec&lt;ScoredResult&gt;])
+```
+
+---
+
+### IvfIndex — approximate search with k-means
+
+Two paths depending on whether k-means training has fired. Filter is applied **before** distance computation on both paths.
+
+```mermaid
+flowchart TD
+    A[IvfIndex::search] --> TR{"trained?\n(staging_ids.len() >= nlist)"}
+
+    TR -->|"no — staging path\n(brute-force fallback)"| ST["linear scan over staging_ids\nsequential · no rayon"]
+    ST --> STSIMD["filter(id)? → simd_distance(query, chunk)\nmaintain top-k heap"]
+    STSIMD --> STSORT["sort · truncate to k"]
+    STSORT --> OUT([Vec&lt;ScoredResult&gt;])
+
+    TR -->|yes — trained path| C1["Step 1: find nprobe nearest centroids\nsequential scan · simd_distance(query, centroid_c) for all nlist centroids"]
+    C1 --> C2["sort centroid distances\ntake top nprobe cluster IDs"]
+    C2 --> PAR["Step 2: probe.par_iter().fold().reduce()"]
+
+    PAR --> QT{"quantize = SQ8?"}
+
+    QT -->|"yes — SQ8\n4× smaller posting lists"| SQ["for each (id, u8 codes) in lists[c]:\n  filter(id)?\n  decode: val = min + code × scale  (thread-local buffer)\n  simd_distance(query, decoded)\n  → update local heap"]
+    QT -->|"no — f32"| F32["for each (id, f32 chunk) in lists[c]:\n  filter(id)?\n  simd_distance(query, chunk)\n  → update local heap"]
+
+    SQ & F32 --> RED["reduce — merge per-thread heaps → global top-k"]
+    RED --> SORT2["sort ascending · truncate to k"]
+    SORT2 --> OUT
+```
+
+---
+
+### HnswIndex — approximate graph search
+
+Two-phase traversal: greedy descent through upper layers to find a good entry point, then beam search at layer 0. Filter is applied **after** candidates are collected.
+
+```mermaid
+flowchart TD
+    A[HnswIndex::search] --> B{"k == 0 or\nno entry point?"}
+    B -->|yes| EMPTY([return empty])
+    B -->|no| PH1["Phase 1 — greedy descent\nfor lc = max_level down to 1  (ef = 1 per layer)"]
+
+    PH1 --> SL1["search_layer(query, &amp;[ep], ef=1, lc)\nexpand neighbours · simd_distance per neighbour"]
+    SL1 --> CL["closest_live(result_heap)\nskip tombstoned nodes"]
+    CL --> EP["update entry point to closest live node"]
+    EP -->|next layer| PH1
+    PH1 -->|"lc = 0 reached"| PH2["Phase 2 — beam search at layer 0\nef = max(ef_search, k)"]
+
+    PH2 --> INIT["W = max-heap ≤ ef  (farthest at top)\nC = min-heap candidates  (nearest at top)\nvisited = HashSet"]
+    INIT --> LOOP{"C empty?"}
+    LOOP -->|no| POP["pop nearest (c_dist, c_idx) from C"]
+    POP --> PRUNE{"c_dist > worst in W?"}
+    PRUNE -->|yes — early exit| DONE
+    PRUNE -->|no| NBR["iterate neighbours of c_idx at layer 0"]
+    NBR --> VIS{"already visited?"}
+    VIS -->|yes| LOOP
+    VIS -->|no| DIST["mark visited\nsimd_distance(query, nbr)"]
+    DIST --> UPD{"d < worst_W\nor W.len() < ef?"}
+    UPD -->|no| LOOP
+    UPD -->|yes| PUSH["push to C and W\nif W.len() > ef: evict worst"]
+    PUSH --> LOOP
+    LOOP -->|C empty| DONE["W holds ≤ ef closest candidates"]
+
+    DONE --> COL["Phase 3 — collect results\nfor each (dist, idx) in W:"]
+    COL --> FIL{"deleted(id)?\nor filter(id) fails?"}
+    FIL -->|yes| SKIP[skip]
+    FIL -->|no| RES[add ScoredResult]
+    RES --> SORT["sort ascending · truncate to k"]
+    SORT --> OUT([Vec&lt;ScoredResult&gt;])
+```
+
+---
+
+### Comparison
+
+| | FlatIndex | IvfIndex (trained) | HnswIndex |
+|---|---|---|---|
+| **Search complexity** | O(n) | O(nprobe × avg\_list\_size) | O(log n) |
+| **Parallelism** | Rayon over all n vectors | Rayon over nprobe clusters | None — greedy traversal is sequential |
+| **Filter timing** | Before distance (pre-exclusion) | Before distance (pre-exclusion) | After distance (post-candidate collection) |
+| **Deleted vectors** | Physically removed (swap-remove) | Physically removed from posting list | Tombstone — excluded from results, kept as graph stepping-stones |
+| **Approximate?** | No | Yes (exact when nprobe = nlist) | Yes |
+
+---
+
 ## Workspace layout
 
 ```
