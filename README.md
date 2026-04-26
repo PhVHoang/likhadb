@@ -248,15 +248,25 @@ Rayon uses the default thread pool (all available cores).
 
 | Vectors | Dim | nlist | nprobe | Training (one-time) | Query latency | vs FlatIndex SIMD+rayon |
 |---|---|---|---|---|---|---|
-|  10 000 | 384 |  256 |  8 | 16.8 ms |  87.7 µs | **3.9×** |
-|  10 000 | 384 |  256 | 32 | 16.8 ms | 122.6 µs | **2.8×** |
-| 100 000 | 384 | 1024 | 16 | 261 ms  |   263 µs | **10×**  |
-| 100 000 | 384 | 1024 | 64 | 261 ms  |   626 µs | **4.3×** |
+|  10 000 | 384 |  256 |  8 | 20.8 ms |  91.7 µs | **3.7×** |
+|  10 000 | 384 |  256 | 32 | 20.8 ms | 124 µs   | **2.8×** |
+| 100 000 | 384 | 1024 | 16 | 309 ms  | 268 µs   | **10×**  |
+| 100 000 | 384 | 1024 | 64 | 309 ms  | 512 µs   | **5.2×** |
+
+### IvfIndex + SQ8 scalar quantization (approximate search, 4× smaller posting lists)
+
+| Vectors | Dim | nlist | nprobe | Query latency | vs IvfIndex (f32) |
+|---|---|---|---|---|---|
+|  10 000 | 384 |  256 |  8 | 295 µs | 0.31× |
+|  10 000 | 384 |  256 | 32 | 436 µs | 0.28× |
+| 100 000 | 384 | 1024 | 16 | 765 µs | 0.35× |
+| 100 000 | 384 | 1024 | 64 | 1.82 ms | 0.28× |
 
 **Notes:**
-- Training is a one-time amortised cost per collection. At 100 k × d384 with nlist=1024 it takes ~260 ms.
+- Training is a one-time amortised cost per collection. At 100 k × d384 with nlist=1024 it takes ~309 ms (parallel k-means via rayon fold+reduce).
 - `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **10× speedup** over exact SIMD+rayon search.
-- Increasing `nprobe` improves recall at the cost of latency — the `nprobe=64` row searches 4× more clusters.
+- `nprobe=64` improved to **5.2×** (from 4.3×) — rayon fold+reduce over probed lists scales better at higher nprobe.
+- SQ8 reduces posting-list memory 4× but trades off query speed due to asymmetric decode overhead; best suited for memory-constrained deployments.
 - At 1 k vectors, rayon's dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
 
 ---
