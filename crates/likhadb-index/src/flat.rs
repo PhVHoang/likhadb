@@ -49,6 +49,8 @@ pub(crate) fn simd_distance(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
 /// Distance computation uses `simsimd` for hardware-accelerated kernels (NEON on
 /// aarch64/M2, AVX-512 on x86). A scalar fallback is used when `simsimd` returns
 /// `None` (empty slices or unsupported targets).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct FlatIndex {
     dim: usize,
     metric: Metric,
@@ -203,6 +205,11 @@ impl VectorIndex for FlatIndex {
 
     fn index_type(&self) -> &'static str {
         "FlatIndex"
+    }
+
+    #[cfg(feature = "serde")]
+    fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot {
+        crate::snapshot::IndexSnapshot::Flat(self.clone())
     }
 }
 

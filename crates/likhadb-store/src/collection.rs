@@ -4,12 +4,14 @@ use serde_json::Value;
 
 use crate::meta::MetaStore;
 
+pub type VectorWithPayload = (Vector, Option<Value>);
+
 pub struct Collection {
     pub name: String,
     pub dim: usize,
     pub metric: Metric,
-    index: Box<dyn VectorIndex>,
-    meta: MetaStore,
+    pub(crate) index: Box<dyn VectorIndex>,
+    pub(crate) meta: MetaStore,
 }
 
 impl Collection {
@@ -33,6 +35,12 @@ impl Collection {
             index,
             meta: MetaStore::new(),
         }
+    }
+
+    #[cfg(feature = "persist")]
+    pub(crate) fn with_meta(mut self, meta: crate::meta::MetaStore) -> Self {
+        self.meta = meta;
+        self
     }
 
     pub fn insert(&mut self, id: VecId, vec: Vector, payload: Option<Value>) -> Result<()> {
@@ -67,14 +75,14 @@ impl Collection {
         Ok(results)
     }
 
-    pub fn get(&self, id: VecId) -> Result<Option<(Vector, Option<Value>)>> {
+    pub fn get(&self, id: VecId) -> Result<Option<VectorWithPayload>> {
         let Some(vec) = self.index.get(id) else {
             return Ok(None);
         };
         Ok(Some((vec, self.meta.get(id).cloned())))
     }
 
-    pub fn get_batch(&self, ids: &[VecId]) -> Result<Vec<Option<(Vector, Option<Value>)>>> {
+    pub fn get_batch(&self, ids: &[VecId]) -> Result<Vec<Option<VectorWithPayload>>> {
         ids.iter().map(|&id| self.get(id)).collect()
     }
 
@@ -84,6 +92,10 @@ impl Collection {
 
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
+    }
+
+    pub fn index_type(&self) -> &'static str {
+        self.index.index_type()
     }
 }
 

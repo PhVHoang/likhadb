@@ -3,9 +3,13 @@ name    = "likhadb-index"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
 ordered-float = { workspace = true }
 simsimd       = { workspace = true }
 rayon         = { workspace = true }
 rand          = { workspace = true }
+serde         = { workspace = true, optional = true }

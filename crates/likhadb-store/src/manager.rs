@@ -132,6 +132,16 @@ impl CollectionManager {
         self.collections.insert(name, collection);
         Ok(())
     }
+
+    #[cfg(feature = "persist")]
+    pub(crate) fn insert_collection(&mut self, col: Collection) {
+        self.collections.insert(col.name.clone(), col);
+    }
+
+    #[cfg(feature = "persist")]
+    pub(crate) fn all_collections(&self) -> impl Iterator<Item = &Collection> {
+        self.collections.values()
+    }
 }
 
 impl Default for CollectionManager {
