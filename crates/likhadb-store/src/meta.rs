@@ -70,13 +70,13 @@ fn eval_predicate(payload: &Value, pred: &Value) -> bool {
         "and" => pred
             .get("filters")
             .and_then(|v| v.as_array())
-            .map_or(false, |filters| {
+            .is_some_and(|filters| {
                 filters.iter().all(|f| eval_predicate(payload, f))
             }),
         "or" => pred
             .get("filters")
             .and_then(|v| v.as_array())
-            .map_or(false, |filters| {
+            .is_some_and(|filters| {
                 filters.iter().any(|f| eval_predicate(payload, f))
             }),
         leaf_op => {
@@ -116,7 +116,7 @@ fn eval_predicate(payload: &Value, pred: &Value) -> bool {
                         Some(a) => a,
                         None => return false,
                     };
-                    field_val.map_or(false, |fv| arr.contains(fv))
+                    field_val.is_some_and(|fv| arr.contains(fv))
                 }
                 _ => false,
             }

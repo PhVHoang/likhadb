@@ -18,7 +18,7 @@ const KMEANS_TOL: f32 = 1e-4;
 // ---------------------------------------------------------------------------
 
 struct Sq8Quantizer {
-    mins:   Vec<f32>, // [dim] per-dimension minimum observed during training
+    mins: Vec<f32>,   // [dim] per-dimension minimum observed during training
     scales: Vec<f32>, // [dim]: (max[i] - min[i]) / 255.0; 1.0 if range == 0
 }
 
@@ -30,8 +30,12 @@ impl Sq8Quantizer {
         for i in 0..n {
             for j in 0..dim {
                 let v = data[i * dim + j];
-                if v < mins[j] { mins[j] = v; }
-                if v > maxs[j] { maxs[j] = v; }
+                if v < mins[j] {
+                    mins[j] = v;
+                }
+                if v > maxs[j] {
+                    maxs[j] = v;
+                }
             }
         }
         let scales = mins
@@ -39,7 +43,11 @@ impl Sq8Quantizer {
             .zip(maxs.iter())
             .map(|(&mn, &mx)| {
                 let r = mx - mn;
-                if r > 0.0 { r / 255.0 } else { 1.0 }
+                if r > 0.0 {
+                    r / 255.0
+                } else {
+                    1.0
+                }
             })
             .collect();
         Self { mins, scales }
@@ -65,7 +73,10 @@ impl Sq8Quantizer {
             let mut buf = buf.borrow_mut();
             buf.clear();
             buf.extend(
-                codes.iter().enumerate().map(|(i, &c)| self.mins[i] + c as f32 * self.scales[i]),
+                codes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &c)| self.mins[i] + c as f32 * self.scales[i]),
             );
             simd_distance(metric, query, &buf)
         })
@@ -77,14 +88,18 @@ impl Sq8Quantizer {
 // ---------------------------------------------------------------------------
 
 struct PostingList {
-    ids:   Vec<VecId>,
-    data:  Vec<f32>, // flat slab: ids[i] owns data[i*dim..(i+1)*dim]; used when NOT quantized
-    codes: Vec<u8>,  // flat slab: ids[i] owns codes[i*dim..(i+1)*dim]; used for SQ8
+    ids: Vec<VecId>,
+    data: Vec<f32>, // flat slab: ids[i] owns data[i*dim..(i+1)*dim]; used when NOT quantized
+    codes: Vec<u8>, // flat slab: ids[i] owns codes[i*dim..(i+1)*dim]; used for SQ8
 }
 
 impl PostingList {
     fn new() -> Self {
-        Self { ids: Vec::new(), data: Vec::new(), codes: Vec::new() }
+        Self {
+            ids: Vec::new(),
+            data: Vec::new(),
+            codes: Vec::new(),
+        }
     }
 
     fn push(&mut self, id: VecId, vec: &[f32]) {
@@ -180,18 +195,33 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
             })
             .collect();
 
-        // --- Update step: recompute centroids as cluster means ---
-        let mut new_centroids = vec![0.0f32; k * dim];
-        let mut counts = vec![0usize; k];
-
-        for (i, &c) in assignments.iter().enumerate() {
-            let v = &data[i * dim..(i + 1) * dim];
-            let slot = &mut new_centroids[c * dim..(c + 1) * dim];
-            for (s, &x) in slot.iter_mut().zip(v.iter()) {
-                *s += x;
-            }
-            counts[c] += 1;
-        }
+        let (mut new_centroids, counts) = (0..n)
+            .into_par_iter()
+            .fold(
+                // each thread has its own new_centroids and counts
+                || (vec![0.0f32; k * dim], vec![0usize; k]),
+                |(mut sums, mut counts), i| {
+                    let c = assignments[i];
+                    let v = &data[i * dim..(i + 1) * dim];
+                    for (s, &x) in sums[c * dim..(c + 1) * dim].iter_mut().zip(v) {
+                        *s += x;
+                    }
+                    counts[c] += 1;
+                    (sums, counts)
+                },
+            )
+            .reduce(
+                || (vec![0.0f32; k * dim], vec![0usize; k]),
+                |(mut a_sums, mut a_counts), (b_sums, b_counts)| {
+                    for (a, b) in a_sums.iter_mut().zip(&b_sums) {
+                        *a += b;
+                    }
+                    for (a, b) in a_counts.iter_mut().zip(&b_counts) {
+                        *a += b;
+                    }
+                    (a_sums, a_counts)
+                },
+            );
 
         for c in 0..k {
             if counts[c] == 0 {
@@ -204,8 +234,7 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
                     .max_by_key(|&(_, &cnt)| cnt)
                     .map(|(idx, _)| idx)
                     .unwrap_or(0);
-                let src_vec: Vec<f32> =
-                    centroids[src * dim..(src + 1) * dim].to_vec();
+                let src_vec: Vec<f32> = centroids[src * dim..(src + 1) * dim].to_vec();
                 new_centroids[c * dim..(c + 1) * dim].copy_from_slice(&src_vec);
             } else {
                 let cnt = counts[c] as f32;
@@ -219,7 +248,9 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
         let converged = (0..k).all(|c| {
             let old = &centroids[c * dim..(c + 1) * dim];
             let new = &new_centroids[c * dim..(c + 1) * dim];
-            old.iter().zip(new.iter()).all(|(&o, &n)| (o - n).abs() < KMEANS_TOL)
+            old.iter()
+                .zip(new.iter())
+                .all(|(&o, &n)| (o - n).abs() < KMEANS_TOL)
         });
 
         centroids = new_centroids;
@@ -247,23 +278,23 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
 /// Setting `nprobe == nlist` searches every bucket and gives exact recall
 /// (equivalent to brute-force), which is useful for correctness testing.
 pub struct IvfIndex {
-    dim:    usize,
+    dim: usize,
     metric: Metric,
-    nlist:  usize,  // cluster count; also the training trigger threshold
-    nprobe: usize,  // clusters searched per query
+    nlist: usize,  // cluster count; also the training trigger threshold
+    nprobe: usize, // clusters searched per query
 
     // Pre-training staging buffer (drained and cleared on training).
-    staging_ids:  Vec<VecId>,
+    staging_ids: Vec<VecId>,
     staging_data: Vec<f32>, // flat slab; len == staging_ids.len() * dim
 
     // Post-training state.
-    trained:    bool,
-    centroids:  Vec<f32>,           // flat slab of nlist centroids; len == nlist * dim
-    lists:      Vec<PostingList>,   // one per centroid; len == nlist when trained
+    trained: bool,
+    centroids: Vec<f32>,     // flat slab of nlist centroids; len == nlist * dim
+    lists: Vec<PostingList>, // one per centroid; len == nlist when trained
     id_to_list: HashMap<VecId, usize>, // O(1) cluster lookup for delete / overwrite
 
     // SQ8 scalar quantization (optional, set at construction time).
-    quantize:  bool,
+    quantize: bool,
     quantizer: Option<Sq8Quantizer>, // None until training; Some after if quantize=true
 }
 
@@ -291,14 +322,14 @@ impl IvfIndex {
             metric,
             nlist,
             nprobe,
-            staging_ids:  Vec::new(),
+            staging_ids: Vec::new(),
             staging_data: Vec::new(),
-            trained:      false,
-            centroids:    Vec::new(),
-            lists:        Vec::new(),
-            id_to_list:   HashMap::new(),
-            quantize:     false,
-            quantizer:    None,
+            trained: false,
+            centroids: Vec::new(),
+            lists: Vec::new(),
+            id_to_list: HashMap::new(),
+            quantize: false,
+            quantizer: None,
         })
     }
 
@@ -351,11 +382,13 @@ impl IvfIndex {
         (0..self.nlist)
             .min_by(|&a, &b| {
                 let da = simd_distance(
-                    self.metric, vec,
+                    self.metric,
+                    vec,
                     &self.centroids[a * self.dim..(a + 1) * self.dim],
                 );
                 let db = simd_distance(
-                    self.metric, vec,
+                    self.metric,
+                    vec,
                     &self.centroids[b * self.dim..(b + 1) * self.dim],
                 );
                 da.partial_cmp(&db).unwrap_or(Ordering::Equal)
@@ -370,8 +403,7 @@ impl IvfIndex {
         k: usize,
         filter: Option<FilterFn<'_>>,
     ) -> Vec<ScoredResult> {
-        let mut heap: BinaryHeap<(OrderedFloat<f32>, VecId)> =
-            BinaryHeap::with_capacity(k + 1);
+        let mut heap: BinaryHeap<(OrderedFloat<f32>, VecId)> = BinaryHeap::with_capacity(k + 1);
 
         for (i, &id) in self.staging_ids.iter().enumerate() {
             if filter.is_none_or(|f| f(id)) {
@@ -483,7 +515,11 @@ impl IvfIndex {
 fn sorted_results(heap: BinaryHeap<(OrderedFloat<f32>, VecId)>) -> Vec<ScoredResult> {
     let mut results: Vec<ScoredResult> = heap
         .into_iter()
-        .map(|(d, id)| ScoredResult { id, score: d.into_inner(), payload: None })
+        .map(|(d, id)| ScoredResult {
+            id,
+            score: d.into_inner(),
+            payload: None,
+        })
         .collect();
     results.sort_by(|a, b| {
         OrderedFloat(a.score)
@@ -508,7 +544,13 @@ impl VectorIndex for IvfIndex {
         if let Some(q) = &self.quantizer {
             // SQ8 path: decode codes back to approximate f32.
             let codes = self.lists[list_idx].get_codes_by_id(id, self.dim)?;
-            Some(codes.iter().enumerate().map(|(i, &c)| q.mins[i] + c as f32 * q.scales[i]).collect())
+            Some(
+                codes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &c)| q.mins[i] + c as f32 * q.scales[i])
+                    .collect(),
+            )
         } else {
             Some(self.lists[list_idx].get_f32_by_id(id, self.dim)?.to_vec())
         }
@@ -516,7 +558,10 @@ impl VectorIndex for IvfIndex {
 
     fn insert(&mut self, id: VecId, vec: Vector) -> Result<()> {
         if vec.len() != self.dim {
-            return Err(LikhaDbError::DimMismatch { expected: self.dim, got: vec.len() });
+            return Err(LikhaDbError::DimMismatch {
+                expected: self.dim,
+                got: vec.len(),
+            });
         }
 
         if self.trained {
@@ -589,7 +634,10 @@ impl VectorIndex for IvfIndex {
         filter: Option<FilterFn<'_>>,
     ) -> Result<Vec<ScoredResult>> {
         if query.len() != self.dim {
-            return Err(LikhaDbError::DimMismatch { expected: self.dim, got: query.len() });
+            return Err(LikhaDbError::DimMismatch {
+                expected: self.dim,
+                got: query.len(),
+            });
         }
         if k == 0 {
             return Ok(vec![]);
@@ -982,7 +1030,10 @@ mod tests {
         // new_sq8 shares validation with new
         assert!(IvfIndex::new_sq8(0, Metric::L2, 4, 2).is_err(), "dim=0");
         assert!(IvfIndex::new_sq8(4, Metric::L2, 4, 0).is_err(), "nprobe=0");
-        assert!(IvfIndex::new_sq8(4, Metric::L2, 4, 5).is_err(), "nprobe>nlist");
+        assert!(
+            IvfIndex::new_sq8(4, Metric::L2, 4, 5).is_err(),
+            "nprobe>nlist"
+        );
     }
 
     #[test]
@@ -998,7 +1049,9 @@ mod tests {
     fn sq8_encode_decode_roundtrip() {
         // Fit on a tiny dataset and verify decode(encode(v)) ≈ v.
         let dim = 4;
-        let data: Vec<f32> = (0..8).flat_map(|i| vec![i as f32, i as f32 * 2.0, 0.5, -1.0 + i as f32 * 0.1]).collect();
+        let data: Vec<f32> = (0..8)
+            .flat_map(|i| vec![i as f32, i as f32 * 2.0, 0.5, -1.0 + i as f32 * 0.1])
+            .collect();
         let q = Sq8Quantizer::fit(&data, 8, dim);
 
         let original = vec![3.0_f32, 6.0, 0.5, -0.7];
@@ -1008,7 +1061,10 @@ mod tests {
         // Quantization error <= max_scale = (range / 255)
         let max_scale = q.scales.iter().cloned().fold(0.0_f32, f32::max);
         for (&o, d) in original.iter().zip(decoded.iter()) {
-            assert!((o - d).abs() <= max_scale + 1e-5, "decode error too large: {o} vs {d}");
+            assert!(
+                (o - d).abs() <= max_scale + 1e-5,
+                "decode error too large: {o} vs {d}"
+            );
         }
     }
 
@@ -1071,7 +1127,10 @@ mod tests {
         assert_eq!(idx.len(), 7);
 
         let res = idx.search(&[3.0_f32, 0.0, 0.0, 0.0], 8, None).unwrap();
-        assert!(res.iter().all(|r| r.id != 3), "deleted id 3 should not appear");
+        assert!(
+            res.iter().all(|r| r.id != 3),
+            "deleted id 3 should not appear"
+        );
     }
 
     #[test]
@@ -1103,7 +1162,10 @@ mod tests {
             .search(&[0.0_f32; 4], 6, Some(&|id: VecId| id % 2 == 0))
             .unwrap();
         assert!(!res.is_empty());
-        assert!(res.iter().all(|r| r.id % 2 == 0), "filter not applied correctly");
+        assert!(
+            res.iter().all(|r| r.id % 2 == 0),
+            "filter not applied correctly"
+        );
     }
 
     #[test]
@@ -1159,7 +1221,11 @@ mod tests {
         assert!(idx.trained);
         // Decoded value should be close to the original [2, 0, 0, 0]
         let v = idx.get(2).unwrap();
-        assert!((v[0] - 2.0_f32).abs() < 1.0, "decoded x={} should be near 2.0", v[0]);
+        assert!(
+            (v[0] - 2.0_f32).abs() < 1.0,
+            "decoded x={} should be near 2.0",
+            v[0]
+        );
     }
 
     #[test]
