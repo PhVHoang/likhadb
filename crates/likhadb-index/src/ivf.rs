@@ -195,7 +195,7 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
             })
             .collect();
 
-        let (mut new_centroids, mut counts) = (0..n)
+        let (mut new_centroids, counts) = (0..n)
             .into_par_iter()
             .fold(
                 // each thread has its own new_centroids and counts
