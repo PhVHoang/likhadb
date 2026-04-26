@@ -28,8 +28,9 @@ the store or API layers.
 likhadb/
 ├── crates/
 │   ├── likhadb-core/    # Primitives: VecId, Vector, ScoredResult, Metric, distance kernels
-│   ├── likhadb-index/   # VectorIndex trait + FlatIndex + IvfIndex
+│   ├── likhadb-index/   # VectorIndex trait + FlatIndex + IvfIndex + HnswIndex
 │   ├── likhadb-store/   # Collection, CollectionManager, MetaStore (JSON filtering)
+│   ├── likhadb-persist/ # Snapshot serialization — save/load CollectionManager to disk
 │   └── likhadb-bench/   # Criterion benchmarks
 └── images/
 ```
@@ -37,8 +38,9 @@ likhadb/
 | Crate | Role |
 |---|---|
 | `likhadb-core` | Shared primitives and error types — no index logic |
-| `likhadb-index` | `VectorIndex` trait (the extension seam) + `FlatIndex` + `IvfIndex` |
+| `likhadb-index` | `VectorIndex` trait (the extension seam) + `FlatIndex` + `IvfIndex` + `HnswIndex` |
 | `likhadb-store` | `Collection` wraps an index + metadata; `CollectionManager` names them |
+| `likhadb-persist` | Point-in-time snapshots via `bincode`; `PersistExt` trait adds `save`/`load` to `CollectionManager` |
 | `likhadb-bench` | Criterion benchmarks for 1 k / 10 k / 100 k vectors |
 
 ## Features
@@ -71,6 +73,14 @@ likhadb/
 - **Exact recall mode** — set `nprobe == nlist` to search all buckets (equivalent to brute-force)
 - **Same API** — drop-in replacement for `FlatIndex` via `create_ivf_collection`
 - **SQ8 scalar quantization** — opt-in 4× memory reduction via `create_ivf_sq8_collection`; posting lists store `u8` codes instead of `f32`; distances use asymmetric computation (query stays `f32`)
+
+### Tier 4 B1 — Snapshot persistence (`likhadb-persist`)
+
+- **Point-in-time snapshots** — serialize the full `CollectionManager` state (all collections, all index types, all payloads) to a single binary file
+- **Fast binary format** via [`bincode`](https://github.com/bincode-org/bincode) — raw `f32` slabs, no base64 inflation
+- **All three index types supported** — `FlatIndex`, `IvfIndex` (including SQ8), `HnswIndex` round-trip correctly including graph structure, tombstones, and training state
+- **Safe deserialization** — 16 GiB size cap prevents corrupt length fields from triggering multi-terabyte allocation attempts
+- **Extension trait API** — import `PersistExt` and call `mgr.save(path)` / `CollectionManager::load(path)`
 
 ## Getting started
 
@@ -223,6 +233,26 @@ fn main() {
 - Memory: 100k × d384 goes from ~146 MB (f32) to ~36 MB (u8).
 - Recall: typically >97% at d384 for normalized embeddings. Recall is lower for post-training inserts whose values fall outside the training distribution's range.
 
+### Snapshot persistence
+
+```rust
+use std::path::Path;
+use likhadb_persist::PersistExt;
+use likhadb_store::CollectionManager;
+
+// --- Save ---
+let mut mgr = CollectionManager::new();
+// ... create collections, insert vectors ...
+mgr.save(Path::new("snapshot.bin")).unwrap();
+
+// --- Load on next startup ---
+let mgr = CollectionManager::load(Path::new("snapshot.bin")).unwrap();
+// All collections, index state, and payloads are restored.
+// Searches work immediately — no retraining required.
+```
+
+All three index types (`FlatIndex`, `IvfIndex`/SQ8, `HnswIndex`) survive the round-trip, including HNSW graph edges, IVF training state, and JSON payloads.
+
 ## Distance metrics
 
 | Metric | Formula | Best for |
@@ -278,7 +308,8 @@ Rayon uses the default thread pool (all available cores).
 | **Tier 1** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
 | **Tier 2** | Done | IVF (Inverted File Index) — approximate k-NN with k-means clustering |
 | **Tier 3** | Done | HNSW (Hierarchical Navigable Small World graphs) |
-| **Tier 4** | Future | Persistence / WAL, HTTP + gRPC API, vector quantisation |
+| **Tier 4 — B1** | Done | Snapshot persistence — `CollectionManager::save` / `load` via `likhadb-persist` |
+| **Tier 4 — B2+** | Future | WAL (crash durability), HTTP + gRPC API, observability |
 
 All future tiers implement `VectorIndex` — the store layer is unchanged.
 

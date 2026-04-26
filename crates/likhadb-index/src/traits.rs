@@ -31,4 +31,7 @@ pub trait VectorIndex: Send + Sync {
 
     /// Index type name — used for observability/logging only.
     fn index_type(&self) -> &'static str;
+
+    #[cfg(feature = "serde")]
+    fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot;
 }

@@ -14,6 +14,8 @@ const MAX_LEVEL: usize = 16;
 // Internal node type
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 struct HnswNode {
     id: VecId,
     /// `layers[l]` holds the indices into `HnswIndex::nodes` of neighbours at level `l`.
@@ -35,6 +37,8 @@ struct HnswNode {
 /// **Deletion** uses tombstoning: deleted nodes remain in the graph as traversal
 /// stepping-stones but are excluded from search results.  `len()` reports the
 /// number of live (non-deleted) vectors.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct HnswIndex {
     dim: usize,
     metric: Metric,
@@ -425,6 +429,11 @@ impl VectorIndex for HnswIndex {
 
     fn index_type(&self) -> &'static str {
         "HnswIndex"
+    }
+
+    #[cfg(feature = "serde")]
+    fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot {
+        crate::snapshot::IndexSnapshot::Hnsw(self.clone())
     }
 }
 

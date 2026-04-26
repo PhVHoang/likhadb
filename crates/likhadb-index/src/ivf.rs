@@ -17,6 +17,8 @@ const KMEANS_TOL: f32 = 1e-4;
 // Sq8Quantizer — per-dimension scalar quantization (f32 → u8)
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 struct Sq8Quantizer {
     mins: Vec<f32>,   // [dim] per-dimension minimum observed during training
     scales: Vec<f32>, // [dim]: (max[i] - min[i]) / 255.0; 1.0 if range == 0
@@ -87,6 +89,8 @@ impl Sq8Quantizer {
 // PostingList — flat-slab storage for one IVF bucket
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 struct PostingList {
     ids: Vec<VecId>,
     data: Vec<f32>, // flat slab: ids[i] owns data[i*dim..(i+1)*dim]; used when NOT quantized
@@ -277,6 +281,8 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
 ///
 /// Setting `nprobe == nlist` searches every bucket and gives exact recall
 /// (equivalent to brute-force), which is useful for correctness testing.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct IvfIndex {
     dim: usize,
     metric: Metric,
@@ -662,6 +668,11 @@ impl VectorIndex for IvfIndex {
 
     fn index_type(&self) -> &'static str {
         "IvfIndex"
+    }
+
+    #[cfg(feature = "serde")]
+    fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot {
+        crate::snapshot::IndexSnapshot::Ivf(self.clone())
     }
 }
 

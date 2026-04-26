@@ -4,7 +4,39 @@ use serde_json::Value;
 
 use likhadb_core::VecId;
 
+/// Serializes `serde_json::Value` as a JSON string so that binary formats
+/// (e.g. bincode) can handle it — bincode does not support `deserialize_any`.
+#[cfg(feature = "persist")]
+mod json_value_as_string {
+    use std::collections::HashMap;
+    use likhadb_core::VecId;
+    use serde::{Deserializer, Serializer, Deserialize};
+    use serde_json::Value;
+
+    pub fn serialize<S>(map: &HashMap<VecId, Value>, s: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        use serde::Serialize;
+        let encoded: HashMap<VecId, String> =
+            map.iter().map(|(k, v)| (*k, v.to_string())).collect();
+        encoded.serialize(s)
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<HashMap<VecId, Value>, D::Error>
+    where D: Deserializer<'de> {
+        let encoded: HashMap<VecId, String> = HashMap::deserialize(d)?;
+        encoded.into_iter()
+            .map(|(k, s)| {
+                let v: Value = serde_json::from_str(&s).map_err(serde::de::Error::custom)?;
+                Ok((k, v))
+            })
+            .collect()
+    }
+}
+
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct MetaStore {
+    #[cfg_attr(feature = "persist", serde(with = "json_value_as_string"))]
     payloads: HashMap<VecId, Value>,
 }
 

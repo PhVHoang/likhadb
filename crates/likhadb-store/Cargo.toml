@@ -3,7 +3,11 @@ name    = "likhadb-store"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+persist = ["dep:serde", "likhadb-index/serde"]
+
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
 likhadb-index = { path = "../likhadb-index" }
 serde_json    = { workspace = true }
+serde         = { workspace = true, optional = true }
