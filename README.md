@@ -24,13 +24,17 @@ the store or API layers.
 
 ## Query flows
 
-### Entry path (all index types)
+### Read path (all index types)
 
-Every query enters through the same store-layer path regardless of index type.
+Every search enters through the same store-layer path regardless of index type.
+With `WalManager`, reads delegate straight to the inner `CollectionManager` with no WAL involvement.
 
 ```mermaid
 flowchart TD
-    U([User]) -->|"mgr.get(&quot;col&quot;)?.search(query, k, predicate, include_payload)"| CM[CollectionManager]
+    U([User]) -->|"wal.get(&quot;col&quot;)?.search(query, k, predicate, include_payload)\nor mgr.get(&quot;col&quot;)?.search(...)"| EP{Entry point}
+    EP -->|WalManager| WAL_RD["WalManager::get — read-through\n(no WAL, no lock)"]
+    EP -->|CollectionManager| CM[CollectionManager]
+    WAL_RD --> CM
     CM --> C[Collection::search]
     C --> MF["MetaStore::make_filter(predicate)\nOption&lt;Box&lt;dyn Fn(VecId) → bool&gt;&gt;"]
     MF --> IDX{"index.search(query, k, filter)"}
@@ -42,6 +46,70 @@ flowchart TD
     PL -->|yes| META["MetaStore::get(id)\nattach payload to each result"]
     PL -->|no| OUT
     META --> OUT([Vec&lt;ScoredResult&gt; returned to user])
+```
+
+---
+
+### Write path (WalManager)
+
+Every mutation is durably logged **before** it is applied in memory.
+The WAL entry is flushed to `wal.log` before the in-memory store is touched — on crash, the uncommitted tail is simply ignored on recovery.
+
+```mermaid
+flowchart TD
+    U([User]) -->|"wal.insert / delete /\ncreate_collection / drop_collection"| WM[WalManager]
+    WM --> BUILD["build WalEntry { lsn, op }\nlsn = self.next_lsn"]
+    BUILD --> SER["bincode::serialize(WalEntry)"]
+    SER --> FRAME["write_frame to BufWriter\n[len: u32][crc32: u32][payload]"]
+    FRAME --> FLUSH["BufWriter::flush — ensure bytes reach OS"]
+    FLUSH --> LSN["next_lsn += 1"]
+    LSN --> APPLY["apply op to inner CollectionManager\n(get_mut / create_collection / drop_collection)"]
+    APPLY --> DONE([Ok returned to user])
+
+    FLUSH -->|"crash here"| CRASH["frame never committed\nnext open: FrameIter stops at truncated tail"]
+```
+
+---
+
+### Recovery on startup (`WalManager::open`)
+
+```mermaid
+flowchart TD
+    START([WalManager::open]) --> SNAP{snapshot.bin\nexists?}
+
+    SNAP -->|yes| LOAD["CollectionManager::load(snapshot.bin)\nread last_lsn from ManagerSnapshot"]
+    SNAP -->|no| EMPTY["inner = CollectionManager::new()\nsnapshot_lsn = 0"]
+
+    LOAD & EMPTY --> WAL_Q{wal.log\nexists?}
+
+    WAL_Q -->|no| OPEN_WAL
+    WAL_Q -->|yes| ITER["FrameIter over wal.log\nfor each frame:"]
+    ITER --> CRC{"CRC OK?"}
+    CRC -->|"no — tail frame"| STOP_ITER["stop iteration\n(partial crash write — safe to discard)"]
+    CRC -->|"no — mid-log"| ERR([Err PersistError::Crc])
+    CRC -->|yes| DESER["bincode::deserialize WalEntry"]
+    DESER --> SKIP{"entry.lsn\n≤ snapshot_lsn?"}
+    SKIP -->|yes| ITER
+    SKIP -->|no| REPLAY["apply_op(&mut inner, entry.op)\nCreateCollection is idempotent"]
+    REPLAY --> ITER
+
+    STOP_ITER --> OPEN_WAL["open wal.log in append mode"]
+    OPEN_WAL --> READY([WalManager ready])
+```
+
+---
+
+### Checkpoint
+
+Checkpoint bounds recovery time by collapsing all replayed WAL entries into a fresh snapshot, then truncating the log.
+
+```mermaid
+flowchart TD
+    U([caller: wal.checkpoint]) --> SNAP["serialize inner CollectionManager\nto snapshot.bin.tmp\n(with last_lsn embedded)"]
+    SNAP --> RENAME["rename snapshot.bin.tmp → snapshot.bin\n(atomic on POSIX — crash-safe)"]
+    RENAME --> TRUNC["truncate wal.log to zero bytes"]
+    TRUNC --> REOPEN["reopen wal.log in append mode\n(self.wal = fresh WalWriter)"]
+    REOPEN --> DONE([Ok — next open replays 0 WAL entries])
 ```
 
 ---
@@ -158,7 +226,7 @@ likhadb/
 │   ├── likhadb-core/    # Primitives: VecId, Vector, ScoredResult, Metric, distance kernels
 │   ├── likhadb-index/   # VectorIndex trait + FlatIndex + IvfIndex + HnswIndex
 │   ├── likhadb-store/   # Collection, CollectionManager, MetaStore (JSON filtering)
-│   ├── likhadb-persist/ # Snapshot serialization — save/load CollectionManager to disk
+│   ├── likhadb-persist/ # Snapshot + WAL persistence — PersistExt (save/load) + WalManager
 │   └── likhadb-bench/   # Criterion benchmarks
 └── images/
 ```
@@ -168,7 +236,7 @@ likhadb/
 | `likhadb-core` | Shared primitives and error types — no index logic |
 | `likhadb-index` | `VectorIndex` trait (the extension seam) + `FlatIndex` + `IvfIndex` + `HnswIndex` |
 | `likhadb-store` | `Collection` wraps an index + metadata; `CollectionManager` names them |
-| `likhadb-persist` | Point-in-time snapshots via `bincode`; `PersistExt` trait adds `save`/`load` to `CollectionManager` |
+| `likhadb-persist` | Snapshot (`PersistExt`) + Write-Ahead Log (`WalManager`) — durable mutations, crash recovery, checkpoint |
 | `likhadb-bench` | Criterion benchmarks for 1 k / 10 k / 100 k vectors |
 
 ## Features
@@ -209,6 +277,15 @@ likhadb/
 - **All three index types supported** — `FlatIndex`, `IvfIndex` (including SQ8), `HnswIndex` round-trip correctly including graph structure, tombstones, and training state
 - **Safe deserialization** — 16 GiB size cap prevents corrupt length fields from triggering multi-terabyte allocation attempts
 - **Extension trait API** — import `PersistExt` and call `mgr.save(path)` / `CollectionManager::load(path)`
+
+### Tier 4 B2 — Write-Ahead Log (`WalManager`)
+
+- **Crash durability** — every mutation (insert, delete, create/drop collection) is flushed to `wal.log` before being applied in memory; uncommitted tail entries are silently discarded on recovery
+- **Framed log format** — each record carries a 32-bit CRC checksum; mid-log corruption surfaces as `PersistError::Crc`, tail truncation is treated as a clean end-of-log
+- **LSN-based recovery** — snapshot embeds `last_lsn`; on restart only entries newer than the snapshot are replayed, making recovery sub-second for reasonable WAL sizes
+- **Atomic checkpoint** — `WalManager::checkpoint()` writes a new snapshot to `snapshot.bin.tmp`, renames it atomically, then truncates `wal.log`; a crash during checkpoint leaves the old snapshot intact
+- **All four DDL/DML operations logged** — `CreateCollection`, `DropCollection`, `Insert`, `Delete`; replay of `CreateCollection` is idempotent
+- **All index types supported** — `FlatIndex`, `IvfIndex`, `IvfSq8`, `HnswIndex` all survive WAL round-trips
 
 ## Getting started
 
@@ -381,6 +458,35 @@ let mgr = CollectionManager::load(Path::new("snapshot.bin")).unwrap();
 
 All three index types (`FlatIndex`, `IvfIndex`/SQ8, `HnswIndex`) survive the round-trip, including HNSW graph edges, IVF training state, and JSON payloads.
 
+### WAL (Write-Ahead Log)
+
+```rust
+use std::path::Path;
+use likhadb_core::Metric;
+use likhadb_persist::WalManager;
+
+// Open (or create) a data directory.
+// On first run: creates empty state.
+// On restart after a crash: loads last snapshot then replays uncommitted WAL entries.
+let mut wal = WalManager::open(Path::new("/data/mydb")).unwrap();
+
+// All write operations are logged to wal.log before being applied.
+wal.create_collection("docs", 384, Metric::Cosine).unwrap();
+wal.insert("docs", 1, vec![0.1; 384], Some(serde_json::json!({"title": "hello"}))).unwrap();
+wal.insert("docs", 2, vec![0.9; 384], None).unwrap();
+wal.delete("docs", 1).unwrap();
+
+// Reads delegate straight through — no WAL overhead.
+let results = wal.get("docs").unwrap()
+    .search(&[0.5; 384], 10, None, false).unwrap();
+
+// Checkpoint: write a fresh snapshot and truncate wal.log.
+// Call on graceful shutdown or periodically to bound recovery time.
+wal.checkpoint().unwrap();
+```
+
+After a crash (before `checkpoint`), reopening the same directory replays all logged mutations automatically. No data loss for committed writes.
+
 ## Distance metrics
 
 | Metric | Formula | Best for |
@@ -437,7 +543,8 @@ Rayon uses the default thread pool (all available cores).
 | **Tier 2** | Done | IVF (Inverted File Index) — approximate k-NN with k-means clustering |
 | **Tier 3** | Done | HNSW (Hierarchical Navigable Small World graphs) |
 | **Tier 4 — B1** | Done | Snapshot persistence — `CollectionManager::save` / `load` via `likhadb-persist` |
-| **Tier 4 — B2+** | Future | WAL (crash durability), HTTP + gRPC API, observability |
+| **Tier 4 — B2** | Done | WAL crash durability — `WalManager` logs every mutation, replays on restart, atomic checkpoint |
+| **Tier 4 — C+** | Future | Concurrent access (RwLock), HTTP + gRPC API, observability |
 
 All future tiers implement `VectorIndex` — the store layer is unchanged.
 
