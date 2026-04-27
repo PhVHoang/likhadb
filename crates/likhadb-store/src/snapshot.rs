@@ -17,6 +17,8 @@ pub struct CollectionSnapshot {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ManagerSnapshot {
     pub collections: Vec<CollectionSnapshot>,
+    #[serde(default)]
+    pub last_lsn: u64,
 }
 
 impl Collection {
@@ -38,8 +40,13 @@ impl Collection {
 
 impl CollectionManager {
     pub fn to_snapshot(&self) -> ManagerSnapshot {
+        self.to_snapshot_with_lsn(0)
+    }
+
+    pub fn to_snapshot_with_lsn(&self, last_lsn: u64) -> ManagerSnapshot {
         ManagerSnapshot {
             collections: self.all_collections().map(|c| c.to_snapshot()).collect(),
+            last_lsn,
         }
     }
 

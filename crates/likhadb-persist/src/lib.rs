@@ -1,6 +1,8 @@
 mod error;
+pub mod wal;
 
 pub use error::PersistError;
+pub use wal::WalManager;
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
