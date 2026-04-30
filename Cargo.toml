@@ -4,6 +4,7 @@ members = [
     "crates/likhadb-index",
     "crates/likhadb-store",
     "crates/likhadb-persist",
+    "crates/likhadb-server",
     "crates/likhadb-bench",
 ]
 resolver = "2"

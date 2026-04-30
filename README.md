@@ -26,15 +26,16 @@ the store or API layers.
 
 ### Read path (all index types)
 
-Every search enters through the same store-layer path regardless of index type.
-With `WalManager`, reads delegate straight to the inner `CollectionManager` with no WAL involvement.
+In the server context, every search enters through `AppState::read`, which acquires a
+shared `RwLock` guard. Multiple handlers can hold read guards concurrently. The guard is
+dropped before returning results — `Vec<ScoredResult>` is fully owned, so no reference
+escapes the lock scope.
 
 ```mermaid
 flowchart TD
-    U([User]) -->|"wal.get(&quot;col&quot;)?.search(query, k, predicate, include_payload)\nor mgr.get(&quot;col&quot;)?.search(...)"| EP{Entry point}
-    EP -->|WalManager| WAL_RD["WalManager::get — read-through\n(no WAL, no lock)"]
-    EP -->|CollectionManager| CM[CollectionManager]
-    WAL_RD --> CM
+    U(["Handler / caller"]) -->|"state.read().await"| LOCK["AppState::read\nacquire RwLockReadGuard&lt;WalManager&gt;\n(shared — N concurrent readers allowed)"]
+    LOCK --> WAL_RD["WalManager::get — read-through\n(no WAL involvement)"]
+    WAL_RD --> CM[CollectionManager]
     CM --> C[Collection::search]
     C --> MF["MetaStore::make_filter(predicate)\nOption&lt;Box&lt;dyn Fn(VecId) → bool&gt;&gt;"]
     MF --> IDX{"index.search(query, k, filter)"}
@@ -44,27 +45,29 @@ flowchart TD
     FL & IV & HN --> RES["Vec&lt;ScoredResult&gt; { id, score, payload: None }"]
     RES --> PL{"include_payload?"}
     PL -->|yes| META["MetaStore::get(id)\nattach payload to each result"]
-    PL -->|no| OUT
-    META --> OUT([Vec&lt;ScoredResult&gt; returned to user])
+    PL -->|no| DROP
+    META --> DROP["drop guard — RwLock read slot released\n(results are owned — no ref into guard)"]
+    DROP --> OUT(["Vec&lt;ScoredResult&gt; returned to caller"])
 ```
 
 ---
 
-### Write path (WalManager)
+### Write path (WalManager via AppState)
 
-Every mutation is durably logged **before** it is applied in memory.
-The WAL entry is flushed to `wal.log` before the in-memory store is touched — on crash, the uncommitted tail is simply ignored on recovery.
+Every mutation acquires an exclusive write lock, durably logs the operation to `wal.log`,
+then applies it in memory. The guard is released only after the in-memory apply succeeds.
 
 ```mermaid
 flowchart TD
-    U([User]) -->|"wal.insert / delete /\ncreate_collection / drop_collection"| WM[WalManager]
-    WM --> BUILD["build WalEntry { lsn, op }\nlsn = self.next_lsn"]
+    U(["Handler / caller"]) -->|"state.write().await"| LOCK["AppState::write\nacquire RwLockWriteGuard&lt;WalManager&gt;\n(exclusive — blocks all readers and writers)"]
+    LOCK --> BUILD["build WalEntry { lsn, op }\nlsn = self.next_lsn"]
     BUILD --> SER["bincode::serialize(WalEntry)"]
     SER --> FRAME["write_frame to BufWriter\n[len: u32][crc32: u32][payload]"]
     FRAME --> FLUSH["BufWriter::flush — ensure bytes reach OS"]
     FLUSH --> LSN["next_lsn += 1"]
     LSN --> APPLY["apply op to inner CollectionManager\n(get_mut / create_collection / drop_collection)"]
-    APPLY --> DONE([Ok returned to user])
+    APPLY --> DROP["drop guard — RwLock write slot released"]
+    DROP --> DONE(["Ok returned to caller"])
 
     FLUSH -->|"crash here"| CRASH["frame never committed\nnext open: FrameIter stops at truncated tail"]
 ```
@@ -102,14 +105,24 @@ flowchart TD
 ### Checkpoint
 
 Checkpoint bounds recovery time by collapsing all replayed WAL entries into a fresh snapshot, then truncating the log.
+In the server, `spawn_checkpoint_task` drives this on a configurable interval by acquiring an exclusive write lock.
+On graceful shutdown the task is aborted and `checkpoint()` is called once directly.
 
 ```mermaid
 flowchart TD
-    U([caller: wal.checkpoint]) --> SNAP["serialize inner CollectionManager\nto snapshot.bin.tmp\n(with last_lsn embedded)"]
+    TASK(["spawn_checkpoint_task\n(background tokio task)"])
+    SHUT(["graceful shutdown"])
+
+    TASK -->|"interval elapsed\nstate.write().await"| LOCK
+    SHUT -->|"abort task, then\nstate.write().await"| LOCK
+
+    LOCK["AppState::write\nacquire RwLockWriteGuard&lt;WalManager&gt;\n(exclusive)"]
+    LOCK --> SNAP["serialize inner CollectionManager\nto snapshot.bin.tmp\n(with last_lsn embedded)"]
     SNAP --> RENAME["rename snapshot.bin.tmp → snapshot.bin\n(atomic on POSIX — crash-safe)"]
     RENAME --> TRUNC["truncate wal.log to zero bytes"]
     TRUNC --> REOPEN["reopen wal.log in append mode\n(self.wal = fresh WalWriter)"]
-    REOPEN --> DONE([Ok — next open replays 0 WAL entries])
+    REOPEN --> DROP["drop guard — RwLock write slot released"]
+    DROP --> DONE(["Ok — next open replays 0 WAL entries"])
 ```
 
 ---
@@ -227,6 +240,7 @@ likhadb/
 │   ├── likhadb-index/   # VectorIndex trait + FlatIndex + IvfIndex + HnswIndex
 │   ├── likhadb-store/   # Collection, CollectionManager, MetaStore (JSON filtering)
 │   ├── likhadb-persist/ # Snapshot + WAL persistence — PersistExt (save/load) + WalManager
+│   ├── likhadb-server/  # Shared concurrent state — AppState (Arc<RwLock<WalManager>>) + checkpoint task
 │   └── likhadb-bench/   # Criterion benchmarks
 └── images/
 ```
@@ -237,6 +251,7 @@ likhadb/
 | `likhadb-index` | `VectorIndex` trait (the extension seam) + `FlatIndex` + `IvfIndex` + `HnswIndex` |
 | `likhadb-store` | `Collection` wraps an index + metadata; `CollectionManager` names them |
 | `likhadb-persist` | Snapshot (`PersistExt`) + Write-Ahead Log (`WalManager`) — durable mutations, crash recovery, checkpoint |
+| `likhadb-server` | `AppState` — `Arc<RwLock<WalManager>>` with shared read / exclusive write access; `spawn_checkpoint_task` |
 | `likhadb-bench` | Criterion benchmarks for 1 k / 10 k / 100 k vectors |
 
 ## Features
@@ -544,7 +559,8 @@ Rayon uses the default thread pool (all available cores).
 | **Tier 3** | Done | HNSW (Hierarchical Navigable Small World graphs) |
 | **Tier 4 — B1** | Done | Snapshot persistence — `CollectionManager::save` / `load` via `likhadb-persist` |
 | **Tier 4 — B2** | Done | WAL crash durability — `WalManager` logs every mutation, replays on restart, atomic checkpoint |
-| **Tier 4 — C+** | Future | Concurrent access (RwLock), HTTP + gRPC API, observability |
+| **Tier 4 — C1** | Done | Concurrent shared state — `AppState` (`Arc<RwLock<WalManager>>`), background checkpoint task |
+| **Tier 4 — D+** | Future | HTTP + gRPC API, observability |
 
 All future tiers implement `VectorIndex` — the store layer is unchanged.
 

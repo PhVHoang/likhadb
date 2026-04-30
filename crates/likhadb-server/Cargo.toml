@@ -1,0 +1,12 @@
+[package]
+name    = "likhadb-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+likhadb-persist = { path = "../likhadb-persist" }
+tokio           = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+likhadb-core = { path = "../likhadb-core" }
+tempfile     = "3"

@@ -147,8 +147,7 @@ struct WalEntry {
 
 ### C1 — RwLock-wrapped state
 
-**Goal:** Allow concurrent reads (`search`, `get`) from multiple threads/tasks while serializing
-writes (`insert`, `delete`, `create_collection`).
+**Goal:** Allow concurrent reads (`search`, `get`) from multiple threads/tasks while serializing writes (`insert`, `delete`,`create_collection`).
 
 ```rust
 pub struct SharedState {
