@@ -1,3 +1,7 @@
+mod error;
+mod routes;
 mod state;
+mod types;
 
-pub use state::{AppState, spawn_checkpoint_task};
+pub use routes::router;
+pub use state::{spawn_checkpoint_task, AppState};
