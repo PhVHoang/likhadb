@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+likhadb-core    = { path = "../likhadb-core" }
+likhadb-store   = { path = "../likhadb-store" }
 likhadb-persist = { path = "../likhadb-persist" }
-tokio           = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
+axum            = "0.7"
+tokio           = { version = "1", features = ["full"] }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
 
 [dev-dependencies]
-likhadb-core = { path = "../likhadb-core" }
-tempfile     = "3"
+tempfile = "3"
