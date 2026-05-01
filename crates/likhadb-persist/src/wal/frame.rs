@@ -64,7 +64,11 @@ pub struct FrameIter<R> {
 
 impl<R: Read> FrameIter<R> {
     pub fn new(reader: R) -> Self {
-        Self { reader, count: 0, done: false }
+        Self {
+            reader,
+            count: 0,
+            done: false,
+        }
     }
 
     pub fn frames_read(&self) -> u64 {

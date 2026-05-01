@@ -26,11 +26,15 @@ struct WalWriter {
 impl WalWriter {
     fn open_append(path: &Path) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { file: BufWriter::new(file) })
+        Ok(Self {
+            file: BufWriter::new(file),
+        })
     }
 
     fn append(&mut self, entry: &WalEntry) -> Result<(), PersistError> {
-        let payload = bincode_opts().serialize(entry).map_err(PersistError::Encode)?;
+        let payload = bincode_opts()
+            .serialize(entry)
+            .map_err(PersistError::Encode)?;
         write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
         self.file.flush().map_err(PersistError::Io)
     }
@@ -64,10 +68,10 @@ impl WalWriter {
 /// `likhadb_core::Result<_>` because WAL I/O errors are distinct from logic
 /// errors and must be surfaced to the caller.
 pub struct WalManager {
-    inner:    CollectionManager,
-    wal:      WalWriter,
+    inner: CollectionManager,
+    wal: WalWriter,
     next_lsn: u64,
-    dir:      PathBuf,
+    dir: PathBuf,
 }
 
 impl WalManager {
@@ -80,7 +84,7 @@ impl WalManager {
         std::fs::create_dir_all(dir).map_err(PersistError::Io)?;
 
         let snapshot_path = dir.join(Self::SNAPSHOT_FILE);
-        let wal_path      = dir.join(Self::WAL_FILE);
+        let wal_path = dir.join(Self::WAL_FILE);
 
         // 1. Load snapshot (if present).
         let (mut inner, snapshot_lsn) = if snapshot_path.exists() {
@@ -100,12 +104,17 @@ impl WalManager {
         // 3. Open WAL for appending.
         let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
 
-        Ok(Self { inner, wal, next_lsn, dir: dir.to_path_buf() })
+        Ok(Self {
+            inner,
+            wal,
+            next_lsn,
+            dir: dir.to_path_buf(),
+        })
     }
 
     fn read_snapshot_lsn(path: &Path) -> Result<u64, PersistError> {
         use likhadb_store::ManagerSnapshot;
-        let file   = File::open(path).map_err(PersistError::Io)?;
+        let file = File::open(path).map_err(PersistError::Io)?;
         let reader = BufReader::new(file);
         let snap: ManagerSnapshot = bincode_opts()
             .deserialize_from(reader)
@@ -116,13 +125,13 @@ impl WalManager {
     /// Replay WAL entries with LSN > `snapshot_lsn`.  Returns the `next_lsn`
     /// to use for new writes.
     fn replay_wal(
-        path:         &Path,
-        mgr:          &mut CollectionManager,
+        path: &Path,
+        mgr: &mut CollectionManager,
         snapshot_lsn: u64,
     ) -> Result<u64, PersistError> {
-        let file   = File::open(path).map_err(PersistError::Io)?;
+        let file = File::open(path).map_err(PersistError::Io)?;
         let reader = BufReader::new(file);
-        let mut iter     = FrameIter::new(reader);
+        let mut iter = FrameIter::new(reader);
         let mut last_lsn = snapshot_lsn;
 
         for item in &mut iter {
@@ -134,7 +143,10 @@ impl WalManager {
                 if iter.frames_read() <= 1 {
                     break;
                 }
-                return Err(PersistError::Crc { expected: stored_crc, got: computed });
+                return Err(PersistError::Crc {
+                    expected: stored_crc,
+                    got: computed,
+                });
             }
 
             let entry: WalEntry = bincode_opts()
@@ -157,7 +169,10 @@ impl WalManager {
     where
         F: FnOnce(&mut CollectionManager) -> likhadb_core::Result<()>,
     {
-        let entry = WalEntry { lsn: self.next_lsn, op };
+        let entry = WalEntry {
+            lsn: self.next_lsn,
+            op,
+        };
         self.wal.append(&entry)?;
         self.next_lsn += 1;
         f(&mut self.inner).map_err(PersistError::Apply)
@@ -173,7 +188,12 @@ impl WalManager {
     ) -> Result<(), PersistError> {
         let name = name.into();
         self.log_and_apply(
-            WalOp::CreateCollection { name: name.clone(), dim, metric, kind: IndexKind::Flat },
+            WalOp::CreateCollection {
+                name: name.clone(),
+                dim,
+                metric,
+                kind: IndexKind::Flat,
+            },
             |mgr| mgr.create_collection(name, dim, metric),
         )
     }
@@ -189,7 +209,9 @@ impl WalManager {
         let name = name.into();
         self.log_and_apply(
             WalOp::CreateCollection {
-                name: name.clone(), dim, metric,
+                name: name.clone(),
+                dim,
+                metric,
                 kind: IndexKind::Ivf { nlist, nprobe },
             },
             |mgr| mgr.create_ivf_collection(name, dim, metric, nlist, nprobe),
@@ -207,7 +229,9 @@ impl WalManager {
         let name = name.into();
         self.log_and_apply(
             WalOp::CreateCollection {
-                name: name.clone(), dim, metric,
+                name: name.clone(),
+                dim,
+                metric,
                 kind: IndexKind::IvfSq8 { nlist, nprobe },
             },
             |mgr| mgr.create_ivf_sq8_collection(name, dim, metric, nlist, nprobe),
@@ -226,8 +250,14 @@ impl WalManager {
         let name = name.into();
         self.log_and_apply(
             WalOp::CreateCollection {
-                name: name.clone(), dim, metric,
-                kind: IndexKind::Hnsw { m, ef_construction, ef_search },
+                name: name.clone(),
+                dim,
+                metric,
+                kind: IndexKind::Hnsw {
+                    m,
+                    ef_construction,
+                    ef_search,
+                },
             },
             |mgr| mgr.create_hnsw_collection(name, dim, metric, m, ef_construction, ef_search),
         )
@@ -235,10 +265,9 @@ impl WalManager {
 
     pub fn drop_collection(&mut self, name: &str) -> Result<(), PersistError> {
         let name = name.to_owned();
-        self.log_and_apply(
-            WalOp::DropCollection { name: name.clone() },
-            |mgr| mgr.drop_collection(&name),
-        )
+        self.log_and_apply(WalOp::DropCollection { name: name.clone() }, |mgr| {
+            mgr.drop_collection(&name)
+        })
     }
 
     // ── Vector DML ─────────────────────────────────────────────────────────
@@ -253,7 +282,8 @@ impl WalManager {
         let col = collection.to_owned();
         self.log_and_apply(
             WalOp::Insert {
-                collection: col.clone(), id,
+                collection: col.clone(),
+                id,
                 vector: vector.clone(),
                 payload: payload.clone(),
             },
@@ -262,11 +292,20 @@ impl WalManager {
     }
 
     pub fn delete(&mut self, collection: &str, id: VecId) -> Result<bool, PersistError> {
-        let col   = collection.to_owned();
-        let entry = WalEntry { lsn: self.next_lsn, op: WalOp::Delete { collection: col.clone(), id } };
+        let col = collection.to_owned();
+        let entry = WalEntry {
+            lsn: self.next_lsn,
+            op: WalOp::Delete {
+                collection: col.clone(),
+                id,
+            },
+        };
         self.wal.append(&entry)?;
         self.next_lsn += 1;
-        self.inner.get_mut(&col)?.delete(id).map_err(PersistError::Apply)
+        self.inner
+            .get_mut(&col)?
+            .delete(id)
+            .map_err(PersistError::Apply)
     }
 
     // ── Read-through ────────────────────────────────────────────────────────
@@ -285,18 +324,20 @@ impl WalManager {
     /// then truncate `wal.log`.  Call on graceful shutdown or periodically to
     /// bound recovery time.
     pub fn checkpoint(&mut self) -> Result<(), PersistError> {
-        let last_lsn      = self.next_lsn.saturating_sub(1);
+        let last_lsn = self.next_lsn.saturating_sub(1);
         let snapshot_path = self.dir.join(Self::SNAPSHOT_FILE);
-        let tmp_path      = self.dir.join("snapshot.bin.tmp");
-        let wal_path      = self.dir.join(Self::WAL_FILE);
+        let tmp_path = self.dir.join("snapshot.bin.tmp");
+        let wal_path = self.dir.join(Self::WAL_FILE);
 
         // Write snapshot to tmp then atomically rename.
         {
             use likhadb_store::ManagerSnapshot;
             let snap: ManagerSnapshot = self.inner.to_snapshot_with_lsn(last_lsn);
-            let file   = File::create(&tmp_path).map_err(PersistError::Io)?;
+            let file = File::create(&tmp_path).map_err(PersistError::Io)?;
             let writer = BufWriter::new(file);
-            bincode_opts().serialize_into(writer, &snap).map_err(PersistError::Encode)?;
+            bincode_opts()
+                .serialize_into(writer, &snap)
+                .map_err(PersistError::Encode)?;
         }
         std::fs::rename(&tmp_path, &snapshot_path).map_err(PersistError::Io)?;
 

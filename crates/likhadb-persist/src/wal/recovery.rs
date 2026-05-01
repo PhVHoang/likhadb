@@ -11,7 +11,12 @@ use super::entry::{IndexKind, WalOp};
 /// replaying after a partial checkpoint), the op is silently skipped.
 pub fn apply_op(mgr: &mut CollectionManager, op: WalOp) -> Result<(), PersistError> {
     match op {
-        WalOp::CreateCollection { name, dim, metric, kind } => {
+        WalOp::CreateCollection {
+            name,
+            dim,
+            metric,
+            kind,
+        } => {
             let result = match kind {
                 IndexKind::Flat => mgr.create_collection(name, dim, metric),
                 IndexKind::Ivf { nlist, nprobe } => {
@@ -20,9 +25,11 @@ pub fn apply_op(mgr: &mut CollectionManager, op: WalOp) -> Result<(), PersistErr
                 IndexKind::IvfSq8 { nlist, nprobe } => {
                     mgr.create_ivf_sq8_collection(name, dim, metric, nlist, nprobe)
                 }
-                IndexKind::Hnsw { m, ef_construction, ef_search } => {
-                    mgr.create_hnsw_collection(name, dim, metric, m, ef_construction, ef_search)
-                }
+                IndexKind::Hnsw {
+                    m,
+                    ef_construction,
+                    ef_search,
+                } => mgr.create_hnsw_collection(name, dim, metric, m, ef_construction, ef_search),
             };
             // Idempotent: ignore "already exists" errors that can occur when
             // replaying WAL entries that were also captured in the snapshot.
@@ -31,21 +38,22 @@ pub fn apply_op(mgr: &mut CollectionManager, op: WalOp) -> Result<(), PersistErr
                 Err(e) => Err(PersistError::Apply(e)),
             }
         }
-        WalOp::DropCollection { name } => {
-            match mgr.drop_collection(&name) {
-                Ok(()) | Err(LikhaDbError::CollectionNotFound(_)) => Ok(()),
-                Err(e) => Err(PersistError::Apply(e)),
-            }
-        }
-        WalOp::Insert { collection, id, vector, payload } => {
-            mgr.get_mut(&collection)
-                .and_then(|col| col.insert(id, vector, payload))
-                .map_err(PersistError::Apply)
-        }
-        WalOp::Delete { collection, id } => {
-            mgr.get_mut(&collection)
-                .and_then(|col| col.delete(id).map(|_| ()))
-                .map_err(PersistError::Apply)
-        }
+        WalOp::DropCollection { name } => match mgr.drop_collection(&name) {
+            Ok(()) | Err(LikhaDbError::CollectionNotFound(_)) => Ok(()),
+            Err(e) => Err(PersistError::Apply(e)),
+        },
+        WalOp::Insert {
+            collection,
+            id,
+            vector,
+            payload,
+        } => mgr
+            .get_mut(&collection)
+            .and_then(|col| col.insert(id, vector, payload))
+            .map_err(PersistError::Apply),
+        WalOp::Delete { collection, id } => mgr
+            .get_mut(&collection)
+            .and_then(|col| col.delete(id).map(|_| ()))
+            .map_err(PersistError::Apply),
     }
 }

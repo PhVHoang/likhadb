@@ -19,10 +19,19 @@ use crate::{
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/collections", get(list_collections).post(create_collection))
-        .route("/collections/:name", get(get_collection).delete(drop_collection))
+        .route(
+            "/collections",
+            get(list_collections).post(create_collection),
+        )
+        .route(
+            "/collections/:name",
+            get(get_collection).delete(drop_collection),
+        )
         .route("/collections/:name/vectors", post(insert_vector))
-        .route("/collections/:name/vectors/:id", get(get_vector).delete(delete_vector))
+        .route(
+            "/collections/:name/vectors/:id",
+            get(get_vector).delete(delete_vector),
+        )
         .route("/collections/:name/query", post(query_vectors))
         .with_state(state)
 }
@@ -53,9 +62,18 @@ async fn create_collection(
         IndexConfig::IvfSq8 { nlist, nprobe } => {
             guard.create_ivf_sq8_collection(req.name, req.dim, metric, nlist, nprobe)?
         }
-        IndexConfig::Hnsw { m, ef_construction, ef_search } => {
-            guard.create_hnsw_collection(req.name, req.dim, metric, m, ef_construction, ef_search)?
-        }
+        IndexConfig::Hnsw {
+            m,
+            ef_construction,
+            ef_search,
+        } => guard.create_hnsw_collection(
+            req.name,
+            req.dim,
+            metric,
+            m,
+            ef_construction,
+            ef_search,
+        )?,
     }
     Ok(StatusCode::CREATED)
 }
@@ -91,7 +109,10 @@ async fn insert_vector(
     Path(name): Path<String>,
     Json(req): Json<InsertRequest>,
 ) -> Result<StatusCode, ApiError> {
-    state.write().await.insert(&name, req.id, req.vector, req.payload)?;
+    state
+        .write()
+        .await
+        .insert(&name, req.id, req.vector, req.payload)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -103,8 +124,16 @@ async fn get_vector(
         let guard = state.read().await;
         let col = guard.get(&name)?;
         match col.get(id)? {
-            None => return Err(ApiError::NotFound(format!("vector {id} not found in '{name}'"))),
-            Some((vector, payload)) => VectorResponse { id, vector, payload },
+            None => {
+                return Err(ApiError::NotFound(format!(
+                    "vector {id} not found in '{name}'"
+                )))
+            }
+            Some((vector, payload)) => VectorResponse {
+                id,
+                vector,
+                payload,
+            },
         }
     };
     Ok(Json(resp))

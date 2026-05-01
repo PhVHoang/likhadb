@@ -111,7 +111,8 @@ mod tests {
     #[test]
     fn get_returns_vector_and_payload() {
         let mut c = make_collection();
-        c.insert(1, vec![1.0, 2.0, 3.0], Some(json!({"tag": "a"}))).unwrap();
+        c.insert(1, vec![1.0, 2.0, 3.0], Some(json!({"tag": "a"})))
+            .unwrap();
         let (vec, payload) = c.get(1).unwrap().unwrap();
         assert_eq!(vec, vec![1.0, 2.0, 3.0]);
         assert_eq!(payload.unwrap()["tag"], "a");
@@ -142,7 +143,8 @@ mod tests {
     #[test]
     fn get_batch_returns_mixed_some_and_none() {
         let mut c = make_collection();
-        c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"x": 1}))).unwrap();
+        c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"x": 1})))
+            .unwrap();
         c.insert(3, vec![3.0, 0.0, 0.0], None).unwrap();
         let results = c.get_batch(&[1, 2, 3]).unwrap();
         assert!(results[0].is_some());
