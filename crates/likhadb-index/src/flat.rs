@@ -21,14 +21,12 @@ use crate::traits::VectorIndex;
 pub(crate) fn simd_distance(metric: Metric, a: &[f32], b: &[f32]) -> f32 {
     match metric {
         Metric::Dot => {
-            let v = <f32 as SpatialSimilarity>::dot(a, b)
-                .unwrap_or_else(|| dot_product(a, b) as f64);
+            let v =
+                <f32 as SpatialSimilarity>::dot(a, b).unwrap_or_else(|| dot_product(a, b) as f64);
             -(v as f32)
         }
-        Metric::Cosine => {
-            <f32 as SpatialSimilarity>::cosine(a, b)
-                .unwrap_or_else(|| cosine_distance(a, b) as f64) as f32
-        }
+        Metric::Cosine => <f32 as SpatialSimilarity>::cosine(a, b)
+            .unwrap_or_else(|| cosine_distance(a, b) as f64) as f32,
         Metric::L2 => {
             let sq = <f32 as SpatialSimilarity>::sqeuclidean(a, b)
                 .unwrap_or_else(|| l2_distance(a, b).powi(2) as f64);
@@ -74,7 +72,6 @@ impl FlatIndex {
     fn position(&self, id: VecId) -> Option<usize> {
         self.ids.iter().position(|&eid| eid == id)
     }
-
 }
 
 impl VectorIndex for FlatIndex {
@@ -300,7 +297,7 @@ mod tests {
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let results = idx
-            .search(&query, 5, Some(&|id: VecId| id % 2 == 0))
+            .search(&query, 5, Some(&|id: VecId| id.is_multiple_of(2)))
             .unwrap();
         assert!(results.iter().all(|r| r.id % 2 == 0));
     }

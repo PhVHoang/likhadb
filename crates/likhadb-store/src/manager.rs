@@ -209,7 +209,11 @@ mod tests {
 
         // search top-5 near origin
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        let results = mgr.get("test").unwrap().search(&query, 5, None, false).unwrap();
+        let results = mgr
+            .get("test")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert_eq!(results.len(), 5);
 
         // results must be ordered ascending by score
@@ -232,7 +236,11 @@ mod tests {
         assert!(col.delete(1).unwrap());
 
         // re-search
-        let results2 = mgr.get("test").unwrap().search(&query, 5, None, false).unwrap();
+        let results2 = mgr
+            .get("test")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert_eq!(results2.len(), 5);
         let ids2: Vec<u64> = results2.iter().map(|r| r.id).collect();
         assert!(!ids2.contains(&0), "deleted id 0 should not appear");
@@ -267,7 +275,8 @@ mod tests {
     #[test]
     fn create_ivf_collection_duplicate_errors() {
         let mut mgr = CollectionManager::new();
-        mgr.create_ivf_collection("ivf", 4, Metric::L2, 4, 2).unwrap();
+        mgr.create_ivf_collection("ivf", 4, Metric::L2, 4, 2)
+            .unwrap();
         assert!(matches!(
             mgr.create_ivf_collection("ivf", 4, Metric::L2, 4, 2),
             Err(LikhaDbError::CollectionAlreadyExists(_))
@@ -296,7 +305,11 @@ mod tests {
         }
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        let results = mgr.get("ivf").unwrap().search(&query, 5, None, false).unwrap();
+        let results = mgr
+            .get("ivf")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert_eq!(results.len(), 5);
         for w in results.windows(2) {
             assert!(w[0].score <= w[1].score, "results not sorted");
@@ -305,7 +318,11 @@ mod tests {
         // Delete the nearest vector and verify it disappears.
         let nearest_id = results[0].id;
         mgr.get_mut("ivf").unwrap().delete(nearest_id).unwrap();
-        let results2 = mgr.get("ivf").unwrap().search(&query, 5, None, false).unwrap();
+        let results2 = mgr
+            .get("ivf")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert!(results2.iter().all(|r| r.id != nearest_id));
     }
 
@@ -322,7 +339,11 @@ mod tests {
         }
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        let results = mgr.get("ivf_sq8").unwrap().search(&query, 5, None, false).unwrap();
+        let results = mgr
+            .get("ivf_sq8")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert_eq!(results.len(), 5);
         for w in results.windows(2) {
             assert!(w[0].score <= w[1].score, "SQ8 results not sorted");
@@ -331,14 +352,19 @@ mod tests {
         // Delete the nearest vector and verify it disappears.
         let nearest_id = results[0].id;
         mgr.get_mut("ivf_sq8").unwrap().delete(nearest_id).unwrap();
-        let results2 = mgr.get("ivf_sq8").unwrap().search(&query, 5, None, false).unwrap();
+        let results2 = mgr
+            .get("ivf_sq8")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert!(results2.iter().all(|r| r.id != nearest_id));
     }
 
     #[test]
     fn create_ivf_sq8_collection_duplicate_errors() {
         let mut mgr = CollectionManager::new();
-        mgr.create_ivf_sq8_collection("sq8", 4, Metric::L2, 4, 2).unwrap();
+        mgr.create_ivf_sq8_collection("sq8", 4, Metric::L2, 4, 2)
+            .unwrap();
         assert!(matches!(
             mgr.create_ivf_sq8_collection("sq8", 4, Metric::L2, 4, 2),
             Err(LikhaDbError::CollectionAlreadyExists(_))
@@ -350,7 +376,8 @@ mod tests {
     #[test]
     fn create_hnsw_collection_duplicate_errors() {
         let mut mgr = CollectionManager::new();
-        mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10).unwrap();
+        mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10)
+            .unwrap();
         assert!(matches!(
             mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10),
             Err(LikhaDbError::CollectionAlreadyExists(_))
@@ -375,7 +402,8 @@ mod tests {
     #[test]
     fn hnsw_collection_end_to_end() {
         let mut mgr = CollectionManager::new();
-        mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10).unwrap();
+        mgr.create_hnsw_collection("hnsw", 4, Metric::L2, 4, 8, 10)
+            .unwrap();
         let col = mgr.get_mut("hnsw").unwrap();
 
         for i in 0..50u64 {
@@ -383,7 +411,11 @@ mod tests {
         }
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
-        let results = mgr.get("hnsw").unwrap().search(&query, 5, None, false).unwrap();
+        let results = mgr
+            .get("hnsw")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert_eq!(results.len(), 5);
         for w in results.windows(2) {
             assert!(w[0].score <= w[1].score, "results not sorted");
@@ -392,7 +424,11 @@ mod tests {
         // Delete the nearest vector and verify it disappears.
         let nearest_id = results[0].id;
         mgr.get_mut("hnsw").unwrap().delete(nearest_id).unwrap();
-        let results2 = mgr.get("hnsw").unwrap().search(&query, 5, None, false).unwrap();
+        let results2 = mgr
+            .get("hnsw")
+            .unwrap()
+            .search(&query, 5, None, false)
+            .unwrap();
         assert!(results2.iter().all(|r| r.id != nearest_id));
     }
 
@@ -401,9 +437,14 @@ mod tests {
         let mut mgr = CollectionManager::new();
         mgr.create_collection("p", 4, Metric::L2).unwrap();
         let col = mgr.get_mut("p").unwrap();
-        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"}))).unwrap();
+        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"})))
+            .unwrap();
 
-        let results = mgr.get("p").unwrap().search(&[0.0; 4], 1, None, false).unwrap();
+        let results = mgr
+            .get("p")
+            .unwrap()
+            .search(&[0.0; 4], 1, None, false)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].payload.is_none());
     }
@@ -413,11 +454,17 @@ mod tests {
         let mut mgr = CollectionManager::new();
         mgr.create_collection("p", 4, Metric::L2).unwrap();
         let col = mgr.get_mut("p").unwrap();
-        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"}))).unwrap();
-        col.insert(1, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"tag": "b"}))).unwrap();
+        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"})))
+            .unwrap();
+        col.insert(1, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"tag": "b"})))
+            .unwrap();
         col.insert(2, vec![2.0, 0.0, 0.0, 0.0], None).unwrap();
 
-        let results = mgr.get("p").unwrap().search(&[0.0; 4], 3, None, true).unwrap();
+        let results = mgr
+            .get("p")
+            .unwrap()
+            .search(&[0.0; 4], 3, None, true)
+            .unwrap();
         assert_eq!(results.len(), 3);
 
         let r0 = results.iter().find(|r| r.id == 0).unwrap();
@@ -437,11 +484,20 @@ mod tests {
         let col = mgr.get_mut("pf").unwrap();
         for i in 0..10u64 {
             let tag = if i % 2 == 0 { "even" } else { "odd" };
-            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], Some(json!({"parity": tag}))).unwrap();
+            col.insert(
+                i,
+                vec![i as f32, 0.0, 0.0, 0.0],
+                Some(json!({"parity": tag})),
+            )
+            .unwrap();
         }
 
         let pred = json!({"field": "parity", "op": "eq", "value": "even"});
-        let results = mgr.get("pf").unwrap().search(&[0.0; 4], 5, Some(&pred), true).unwrap();
+        let results = mgr
+            .get("pf")
+            .unwrap()
+            .search(&[0.0; 4], 5, Some(&pred), true)
+            .unwrap();
         assert!(!results.is_empty());
         for r in &results {
             let p = r.payload.as_ref().unwrap();

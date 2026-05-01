@@ -19,10 +19,12 @@ async fn main() {
         likhadb_server::spawn_checkpoint_task(state.clone(), Duration::from_secs(300));
 
     let addr = "0.0.0.0:8080";
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
-        eprintln!("error: failed to bind to {addr}: {e}");
-        std::process::exit(1);
-    });
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("error: failed to bind to {addr}: {e}");
+            std::process::exit(1);
+        });
 
     eprintln!("likhadb listening on {}", listener.local_addr().unwrap());
 

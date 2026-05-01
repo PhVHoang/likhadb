@@ -8,13 +8,15 @@ use likhadb_core::VecId;
 /// (e.g. bincode) can handle it — bincode does not support `deserialize_any`.
 #[cfg(feature = "persist")]
 mod json_value_as_string {
-    use std::collections::HashMap;
     use likhadb_core::VecId;
-    use serde::{Deserializer, Serializer, Deserialize};
+    use serde::{Deserialize, Deserializer, Serializer};
     use serde_json::Value;
+    use std::collections::HashMap;
 
     pub fn serialize<S>(map: &HashMap<VecId, Value>, s: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         use serde::Serialize;
         let encoded: HashMap<VecId, String> =
             map.iter().map(|(k, v)| (*k, v.to_string())).collect();
@@ -22,9 +24,12 @@ mod json_value_as_string {
     }
 
     pub fn deserialize<'de, D>(d: D) -> Result<HashMap<VecId, Value>, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         let encoded: HashMap<VecId, String> = HashMap::deserialize(d)?;
-        encoded.into_iter()
+        encoded
+            .into_iter()
             .map(|(k, s)| {
                 let v: Value = serde_json::from_str(&s).map_err(serde::de::Error::custom)?;
                 Ok((k, v))
@@ -102,15 +107,11 @@ fn eval_predicate(payload: &Value, pred: &Value) -> bool {
         "and" => pred
             .get("filters")
             .and_then(|v| v.as_array())
-            .is_some_and(|filters| {
-                filters.iter().all(|f| eval_predicate(payload, f))
-            }),
+            .is_some_and(|filters| filters.iter().all(|f| eval_predicate(payload, f))),
         "or" => pred
             .get("filters")
             .and_then(|v| v.as_array())
-            .is_some_and(|filters| {
-                filters.iter().any(|f| eval_predicate(payload, f))
-            }),
+            .is_some_and(|filters| filters.iter().any(|f| eval_predicate(payload, f))),
         leaf_op => {
             let field = match pred.get("field").and_then(|v| v.as_str()) {
                 Some(f) => f,
@@ -230,7 +231,9 @@ mod tests {
     #[test]
     fn filter_gt() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"gt","field":"price","value":10.0}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"gt","field":"price","value":10.0})))
+            .unwrap();
         assert!(!f(1));
         assert!(f(2));
         assert!(f(3));
@@ -240,7 +243,9 @@ mod tests {
     #[test]
     fn filter_lt() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"lt","field":"price","value":10.0}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"lt","field":"price","value":10.0})))
+            .unwrap();
         assert!(f(1));
         assert!(!f(2));
         assert!(!f(3));
@@ -249,26 +254,34 @@ mod tests {
     #[test]
     fn filter_gte() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"gte","field":"price","value":15.0}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"gte","field":"price","value":15.0})))
+            .unwrap();
         assert!(!f(1));
-        assert!(f(2));  // 15.0 >= 15.0
+        assert!(f(2)); // 15.0 >= 15.0
         assert!(f(3));
     }
 
     #[test]
     fn filter_lte() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"lte","field":"price","value":15.0}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"lte","field":"price","value":15.0})))
+            .unwrap();
         assert!(f(1));
-        assert!(f(2));  // 15.0 <= 15.0
+        assert!(f(2)); // 15.0 <= 15.0
         assert!(!f(3));
     }
 
     #[test]
     fn filter_in() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"in","field":"tag","value":["sports","tech"]}))).unwrap();
-        assert!(f(1));  // "sports" in list
+        let f = s
+            .make_filter(Some(
+                &json!({"op":"in","field":"tag","value":["sports","tech"]}),
+            ))
+            .unwrap();
+        assert!(f(1)); // "sports" in list
         assert!(!f(2)); // "news" not in list
         assert!(f(3));
         assert!(!f(4)); // field missing
@@ -277,7 +290,9 @@ mod tests {
     #[test]
     fn filter_in_missing_value_key_returns_false() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"in","field":"tag"}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"in","field":"tag"})))
+            .unwrap();
         assert!(!f(1));
     }
 
@@ -294,7 +309,7 @@ mod tests {
         let f = s.make_filter(Some(&pred)).unwrap();
         assert!(!f(1)); // sports but price=5 not > 10
         assert!(!f(2)); // price > 10 but tag=news
-        assert!(f(3));  // sports AND price=25 > 10
+        assert!(f(3)); // sports AND price=25 > 10
     }
 
     #[test]
@@ -309,8 +324,8 @@ mod tests {
         });
         let f = s.make_filter(Some(&pred)).unwrap();
         assert!(!f(1)); // neither
-        assert!(f(2));  // tag=news
-        assert!(f(3));  // price=25 > 20
+        assert!(f(2)); // tag=news
+        assert!(f(3)); // price=25 > 20
     }
 
     #[test]
@@ -328,8 +343,8 @@ mod tests {
             ]
         });
         let f = s.make_filter(Some(&pred)).unwrap();
-        assert!(f(1));  // sports, price=5  ✓
-        assert!(f(2));  // news,   price=15 ✓
+        assert!(f(1)); // sports, price=5  ✓
+        assert!(f(2)); // news,   price=15 ✓
         assert!(!f(3)); // sports, price=25 ✗
         assert!(!f(4)); // no tag field
     }
@@ -337,14 +352,18 @@ mod tests {
     #[test]
     fn filter_numeric_missing_field_returns_false() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"gt","field":"price","value":1.0}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"gt","field":"price","value":1.0})))
+            .unwrap();
         assert!(!f(4)); // id=4 has no "price" field
     }
 
     #[test]
     fn filter_unknown_op_returns_false() {
         let s = make_store();
-        let f = s.make_filter(Some(&json!({"op":"regex","field":"tag","value":".*"}))).unwrap();
+        let f = s
+            .make_filter(Some(&json!({"op":"regex","field":"tag","value":".*"})))
+            .unwrap();
         assert!(!f(1));
     }
 }

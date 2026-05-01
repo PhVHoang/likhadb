@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use likhadb_core::Metric;
+use likhadb_index::HnswIndex;
 use likhadb_index::{IvfIndex, VectorIndex};
 use likhadb_store::CollectionManager;
-use likhadb_index::HnswIndex;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 fn random_vec(rng: &mut StdRng, dim: usize) -> Vec<f32> {
@@ -18,7 +18,11 @@ struct ScalarIndex {
 
 impl ScalarIndex {
     fn new(dim: usize) -> Self {
-        Self { dim, ids: Vec::new(), data: Vec::new() }
+        Self {
+            dim,
+            ids: Vec::new(),
+            data: Vec::new(),
+        }
     }
 
     fn insert(&mut self, id: u64, v: &[f32]) {
@@ -72,7 +76,8 @@ fn bench_simd(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usize) {
     let mut rng = StdRng::seed_from_u64(42);
 
     let mut mgr = CollectionManager::new();
-    mgr.create_collection("bench_simd", dim, Metric::L2).unwrap();
+    mgr.create_collection("bench_simd", dim, Metric::L2)
+        .unwrap();
     let col = mgr.get_mut("bench_simd").unwrap();
     for i in 0..n as u64 {
         col.insert(i, random_vec(&mut rng, dim), None).unwrap();
@@ -100,7 +105,8 @@ fn bench_simd_rayon(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usi
     let mut rng = StdRng::seed_from_u64(42);
 
     let mut mgr = CollectionManager::new();
-    mgr.create_collection("bench_rayon", dim, Metric::L2).unwrap();
+    mgr.create_collection("bench_rayon", dim, Metric::L2)
+        .unwrap();
     let col = mgr.get_mut("bench_rayon").unwrap();
     for i in 0..n as u64 {
         col.insert(i, random_vec(&mut rng, dim), None).unwrap();
@@ -119,41 +125,33 @@ fn bench_simd_rayon(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usi
 /// Measures k-means training latency in isolation.
 /// Setup builds an IvfIndex with nlist-1 vectors already inserted; the
 /// measured call inserts the nth vector, which triggers training.
-fn bench_ivf_training(
-    c: &mut Criterion,
-    label: &str,
-    n: usize,
-    dim: usize,
-    nlist: usize,
-) {
+fn bench_ivf_training(c: &mut Criterion, label: &str, n: usize, dim: usize, nlist: usize) {
     let mut rng = StdRng::seed_from_u64(42);
     // Pre-generate all vectors so setup overhead is deterministic.
     let vecs: Vec<Vec<f32>> = (0..n).map(|_| random_vec(&mut rng, dim)).collect();
 
-    c.bench_with_input(
-        BenchmarkId::new("ivf_training", label),
-        &vecs,
-        |b, vecs| {
-            b.iter_batched(
-                || {
-                    // Setup: insert nlist-1 vectors into a fresh index.
-                    let mut idx =
-                        IvfIndex::new(dim, Metric::L2, nlist, nlist / 4).unwrap();
-                    for i in 0..(nlist - 1) {
-                        idx.insert(i as u64, vecs[i].clone()).unwrap();
-                    }
-                    idx
-                },
-                |mut idx| {
-                    // Measured: the nlist-th insert triggers k-means.
-                    idx.insert(black_box((nlist - 1) as u64), black_box(vecs[nlist - 1].clone()))
-                        .unwrap();
-                    black_box(idx);
-                },
-                BatchSize::SmallInput,
-            );
-        },
-    );
+    c.bench_with_input(BenchmarkId::new("ivf_training", label), &vecs, |b, vecs| {
+        b.iter_batched(
+            || {
+                // Setup: insert nlist-1 vectors into a fresh index.
+                let mut idx = IvfIndex::new(dim, Metric::L2, nlist, nlist / 4).unwrap();
+                for (i, vec) in vecs.iter().enumerate().take(nlist - 1) {
+                    idx.insert(i as u64, vec.clone()).unwrap();
+                }
+                idx
+            },
+            |mut idx| {
+                // Measured: the nlist-th insert triggers k-means.
+                idx.insert(
+                    black_box((nlist - 1) as u64),
+                    black_box(vecs[nlist - 1].clone()),
+                )
+                .unwrap();
+                black_box(idx);
+            },
+            BatchSize::SmallInput,
+        );
+    });
 }
 
 /// Measures post-training query latency for an IVF-SQ8 collection at a given nprobe.
@@ -221,28 +219,30 @@ fn bench_ivf_search(
 }
 
 /// Measures cumulative HNSW build time: inserts n vectors one by one, timed as a whole.
-fn bench_hnsw_build(c: &mut Criterion, label: &str, n: usize, dim: usize, m: usize, ef_construction: usize) {
+fn bench_hnsw_build(
+    c: &mut Criterion,
+    label: &str,
+    n: usize,
+    dim: usize,
+    m: usize,
+    ef_construction: usize,
+) {
     let mut rng = StdRng::seed_from_u64(42);
     let vecs: Vec<Vec<f32>> = (0..n).map(|_| random_vec(&mut rng, dim)).collect();
 
-    c.bench_with_input(
-        BenchmarkId::new("hnsw_build", label),
-        &vecs,
-        |b, vecs| {
-            b.iter_batched(
-                || (),
-                |()| {
-                    let mut idx =
-                        HnswIndex::new(dim, Metric::L2, m, ef_construction, 50).unwrap();
-                    for (i, v) in vecs.iter().enumerate() {
-                        idx.insert(i as u64, v.clone()).unwrap();
-                    }
-                    black_box(idx);
-                },
-                BatchSize::SmallInput,
-            );
-        },
-    );
+    c.bench_with_input(BenchmarkId::new("hnsw_build", label), &vecs, |b, vecs| {
+        b.iter_batched(
+            || (),
+            |()| {
+                let mut idx = HnswIndex::new(dim, Metric::L2, m, ef_construction, 50).unwrap();
+                for (i, v) in vecs.iter().enumerate() {
+                    idx.insert(i as u64, v.clone()).unwrap();
+                }
+                black_box(idx);
+            },
+            BatchSize::SmallInput,
+        );
+    });
 }
 
 /// Measures post-build HNSW query latency at a given ef_search.
@@ -291,7 +291,7 @@ fn benchmarks(c: &mut Criterion) {
 
     // IVF training cost
     for &(label, n, dim, nlist) in &[
-        ("10k_d384_nl256",  10_000usize, 384usize, 256usize),
+        ("10k_d384_nl256", 10_000usize, 384usize, 256usize),
         ("100k_d384_nl1024", 100_000, 384, 1024),
     ] {
         bench_ivf_training(c, label, n, dim, nlist);
@@ -299,20 +299,20 @@ fn benchmarks(c: &mut Criterion) {
 
     // IVF search at varying nprobe
     for &(label, n, dim, nlist, nprobe) in &[
-        ("10k_d384_nl256",    10_000usize, 384usize, 256usize,   8usize),
-        ("10k_d384_nl256",    10_000, 384, 256,  32),
-        ("100k_d384_nl1024", 100_000, 384, 1024,  16),
-        ("100k_d384_nl1024", 100_000, 384, 1024,  64),
+        ("10k_d384_nl256", 10_000usize, 384usize, 256usize, 8usize),
+        ("10k_d384_nl256", 10_000, 384, 256, 32),
+        ("100k_d384_nl1024", 100_000, 384, 1024, 16),
+        ("100k_d384_nl1024", 100_000, 384, 1024, 64),
     ] {
         bench_ivf_search(c, label, n, dim, nlist, nprobe);
     }
 
     // IVF-SQ8 search at varying nprobe (same matrix for direct comparison)
     for &(label, n, dim, nlist, nprobe) in &[
-        ("10k_d384_nl256",    10_000usize, 384usize, 256usize,   8usize),
-        ("10k_d384_nl256",    10_000, 384, 256,  32),
-        ("100k_d384_nl1024", 100_000, 384, 1024,  16),
-        ("100k_d384_nl1024", 100_000, 384, 1024,  64),
+        ("10k_d384_nl256", 10_000usize, 384usize, 256usize, 8usize),
+        ("10k_d384_nl256", 10_000, 384, 256, 32),
+        ("100k_d384_nl1024", 100_000, 384, 1024, 16),
+        ("100k_d384_nl1024", 100_000, 384, 1024, 64),
     ] {
         bench_ivf_sq8_search(c, label, n, dim, nlist, nprobe);
     }
@@ -327,9 +327,9 @@ fn benchmarks(c: &mut Criterion) {
 
     // HNSW search at varying ef_search
     for &(label, n, dim, ef_search) in &[
-        ("10k_d384",  10_000usize, 384usize,  50usize),
-        ("10k_d384",  10_000, 384, 100),
-        ("100k_d384", 100_000, 384,  50),
+        ("10k_d384", 10_000usize, 384usize, 50usize),
+        ("10k_d384", 10_000, 384, 100),
+        ("100k_d384", 100_000, 384, 50),
         ("100k_d384", 100_000, 384, 100),
     ] {
         bench_hnsw_search(c, label, n, dim, 16, 200, ef_search);

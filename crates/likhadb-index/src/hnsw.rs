@@ -607,7 +607,7 @@ mod tests {
         let mut idx = make_hnsw(4, 16, 20);
         insert_n(&mut idx, 30);
         let res = idx
-            .search(&[0.0_f32; 4], 10, Some(&|id: VecId| id % 2 == 0))
+            .search(&[0.0_f32; 4], 10, Some(&|id: VecId| id.is_multiple_of(2)))
             .unwrap();
         assert!(!res.is_empty());
         assert!(res.iter().all(|r| r.id % 2 == 0), "filter not applied");

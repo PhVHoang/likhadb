@@ -6,39 +6,49 @@ use serde_json::Value;
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum IndexKind {
     Flat,
-    Ivf    { nlist: usize, nprobe: usize },
-    IvfSq8 { nlist: usize, nprobe: usize },
-    Hnsw   { m: usize, ef_construction: usize, ef_search: usize },
+    Ivf {
+        nlist: usize,
+        nprobe: usize,
+    },
+    IvfSq8 {
+        nlist: usize,
+        nprobe: usize,
+    },
+    Hnsw {
+        m: usize,
+        ef_construction: usize,
+        ef_search: usize,
+    },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum WalOp {
     CreateCollection {
-        name:   String,
-        dim:    usize,
+        name: String,
+        dim: usize,
         metric: Metric,
-        kind:   IndexKind,
+        kind: IndexKind,
     },
     DropCollection {
         name: String,
     },
     Insert {
         collection: String,
-        id:         VecId,
-        vector:     Vec<f32>,
+        id: VecId,
+        vector: Vec<f32>,
         #[serde(with = "opt_json_value_as_string")]
-        payload:    Option<Value>,
+        payload: Option<Value>,
     },
     Delete {
         collection: String,
-        id:         VecId,
+        id: VecId,
     },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WalEntry {
     pub lsn: u64,
-    pub op:  WalOp,
+    pub op: WalOp,
 }
 
 /// Serialize `Option<serde_json::Value>` as `Option<String>` so bincode (which
@@ -66,8 +76,7 @@ mod opt_json_value_as_string {
         match s {
             None => Ok(None),
             Some(raw) => {
-                let v: Value =
-                    serde_json::from_str(&raw).map_err(serde::de::Error::custom)?;
+                let v: Value = serde_json::from_str(&raw).map_err(serde::de::Error::custom)?;
                 Ok(Some(v))
             }
         }
