@@ -297,7 +297,7 @@ mod tests {
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let results = idx
-            .search(&query, 5, Some(&|id: VecId| id % 2 == 0))
+            .search(&query, 5, Some(&|id: VecId| id.is_multiple_of(2)))
             .unwrap();
         assert!(results.iter().all(|r| r.id % 2 == 0));
     }

@@ -135,8 +135,8 @@ fn bench_ivf_training(c: &mut Criterion, label: &str, n: usize, dim: usize, nlis
             || {
                 // Setup: insert nlist-1 vectors into a fresh index.
                 let mut idx = IvfIndex::new(dim, Metric::L2, nlist, nlist / 4).unwrap();
-                for i in 0..(nlist - 1) {
-                    idx.insert(i as u64, vecs[i].clone()).unwrap();
+                for (i, vec) in vecs.iter().enumerate().take(nlist - 1) {
+                    idx.insert(i as u64, vec.clone()).unwrap();
                 }
                 idx
             },

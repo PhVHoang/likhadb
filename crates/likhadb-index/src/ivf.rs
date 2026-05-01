@@ -878,7 +878,7 @@ mod tests {
         insert_n(&mut idx, 3);
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let res = idx
-            .search(&query, 3, Some(&|id: VecId| id % 2 == 0))
+            .search(&query, 3, Some(&|id: VecId| id.is_multiple_of(2)))
             .unwrap();
         assert!(res.iter().all(|r| r.id % 2 == 0));
     }
@@ -889,7 +889,7 @@ mod tests {
         insert_n(&mut idx, 12);
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let res = idx
-            .search(&query, 6, Some(&|id: VecId| id % 2 == 0))
+            .search(&query, 6, Some(&|id: VecId| id.is_multiple_of(2)))
             .unwrap();
         assert!(!res.is_empty());
         assert!(res.iter().all(|r| r.id % 2 == 0));
@@ -1170,7 +1170,7 @@ mod tests {
         let mut idx = make_ivf_sq8(4, 4);
         insert_n_sq8(&mut idx, 12);
         let res = idx
-            .search(&[0.0_f32; 4], 6, Some(&|id: VecId| id % 2 == 0))
+            .search(&[0.0_f32; 4], 6, Some(&|id: VecId| id.is_multiple_of(2)))
             .unwrap();
         assert!(!res.is_empty());
         assert!(
