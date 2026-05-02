@@ -57,8 +57,6 @@ pub fn checksum(data: &[u8]) -> u32 {
 /// `Err` items so callers can distinguish them from a clean end-of-log.
 pub struct FrameIter<R> {
     reader: R,
-    /// Frames successfully read so far — used to distinguish tail vs mid-log.
-    count: u64,
     done: bool,
 }
 
@@ -66,13 +64,17 @@ impl<R: Read> FrameIter<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            count: 0,
             done: false,
         }
     }
+}
 
-    pub fn frames_read(&self) -> u64 {
-        self.count
+impl<R: std::io::BufRead> FrameIter<R> {
+    /// Returns `true` if there are unread bytes remaining in the stream.
+    /// Used to distinguish a crash-truncated tail frame (EOF follows the
+    /// corrupt frame) from genuine mid-log corruption (more data follows).
+    pub fn has_remaining_bytes(&mut self) -> io::Result<bool> {
+        Ok(!self.reader.fill_buf()?.is_empty())
     }
 }
 
@@ -89,10 +91,7 @@ impl<R: Read> Iterator for FrameIter<R> {
                 self.done = true;
                 None
             }
-            Ok(Some(frame)) => {
-                self.count += 1;
-                Some(Ok(frame))
-            }
+            Ok(Some(frame)) => Some(Ok(frame)),
             Err(e) => {
                 self.done = true;
                 Some(Err(e))
