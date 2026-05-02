@@ -139,8 +139,12 @@ impl WalManager {
 
             let computed = checksum(&payload);
             if computed != stored_crc {
-                // Tail corruption: stop replay (last write was mid-frame crash).
-                if iter.frames_read() <= 1 {
+                // If no bytes follow this frame it is a crash-truncated tail
+                // (the last write never completed); discard it and stop replay.
+                // If bytes remain after it, the corruption is mid-log and must
+                // be surfaced as a hard error.
+                let more = iter.has_remaining_bytes().map_err(PersistError::Io)?;
+                if !more {
                     break;
                 }
                 return Err(PersistError::Crc {

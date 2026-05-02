@@ -246,6 +246,43 @@ fn mid_log_corruption_is_error() {
     );
 }
 
+// ── Mid-log corruption on the second frame returns an error ───────────────
+//
+// Regression: the original guard used `frames_read() <= 1`, which silently
+// swallowed a corrupt second frame even when valid frames followed it.
+// The correct signal is whether bytes remain after the corrupt frame — if they
+// do, it is genuine mid-log corruption and must be a hard error.
+
+#[test]
+fn second_frame_mid_log_corruption_is_error() {
+    let dir = tmp_dir("second_frame_mid_log_corrupt");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        // Third frame — ensures the corrupt second frame has data after it.
+        mgr.insert("col", 2, vec![2.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+    }
+
+    // Corrupt the second frame (the insert id=1 entry). Frame 3 follows it,
+    // so this is mid-log corruption, not a truncated tail.
+    let wal_path = dir.join("wal.log");
+    let mut data = std::fs::read(&wal_path).unwrap();
+    let first_frame_payload_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+    let second_frame_start = 4 + 4 + first_frame_payload_len;
+    data[second_frame_start + 8 + 1] ^= 0xFF;
+    std::fs::write(&wal_path, &data).unwrap();
+
+    let result = WalManager::open(&dir);
+    assert!(
+        matches!(result, Err(PersistError::Crc { .. })),
+        "second-frame mid-log corruption must surface as PersistError::Crc"
+    );
+}
+
 // ── All index types survive restart ───────────────────────────────────────
 
 #[test]
