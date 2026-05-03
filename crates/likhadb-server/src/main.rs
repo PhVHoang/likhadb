@@ -36,7 +36,10 @@ async fn main() {
             std::process::exit(1);
         });
 
-    eprintln!("likhadb REST listening on {}", listener.local_addr().unwrap());
+    eprintln!(
+        "likhadb REST listening on {}",
+        listener.local_addr().unwrap()
+    );
     eprintln!("likhadb gRPC listening on {grpc_addr}");
 
     let grpc_state = state.clone();
@@ -49,9 +52,8 @@ async fn main() {
             .await
     });
 
-    let rest_handle = tokio::spawn(async move {
-        axum::serve(listener, likhadb_server::router(state)).await
-    });
+    let rest_handle =
+        tokio::spawn(async move { axum::serve(listener, likhadb_server::router(state)).await });
 
     tokio::select! {
         res = grpc_handle => eprintln!("error: gRPC server exited: {res:?}"),
