@@ -1,310 +1,24 @@
 # likhadb
 
 A progressively-layered, in-memory vector database written in Rust.
-Tier 1 is an exact brute-force search MVP. Tier 2 adds an IVF approximate index.
-Tier 3 (HNSW) slots in behind the same `VectorIndex` trait without touching the public API or store layer.
 
 <p align="center">
   <img src="images/vecdb_tier_overview.svg" alt="Tier overview — Tier 1 through Tier 4 roadmap" width="720" />
 </p>
 
-## Overview
-
 likhadb stores float vectors alongside arbitrary JSON payloads, searches them with
 k-nearest-neighbour queries, and filters candidates using a simple JSON predicate language.
 The internal design is a clean stack of crates with one extension seam — the `VectorIndex`
-trait — so index implementations (FlatIndex, IvfIndex, future HNSW) slot in without changing
-the store or API layers.
+trait — so index implementations slot in without changing the store or API layers.
 
-### MVP internals
-
-<p align="center">
-  <img src="images/vecdb_mvp_internals.svg" alt="MVP internal architecture — CollectionManager → Collection → FlatIndex + MetaStore → distance kernels" width="720" />
-</p>
-
-## Query flows
-
-### Read path (all index types)
-
-In the server context, every search enters through `AppState::read`, which acquires a
-shared `RwLock` guard. Multiple handlers can hold read guards concurrently. The guard is
-dropped before returning results — `Vec<ScoredResult>` is fully owned, so no reference
-escapes the lock scope.
-
-```mermaid
-flowchart TD
-    U(["Handler / caller"]) -->|"state.read().await"| LOCK["AppState::read\nacquire RwLockReadGuard&lt;WalManager&gt;\n(shared — N concurrent readers allowed)"]
-    LOCK --> WAL_RD["WalManager::get — read-through\n(no WAL involvement)"]
-    WAL_RD --> CM[CollectionManager]
-    CM --> C[Collection::search]
-    C --> MF["MetaStore::make_filter(predicate)\nOption&lt;Box&lt;dyn Fn(VecId) → bool&gt;&gt;"]
-    MF --> IDX{"index.search(query, k, filter)"}
-    IDX -->|FlatIndex| FL[FlatIndex]
-    IDX -->|IvfIndex| IV[IvfIndex]
-    IDX -->|HnswIndex| HN[HnswIndex]
-    FL & IV & HN --> RES["Vec&lt;ScoredResult&gt; { id, score, payload: None }"]
-    RES --> PL{"include_payload?"}
-    PL -->|yes| META["MetaStore::get(id)\nattach payload to each result"]
-    PL -->|no| DROP
-    META --> DROP["drop guard — RwLock read slot released\n(results are owned — no ref into guard)"]
-    DROP --> OUT(["Vec&lt;ScoredResult&gt; returned to caller"])
-```
+For a deep dive into crate structure, index algorithms, query flows, and persistence
+design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
-
-### Write path (WalManager via AppState)
-
-Every mutation acquires an exclusive write lock, durably logs the operation to `wal.log`,
-then applies it in memory. The guard is released only after the in-memory apply succeeds.
-
-```mermaid
-flowchart TD
-    U(["Handler / caller"]) -->|"state.write().await"| LOCK["AppState::write\nacquire RwLockWriteGuard&lt;WalManager&gt;\n(exclusive — blocks all readers and writers)"]
-    LOCK --> BUILD["build WalEntry { lsn, op }\nlsn = self.next_lsn"]
-    BUILD --> SER["bincode::serialize(WalEntry)"]
-    SER --> FRAME["write_frame to BufWriter\n[len: u32][crc32: u32][payload]"]
-    FRAME --> FLUSH["BufWriter::flush — ensure bytes reach OS"]
-    FLUSH --> LSN["next_lsn += 1"]
-    LSN --> APPLY["apply op to inner CollectionManager\n(get_mut / create_collection / drop_collection)"]
-    APPLY --> DROP["drop guard — RwLock write slot released"]
-    DROP --> DONE(["Ok returned to caller"])
-
-    FLUSH -->|"crash here"| CRASH["frame never committed\nnext open: FrameIter stops at truncated tail"]
-```
-
----
-
-### Recovery on startup (`WalManager::open`)
-
-```mermaid
-flowchart TD
-    START([WalManager::open]) --> SNAP{snapshot.bin\nexists?}
-
-    SNAP -->|yes| LOAD["CollectionManager::load(snapshot.bin)\nread last_lsn from ManagerSnapshot"]
-    SNAP -->|no| EMPTY["inner = CollectionManager::new()\nsnapshot_lsn = 0"]
-
-    LOAD & EMPTY --> WAL_Q{wal.log\nexists?}
-
-    WAL_Q -->|no| OPEN_WAL
-    WAL_Q -->|yes| ITER["FrameIter over wal.log\nfor each frame:"]
-    ITER --> CRC{"CRC OK?"}
-    CRC -->|"no — tail frame"| STOP_ITER["stop iteration\n(partial crash write — safe to discard)"]
-    CRC -->|"no — mid-log"| ERR([Err PersistError::Crc])
-    CRC -->|yes| DESER["bincode::deserialize WalEntry"]
-    DESER --> SKIP{"entry.lsn\n≤ snapshot_lsn?"}
-    SKIP -->|yes| ITER
-    SKIP -->|no| REPLAY["apply_op(&mut inner, entry.op)\nCreateCollection is idempotent"]
-    REPLAY --> ITER
-
-    STOP_ITER --> OPEN_WAL["open wal.log in append mode"]
-    OPEN_WAL --> READY([WalManager ready])
-```
-
----
-
-### Checkpoint
-
-Checkpoint bounds recovery time by collapsing all replayed WAL entries into a fresh snapshot, then truncating the log.
-In the server, `spawn_checkpoint_task` drives this on a configurable interval by acquiring an exclusive write lock.
-On graceful shutdown the task is aborted and `checkpoint()` is called once directly.
-
-```mermaid
-flowchart TD
-    TASK(["spawn_checkpoint_task\n(background tokio task)"])
-    SHUT(["graceful shutdown"])
-
-    TASK -->|"interval elapsed\nstate.write().await"| LOCK
-    SHUT -->|"abort task, then\nstate.write().await"| LOCK
-
-    LOCK["AppState::write\nacquire RwLockWriteGuard&lt;WalManager&gt;\n(exclusive)"]
-    LOCK --> SNAP["serialize inner CollectionManager\nto snapshot.bin.tmp\n(with last_lsn embedded)"]
-    SNAP --> RENAME["rename snapshot.bin.tmp → snapshot.bin\n(atomic on POSIX — crash-safe)"]
-    RENAME --> TRUNC["truncate wal.log to zero bytes"]
-    TRUNC --> REOPEN["reopen wal.log in append mode\n(self.wal = fresh WalWriter)"]
-    REOPEN --> DROP["drop guard — RwLock write slot released"]
-    DROP --> DONE(["Ok — next open replays 0 WAL entries"])
-```
-
----
-
-### FlatIndex — exact brute-force
-
-Every vector is scored. Filter is applied **before** distance computation; excluded vectors never reach the SIMD kernel.
-
-```mermaid
-flowchart TD
-    A[FlatIndex::search] --> B{"k == 0 or\nindex empty?"}
-    B -->|yes| EMPTY([return empty])
-    B -->|no| PAR["Rayon: ids.par_iter().zip(data.par_chunks_exact(dim))"]
-    PAR --> FOLD["fold — per-thread local top-k max-heap"]
-    FOLD --> FIL{"filter(id) passes?"}
-    FIL -->|no| SKIP[skip]
-    FIL -->|yes| SIMD["simd_distance(metric, query, chunk)\nL2 → simsimd sqeuclidean + √\nCosine → simsimd cosine\nDot → −simsimd dot\nscalar fallback if simsimd returns None"]
-    SIMD --> HEAP["update local top-k heap"]
-    HEAP --> FOLD
-    FOLD --> RED["reduce — merge per-thread heaps → global top-k"]
-    RED --> SORT["sort ascending by score · truncate to k"]
-    SORT --> OUT([Vec&lt;ScoredResult&gt;])
-```
-
----
-
-### IvfIndex — approximate search with k-means
-
-Two paths depending on whether k-means training has fired. Filter is applied **before** distance computation on both paths.
-
-```mermaid
-flowchart TD
-    A[IvfIndex::search] --> TR{"trained?\n(staging_ids.len() >= nlist)"}
-
-    TR -->|"no — staging path\n(brute-force fallback)"| ST["linear scan over staging_ids\nsequential · no rayon"]
-    ST --> STSIMD["filter(id)? → simd_distance(query, chunk)\nmaintain top-k heap"]
-    STSIMD --> STSORT["sort · truncate to k"]
-    STSORT --> OUT([Vec&lt;ScoredResult&gt;])
-
-    TR -->|yes — trained path| C1["Step 1: find nprobe nearest centroids\nsequential scan · simd_distance(query, centroid_c) for all nlist centroids"]
-    C1 --> C2["sort centroid distances\ntake top nprobe cluster IDs"]
-    C2 --> PAR["Step 2: probe.par_iter().fold().reduce()"]
-
-    PAR --> QT{"quantize = SQ8?"}
-
-    QT -->|"yes — SQ8\n4× smaller posting lists"| SQ["for each (id, u8 codes) in lists[c]:\n  filter(id)?\n  decode: val = min + code × scale  (thread-local buffer)\n  simd_distance(query, decoded)\n  → update local heap"]
-    QT -->|"no — f32"| F32["for each (id, f32 chunk) in lists[c]:\n  filter(id)?\n  simd_distance(query, chunk)\n  → update local heap"]
-
-    SQ & F32 --> RED["reduce — merge per-thread heaps → global top-k"]
-    RED --> SORT2["sort ascending · truncate to k"]
-    SORT2 --> OUT
-```
-
----
-
-### HnswIndex — approximate graph search
-
-Two-phase traversal: greedy descent through upper layers to find a good entry point, then beam search at layer 0. Filter is applied **after** candidates are collected.
-
-```mermaid
-flowchart TD
-    A[HnswIndex::search] --> B{"k == 0 or\nno entry point?"}
-    B -->|yes| EMPTY([return empty])
-    B -->|no| PH1["Phase 1 — greedy descent\nfor lc = max_level down to 1  (ef = 1 per layer)"]
-
-    PH1 --> SL1["search_layer(query, &amp;[ep], ef=1, lc)\nexpand neighbours · simd_distance per neighbour"]
-    SL1 --> CL["closest_live(result_heap)\nskip tombstoned nodes"]
-    CL --> EP["update entry point to closest live node"]
-    EP -->|next layer| PH1
-    PH1 -->|"lc = 0 reached"| PH2["Phase 2 — beam search at layer 0\nef = max(ef_search, k)"]
-
-    PH2 --> INIT["W = max-heap ≤ ef  (farthest at top)\nC = min-heap candidates  (nearest at top)\nvisited = HashSet"]
-    INIT --> LOOP{"C empty?"}
-    LOOP -->|no| POP["pop nearest (c_dist, c_idx) from C"]
-    POP --> PRUNE{"c_dist > worst in W?"}
-    PRUNE -->|yes — early exit| DONE
-    PRUNE -->|no| NBR["iterate neighbours of c_idx at layer 0"]
-    NBR --> VIS{"already visited?"}
-    VIS -->|yes| LOOP
-    VIS -->|no| DIST["mark visited\nsimd_distance(query, nbr)"]
-    DIST --> UPD{"d < worst_W\nor W.len() < ef?"}
-    UPD -->|no| LOOP
-    UPD -->|yes| PUSH["push to C and W\nif W.len() > ef: evict worst"]
-    PUSH --> LOOP
-    LOOP -->|C empty| DONE["W holds ≤ ef closest candidates"]
-
-    DONE --> COL["Phase 3 — collect results\nfor each (dist, idx) in W:"]
-    COL --> FIL{"deleted(id)?\nor filter(id) fails?"}
-    FIL -->|yes| SKIP[skip]
-    FIL -->|no| RES[add ScoredResult]
-    RES --> SORT["sort ascending · truncate to k"]
-    SORT --> OUT([Vec&lt;ScoredResult&gt;])
-```
-
----
-
-### Comparison
-
-| | FlatIndex | IvfIndex (trained) | HnswIndex |
-|---|---|---|---|
-| **Search complexity** | O(n) | O(nprobe × avg\_list\_size) | O(log n) |
-| **Parallelism** | Rayon over all n vectors | Rayon over nprobe clusters | None — greedy traversal is sequential |
-| **Filter timing** | Before distance (pre-exclusion) | Before distance (pre-exclusion) | After distance (post-candidate collection) |
-| **Deleted vectors** | Physically removed (swap-remove) | Physically removed from posting list | Tombstone — excluded from results, kept as graph stepping-stones |
-| **Approximate?** | No | Yes (exact when nprobe = nlist) | Yes |
-
----
-
-## Workspace layout
-
-```
-likhadb/
-├── crates/
-│   ├── likhadb-core/    # Primitives: VecId, Vector, ScoredResult, Metric, distance kernels
-│   ├── likhadb-index/   # VectorIndex trait + FlatIndex + IvfIndex + HnswIndex
-│   ├── likhadb-store/   # Collection, CollectionManager, MetaStore (JSON filtering)
-│   ├── likhadb-persist/ # Snapshot + WAL persistence — PersistExt (save/load) + WalManager
-│   ├── likhadb-server/  # Shared concurrent state — AppState (Arc<RwLock<WalManager>>) + checkpoint task
-│   └── likhadb-bench/   # Criterion benchmarks
-└── images/
-```
-
-| Crate | Role |
-|---|---|
-| `likhadb-core` | Shared primitives and error types — no index logic |
-| `likhadb-index` | `VectorIndex` trait (the extension seam) + `FlatIndex` + `IvfIndex` + `HnswIndex` |
-| `likhadb-store` | `Collection` wraps an index + metadata; `CollectionManager` names them |
-| `likhadb-persist` | Snapshot (`PersistExt`) + Write-Ahead Log (`WalManager`) — durable mutations, crash recovery, checkpoint |
-| `likhadb-server` | `AppState` — `Arc<RwLock<WalManager>>` with shared read / exclusive write access; `spawn_checkpoint_task` |
-| `likhadb-bench` | Criterion benchmarks for 1 k / 10 k / 100 k vectors |
-
-## Features
-
-### Tier 1 — Exact brute-force (`FlatIndex`)
-
-- **Exact k-NN search** via brute-force over all stored vectors
-- **Three distance metrics** — Cosine, Dot product, L2 (Euclidean)
-- **JSON metadata payloads** stored alongside each vector
-- **Metadata filtering** — `eq`, `ne`, `exists` predicates evaluated at query time
-- **Serde-ready result types** — `ScoredResult` serialises/deserialises out of the box
-- **SIMD-accelerated search** via `simsimd` (NEON on M2/aarch64, AVX-512 on x86) with scalar fallback
-- **Parallel search** via `rayon` — each thread builds a local top-k heap; heaps are merged at the end
-- **No unsafe code**, no `unwrap()` in library paths
-
-### Tier 3 — Graph-based approximate search (`HnswIndex`)
-
-- **HNSW (Hierarchical Navigable Small World)** — multi-layer proximity graph; greedy beam search from highest layer down
-- **Sub-millisecond recall@10** on 100k vectors — faster than IVF at equivalent recall, with higher memory footprint
-- **Configurable build/query tradeoff** via `m` (graph density), `ef_construction` (build quality), and `ef_search` (query recall)
-- **Tombstone deletes** — deleted nodes remain as traversal stepping-stones; excluded from results
-- **Same API** — drop-in replacement via `create_hnsw_collection`
-- **All three metrics** — Cosine, Dot, L2
-
-### Tier 2 — Approximate search (`IvfIndex`)
-
-- **IVF (Inverted File Index)** — vectors clustered into `nlist` buckets via k-means
-- **Configurable recall/speed tradeoff** via `nprobe` (buckets searched per query)
-- **Automatic training** — k-means fires once `nlist` vectors have been inserted; searches before that fall back to brute-force
-- **Exact recall mode** — set `nprobe == nlist` to search all buckets (equivalent to brute-force)
-- **Same API** — drop-in replacement for `FlatIndex` via `create_ivf_collection`
-- **SQ8 scalar quantization** — opt-in 4× memory reduction via `create_ivf_sq8_collection`; posting lists store `u8` codes instead of `f32`; distances use asymmetric computation (query stays `f32`)
-
-### Tier 4 B1 — Snapshot persistence (`likhadb-persist`)
-
-- **Point-in-time snapshots** — serialize the full `CollectionManager` state (all collections, all index types, all payloads) to a single binary file
-- **Fast binary format** via [`bincode`](https://github.com/bincode-org/bincode) — raw `f32` slabs, no base64 inflation
-- **All three index types supported** — `FlatIndex`, `IvfIndex` (including SQ8), `HnswIndex` round-trip correctly including graph structure, tombstones, and training state
-- **Safe deserialization** — 16 GiB size cap prevents corrupt length fields from triggering multi-terabyte allocation attempts
-- **Extension trait API** — import `PersistExt` and call `mgr.save(path)` / `CollectionManager::load(path)`
-
-### Tier 4 B2 — Write-Ahead Log (`WalManager`)
-
-- **Crash durability** — every mutation (insert, delete, create/drop collection) is flushed to `wal.log` before being applied in memory; uncommitted tail entries are silently discarded on recovery
-- **Framed log format** — each record carries a 32-bit CRC checksum; mid-log corruption surfaces as `PersistError::Crc`, tail truncation is treated as a clean end-of-log
-- **LSN-based recovery** — snapshot embeds `last_lsn`; on restart only entries newer than the snapshot are replayed, making recovery sub-second for reasonable WAL sizes
-- **Atomic checkpoint** — `WalManager::checkpoint()` writes a new snapshot to `snapshot.bin.tmp`, renames it atomically, then truncates `wal.log`; a crash during checkpoint leaves the old snapshot intact
-- **All four DDL/DML operations logged** — `CreateCollection`, `DropCollection`, `Insert`, `Delete`; replay of `CreateCollection` is idempotent
-- **All index types supported** — `FlatIndex`, `IvfIndex`, `IvfSq8`, `HnswIndex` all survive WAL round-trips
 
 ## Getting started
 
-**Prerequisites:** Rust stable toolchain, macOS aarch64 (M-series) recommended.
+**Prerequisites:** Rust stable toolchain.
 
 ```sh
 # Run all tests
@@ -317,101 +31,56 @@ cargo bench -p likhadb-bench
 cargo clippy --workspace -- -D warnings
 ```
 
+---
+
+## Index types
+
+| Index | Type | When to use |
+|---|---|---|
+| `FlatIndex` | Exact brute-force | Small datasets or when precision matters most |
+| `IvfIndex` | Approximate (IVF k-means) | Large datasets, latency-sensitive workloads |
+| `IvfIndex` + SQ8 | Approximate + quantized | Memory-constrained deployments (4× smaller) |
+| `HnswIndex` | Approximate (graph) | Sub-millisecond recall on large datasets |
+
+---
+
 ## Quick usage
 
-### Tier 1 — Exact search (FlatIndex)
+### Exact search (FlatIndex)
 
 ```rust
 use likhadb_core::Metric;
 use likhadb_store::CollectionManager;
 use serde_json::json;
 
-fn main() {
-    let mut mgr = CollectionManager::new();
+let mut mgr = CollectionManager::new();
+mgr.create_collection("documents", 384, Metric::Cosine).unwrap();
 
-    // Create a collection: 384-dimensional vectors, cosine distance
-    mgr.create_collection("documents", 384, Metric::Cosine).unwrap();
+let col = mgr.get_mut("documents").unwrap();
+col.insert(1, vec![0.1; 384], Some(json!({"category": "news"}))).unwrap();
+col.insert(2, vec![0.9; 384], Some(json!({"category": "sports"}))).unwrap();
+col.insert(3, vec![0.5; 384], Some(json!({"category": "news"}))).unwrap();
 
-    let col = mgr.get_mut("documents").unwrap();
-
-    // Insert vectors with JSON payloads
-    col.insert(1, vec![0.1; 384], Some(json!({"category": "news"}))).unwrap();
-    col.insert(2, vec![0.9; 384], Some(json!({"category": "sports"}))).unwrap();
-    col.insert(3, vec![0.5; 384], Some(json!({"category": "news"}))).unwrap();
-
-    // Search top-5, filtered to "news" category only
-    let predicate = json!({"field": "category", "op": "eq", "value": "news"});
-    let query = vec![0.15; 384];
-    let results = col.search(&query, 5, Some(&predicate)).unwrap();
-
-    for r in &results {
-        println!("id={} score={:.4}", r.id, r.score);
-    }
-}
+let predicate = json!({"field": "category", "op": "eq", "value": "news"});
+let results = col.search(&vec![0.15; 384], 5, Some(&predicate), false).unwrap();
 ```
 
-### Tier 3 — Graph-based approximate search (HnswIndex)
+### Approximate search (IvfIndex)
 
 ```rust
 use likhadb_core::Metric;
 use likhadb_store::CollectionManager;
 
-fn main() {
-    let mut mgr = CollectionManager::new();
+let mut mgr = CollectionManager::new();
+// nlist=1024: k-means clusters (also the training trigger threshold)
+// nprobe=16:  clusters searched per query — higher = better recall, slower queries
+mgr.create_ivf_collection("docs", 384, Metric::L2, 1024, 16).unwrap();
 
-    // m=16: graph density — more edges → better recall, more memory
-    // ef_construction=200: beam width during build — higher → better quality graph, slower inserts
-    // ef_search=50: beam width during queries — higher → better recall, higher latency
-    mgr.create_hnsw_collection("docs", 384, Metric::Cosine, 16, 200, 50).unwrap();
-
-    let col = mgr.get_mut("docs").unwrap();
-
-    for i in 0..100_000u64 {
-        col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
-    }
-
-    let query = vec![0.5; 384];
-    let results = col.search(&query, 10, None).unwrap();
-
-    for r in &results {
-        println!("id={} score={:.4}", r.id, r.score);
-    }
+let col = mgr.get_mut("docs").unwrap();
+for i in 0..100_000u64 {
+    col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
 }
-```
-
-**m / ef_construction / ef_search guidance:**
-- `m`: typically 8–32. Higher `m` increases memory (`O(m × N)` edges) and improves recall. 16 is a good default.
-- `ef_construction`: must be ≥ `m`. Higher values improve graph quality at build time. 200 is a good default.
-- `ef_search`: must be ≥ k. Increase to trade latency for recall. Start at 50, tune upward.
-
-### Tier 2 — Approximate search (IvfIndex)
-
-```rust
-use likhadb_core::Metric;
-use likhadb_store::CollectionManager;
-
-fn main() {
-    let mut mgr = CollectionManager::new();
-
-    // nlist=1024: number of k-means clusters (also the training trigger threshold)
-    // nprobe=16:  clusters searched per query — higher = better recall, slower queries
-    mgr.create_ivf_collection("docs", 384, Metric::L2, 1024, 16).unwrap();
-
-    let col = mgr.get_mut("docs").unwrap();
-
-    // Insert vectors — training fires automatically when the 1024th vector is added
-    for i in 0..100_000u64 {
-        col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
-    }
-
-    // Search — only probes 16 of 1024 clusters (~10× faster than brute-force)
-    let query = vec![0.5; 384];
-    let results = col.search(&query, 10, None).unwrap();
-
-    for r in &results {
-        println!("id={} score={:.4}", r.id, r.score);
-    }
-}
+let results = col.search(&vec![0.5; 384], 10, None, false).unwrap();
 ```
 
 **nlist / nprobe guidance:**
@@ -419,39 +88,39 @@ fn main() {
 - `nprobe`: start at `nlist / 64` for speed, increase toward `nlist / 8` for higher recall.
 - `nprobe == nlist` gives exact recall identical to `FlatIndex`.
 
-### Tier 2 with SQ8 — Approximate search + 4× memory reduction
+### Approximate search + 4× memory reduction (IvfIndex + SQ8)
+
+```rust
+// Same parameters as IvfIndex — just swap the constructor.
+// After training, each vector is stored as dim × u8 instead of dim × f32.
+mgr.create_ivf_sq8_collection("docs_sq8", 384, Metric::L2, 1024, 16).unwrap();
+```
+
+Memory: 100 k × d384 goes from ~146 MB (f32) to ~36 MB (u8). Distance computation
+uses asymmetric evaluation — the query stays in f32 while stored codes are decoded
+on-the-fly.
+
+### Graph-based approximate search (HnswIndex)
 
 ```rust
 use likhadb_core::Metric;
 use likhadb_store::CollectionManager;
 
-fn main() {
-    let mut mgr = CollectionManager::new();
+let mut mgr = CollectionManager::new();
+// m=16: graph density · ef_construction=200: build quality · ef_search=50: query recall
+mgr.create_hnsw_collection("docs", 384, Metric::Cosine, 16, 200, 50).unwrap();
 
-    // Same parameters as IvfIndex — just swap create_ivf_collection for create_ivf_sq8_collection.
-    // After training, each vector is stored as dim × u8 instead of dim × f32 (4× smaller).
-    mgr.create_ivf_sq8_collection("docs_sq8", 384, Metric::L2, 1024, 16).unwrap();
-
-    let col = mgr.get_mut("docs_sq8").unwrap();
-
-    for i in 0..100_000u64 {
-        col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
-    }
-
-    let query = vec![0.5; 384];
-    let results = col.search(&query, 10, None).unwrap();
-
-    for r in &results {
-        println!("id={} score={:.4}", r.id, r.score);
-    }
+let col = mgr.get_mut("docs").unwrap();
+for i in 0..100_000u64 {
+    col.insert(i, vec![i as f32 / 100_000.0; 384], None).unwrap();
 }
+let results = col.search(&vec![0.5; 384], 10, None, false).unwrap();
 ```
 
-**SQ8 details:**
-- Per-dimension min/max ranges are learned from the training (staging) data when k-means fires.
-- Distance at query time uses asymmetric computation: query stays `f32`, stored codes decoded on-the-fly.
-- Memory: 100k × d384 goes from ~146 MB (f32) to ~36 MB (u8).
-- Recall: typically >97% at d384 for normalized embeddings. Recall is lower for post-training inserts whose values fall outside the training distribution's range.
+**m / ef_construction / ef_search guidance:**
+- `m`: typically 8–32. Higher `m` increases memory and improves recall. 16 is a good default.
+- `ef_construction`: must be ≥ `m`. 200 is a good default.
+- `ef_search`: must be ≥ 1. Increase to trade latency for recall. Start at 50.
 
 ### Snapshot persistence
 
@@ -460,59 +129,48 @@ use std::path::Path;
 use likhadb_persist::PersistExt;
 use likhadb_store::CollectionManager;
 
-// --- Save ---
-let mut mgr = CollectionManager::new();
-// ... create collections, insert vectors ...
 mgr.save(Path::new("snapshot.bin")).unwrap();
 
-// --- Load on next startup ---
+// On next startup — all collections, index state, and payloads are restored.
 let mgr = CollectionManager::load(Path::new("snapshot.bin")).unwrap();
-// All collections, index state, and payloads are restored.
-// Searches work immediately — no retraining required.
 ```
 
-All three index types (`FlatIndex`, `IvfIndex`/SQ8, `HnswIndex`) survive the round-trip, including HNSW graph edges, IVF training state, and JSON payloads.
-
-### WAL (Write-Ahead Log)
+### Write-Ahead Log
 
 ```rust
 use std::path::Path;
 use likhadb_core::Metric;
 use likhadb_persist::WalManager;
 
-// Open (or create) a data directory.
-// On first run: creates empty state.
 // On restart after a crash: loads last snapshot then replays uncommitted WAL entries.
 let mut wal = WalManager::open(Path::new("/data/mydb")).unwrap();
 
-// All write operations are logged to wal.log before being applied.
 wal.create_collection("docs", 384, Metric::Cosine).unwrap();
 wal.insert("docs", 1, vec![0.1; 384], Some(serde_json::json!({"title": "hello"}))).unwrap();
-wal.insert("docs", 2, vec![0.9; 384], None).unwrap();
 wal.delete("docs", 1).unwrap();
 
-// Reads delegate straight through — no WAL overhead.
 let results = wal.get("docs").unwrap()
     .search(&[0.5; 384], 10, None, false).unwrap();
 
-// Checkpoint: write a fresh snapshot and truncate wal.log.
-// Call on graceful shutdown or periodically to bound recovery time.
+// Collapse WAL into a fresh snapshot and truncate wal.log.
 wal.checkpoint().unwrap();
 ```
 
-After a crash (before `checkpoint`), reopening the same directory replays all logged mutations automatically. No data loss for committed writes.
+---
 
 ## Distance metrics
 
 | Metric | Formula | Best for |
 |---|---|---|
-| `Metric::L2` | `sqrt(Σ(aᵢ - bᵢ)²)` | General-purpose, unnormalised embeddings |
-| `Metric::Cosine` | `1 - dot(a,b) / (‖a‖·‖b‖)` | Semantic similarity, text embeddings |
-| `Metric::Dot` | `-Σ(aᵢ·bᵢ)` (negated so lower = better) | Pre-normalised vectors, recommendation |
+| `Metric::L2` | `sqrt(Σ(aᵢ − bᵢ)²)` | General-purpose, unnormalised embeddings |
+| `Metric::Cosine` | `1 − dot(a,b) / (‖a‖·‖b‖)` | Semantic similarity, text embeddings |
+| `Metric::Dot` | `−Σ(aᵢ·bᵢ)` (negated so lower = better) | Pre-normalised vectors, recommendation |
+
+---
 
 ## Benchmark results
 
-Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON on aarch64).
+Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON).
 Rayon uses the default thread pool (all available cores).
 
 ### FlatIndex (exact search)
@@ -532,7 +190,7 @@ Rayon uses the default thread pool (all available cores).
 | 100 000 | 384 | 1024 | 16 | 309 ms  | 268 µs   | **10×**  |
 | 100 000 | 384 | 1024 | 64 | 309 ms  | 512 µs   | **5.2×** |
 
-### IvfIndex + SQ8 scalar quantization (approximate search, 4× smaller posting lists)
+### IvfIndex + SQ8 (approximate, 4× smaller posting lists)
 
 | Vectors | Dim | nlist | nprobe | Query latency | vs IvfIndex (f32) |
 |---|---|---|---|---|---|
@@ -542,11 +200,9 @@ Rayon uses the default thread pool (all available cores).
 | 100 000 | 384 | 1024 | 64 | 1.82 ms | 0.28× |
 
 **Notes:**
-- Training is a one-time amortised cost per collection. At 100 k × d384 with nlist=1024 it takes ~309 ms (parallel k-means via rayon fold+reduce).
 - `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **10× speedup** over exact SIMD+rayon search.
-- `nprobe=64` improved to **5.2×** (from 4.3×) — rayon fold+reduce over probed lists scales better at higher nprobe.
-- SQ8 reduces posting-list memory 4× but trades off query speed due to asymmetric decode overhead; best suited for memory-constrained deployments.
-- At 1 k vectors, rayon's dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
+- SQ8 reduces posting-list memory 4× but is slower per query due to asymmetric decode overhead; best for memory-constrained deployments.
+- At 1 k vectors, Rayon dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
 
 ---
 
@@ -555,14 +211,14 @@ Rayon uses the default thread pool (all available cores).
 | Tier | Status | Description |
 |---|---|---|
 | **Tier 1** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
-| **Tier 2** | Done | IVF (Inverted File Index) — approximate k-NN with k-means clustering |
-| **Tier 3** | Done | HNSW (Hierarchical Navigable Small World graphs) |
-| **Tier 4 — B1** | Done | Snapshot persistence — `CollectionManager::save` / `load` via `likhadb-persist` |
-| **Tier 4 — B2** | Done | WAL crash durability — `WalManager` logs every mutation, replays on restart, atomic checkpoint |
+| **Tier 2** | Done | IVF approximate k-NN with k-means clustering + SQ8 quantization |
+| **Tier 3** | Done | HNSW graph-based approximate search |
+| **Tier 4 — B1** | Done | Snapshot persistence |
+| **Tier 4 — B2** | Done | WAL crash durability — logs every mutation, replays on restart, atomic checkpoint |
 | **Tier 4 — C1** | Done | Concurrent shared state — `AppState` (`Arc<RwLock<WalManager>>`), background checkpoint task |
-| **Tier 4 — D+** | Future | HTTP + gRPC API, observability |
+| **Tier 4 — D+** | Done | HTTP REST + gRPC API |
 
-All future tiers implement `VectorIndex` — the store layer is unchanged.
+---
 
 ## License
 
