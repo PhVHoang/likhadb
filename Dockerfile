@@ -3,7 +3,7 @@
 # ── Stage 1: install cargo-chef on a slim Rust image ─────────────────────────
 FROM rust:1.88-slim AS chef
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /build
@@ -35,6 +35,7 @@ RUN mkdir /data
 VOLUME ["/data"]
 
 EXPOSE 8080
+EXPOSE 50051
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1

@@ -1,0 +1,101 @@
+syntax = "proto3";
+package likhadb;
+
+service LikhaDb {
+  rpc Health           (HealthRequest)          returns (HealthResponse);
+  rpc ListCollections  (ListCollectionsRequest)  returns (ListCollectionsResponse);
+  rpc CreateCollection (CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc GetCollection    (GetCollectionRequest)    returns (CollectionInfo);
+  rpc DropCollection   (DropCollectionRequest)   returns (DropCollectionResponse);
+  rpc InsertVector     (InsertVectorRequest)     returns (InsertVectorResponse);
+  rpc GetVector        (GetVectorRequest)        returns (VectorRecord);
+  rpc DeleteVector     (DeleteVectorRequest)     returns (DeleteVectorResponse);
+  rpc Query            (QueryRequest)            returns (QueryResponse);
+  // Server-streaming variant — results arrive as an async stream.
+  rpc QueryStream      (QueryRequest)            returns (stream ScoredResult);
+}
+
+// ── Health ───────────────────────────────────────────────────────────────────
+
+message HealthRequest  {}
+message HealthResponse { string status = 1; }
+
+// ── Collections ──────────────────────────────────────────────────────────────
+
+message ListCollectionsRequest  {}
+message ListCollectionsResponse { repeated string collections = 1; }
+
+message FlatConfig    {}
+message IvfConfig     { uint32 nlist = 1; uint32 nprobe = 2; }
+message IvfSq8Config  { uint32 nlist = 1; uint32 nprobe = 2; }
+message HnswConfig    { uint32 m = 1; uint32 ef_construction = 2; uint32 ef_search = 3; }
+
+message CreateCollectionRequest {
+  string name   = 1;
+  uint32 dim    = 2;
+  string metric = 3;
+  oneof index_config {
+    FlatConfig   flat    = 4;
+    IvfConfig    ivf     = 5;
+    IvfSq8Config ivf_sq8 = 6;
+    HnswConfig   hnsw    = 7;
+  }
+}
+message CreateCollectionResponse {}
+
+message GetCollectionRequest { string name = 1; }
+
+message CollectionInfo {
+  string name       = 1;
+  uint32 dim        = 2;
+  string metric     = 3;
+  uint64 count      = 4;
+  string index_type = 5;
+}
+
+message DropCollectionRequest  { string name = 1; }
+message DropCollectionResponse {}
+
+// ── Vectors ───────────────────────────────────────────────────────────────────
+
+message InsertVectorRequest {
+  string         collection   = 1;
+  uint64         id           = 2;
+  repeated float vector       = 3;
+  // JSON-encoded payload object; omit or send empty bytes for no payload.
+  bytes          payload_json = 4;
+}
+message InsertVectorResponse {}
+
+message GetVectorRequest {
+  string collection = 1;
+  uint64 id         = 2;
+}
+
+message VectorRecord {
+  uint64         id           = 1;
+  repeated float vector       = 2;
+  bytes          payload_json = 3;
+}
+
+message DeleteVectorRequest  { string collection = 1; uint64 id = 2; }
+message DeleteVectorResponse {}
+
+// ── Query ─────────────────────────────────────────────────────────────────────
+
+message QueryRequest {
+  string         collection      = 1;
+  repeated float vector          = 2;
+  uint32         k               = 3;
+  // JSON-encoded filter object (see REST API); omit or send empty bytes for no filter.
+  bytes          filter_json     = 4;
+  bool           include_payload = 5;
+}
+
+message ScoredResult {
+  uint64 id           = 1;
+  float  score        = 2;
+  bytes  payload_json = 3;
+}
+
+message QueryResponse { repeated ScoredResult results = 1; }
