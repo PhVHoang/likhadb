@@ -4,17 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-likhadb-core    = { path = "../likhadb-core" }
-likhadb-store   = { path = "../likhadb-store" }
-likhadb-persist = { path = "../likhadb-persist" }
-axum            = "0.7"
-tokio           = { version = "1", features = ["full"] }
-serde           = { workspace = true }
-serde_json      = { workspace = true }
-tonic           = "0.12"
-prost           = "0.13"
-bytes           = "1"
-tokio-stream    = "0.1"
+likhadb-core                 = { path = "../likhadb-core" }
+likhadb-store                = { path = "../likhadb-store" }
+likhadb-persist              = { path = "../likhadb-persist" }
+axum                         = "0.7"
+tokio                        = { version = "1", features = ["full"] }
+serde                        = { workspace = true }
+serde_json                   = { workspace = true }
+tonic                        = "0.12"
+prost                        = "0.13"
+bytes                        = "1"
+tokio-stream                 = "0.1"
+metrics                      = "0.23"
+metrics-exporter-prometheus  = "0.15"
+tracing                      = "0.1"
+tracing-subscriber           = { version = "0.3", features = ["env-filter", "json"] }
 
 [build-dependencies]
 tonic-build = "0.12"

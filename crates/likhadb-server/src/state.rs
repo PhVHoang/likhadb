@@ -53,7 +53,7 @@ pub fn spawn_checkpoint_task(state: AppState, interval: Duration) -> JoinHandle<
             ticker.tick().await;
             let mut guard = state.write().await;
             if let Err(e) = guard.checkpoint() {
-                eprintln!("checkpoint error: {e}");
+                tracing::error!(error = %e, "checkpoint failed");
             }
         }
     })
