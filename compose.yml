@@ -13,5 +13,15 @@ services:
       start_period: 5s
       retries: 3
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - likhadb
+    restart: unless-stopped
+
 volumes:
   likhadb-data:
