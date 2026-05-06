@@ -3,15 +3,27 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let prometheus = likhadb_server::install_prometheus();
+
     let data_dir = std::env::args()
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("data"));
 
     let wal = likhadb_persist::WalManager::open(&data_dir).unwrap_or_else(|e| {
-        eprintln!("error: failed to open '{}': {e}", data_dir.display());
+        tracing::error!(dir = %data_dir.display(), error = %e, "failed to open data directory");
         std::process::exit(1);
     });
+
+    likhadb_server::seed_collection_gauges(&wal);
 
     let state = likhadb_server::AppState::new(wal);
 
@@ -23,7 +35,7 @@ async fn main() {
         .unwrap_or_else(|_| "[::]:50051".into())
         .parse()
         .unwrap_or_else(|e| {
-            eprintln!("error: invalid GRPC_ADDR: {e}");
+            tracing::error!(error = %e, "invalid GRPC_ADDR");
             std::process::exit(1);
         });
 
@@ -32,15 +44,15 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&rest_addr)
         .await
         .unwrap_or_else(|e| {
-            eprintln!("error: failed to bind to {rest_addr}: {e}");
+            tracing::error!(addr = %rest_addr, error = %e, "failed to bind");
             std::process::exit(1);
         });
 
-    eprintln!(
-        "likhadb REST listening on {}",
-        listener.local_addr().unwrap()
+    tracing::info!(
+        addr = %listener.local_addr().unwrap(),
+        "likhadb REST listening"
     );
-    eprintln!("likhadb gRPC listening on {grpc_addr}");
+    tracing::info!(addr = %grpc_addr, "likhadb gRPC listening");
 
     let grpc_state = state.clone();
     let grpc_handle = tokio::spawn(async move {
@@ -52,12 +64,13 @@ async fn main() {
             .await
     });
 
-    let rest_handle =
-        tokio::spawn(async move { axum::serve(listener, likhadb_server::router(state)).await });
+    let rest_handle = tokio::spawn(async move {
+        axum::serve(listener, likhadb_server::router(state, prometheus)).await
+    });
 
     tokio::select! {
-        res = grpc_handle => eprintln!("error: gRPC server exited: {res:?}"),
-        res = rest_handle => eprintln!("error: REST server exited: {res:?}"),
+        res = grpc_handle => tracing::error!(?res, "gRPC server exited"),
+        res = rest_handle => tracing::error!(?res, "REST server exited"),
     }
     std::process::exit(1);
 }

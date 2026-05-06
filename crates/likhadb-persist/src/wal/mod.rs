@@ -35,8 +35,12 @@ impl WalWriter {
         let payload = bincode_opts()
             .serialize(entry)
             .map_err(PersistError::Encode)?;
+        // Frame layout: 4-byte length prefix + 4-byte CRC + payload
+        let frame_bytes = 8u64 + payload.len() as u64;
         write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
-        self.file.flush().map_err(PersistError::Io)
+        self.file.flush().map_err(PersistError::Io)?;
+        metrics::counter!("likhadb_wal_bytes_written_total").increment(frame_bytes);
+        Ok(())
     }
 
     fn truncate(path: &Path) -> std::io::Result<()> {
@@ -173,6 +177,7 @@ impl WalManager {
     where
         F: FnOnce(&mut CollectionManager) -> likhadb_core::Result<()>,
     {
+        let _span = tracing::debug_span!("wal_append", lsn = self.next_lsn).entered();
         let entry = WalEntry {
             lsn: self.next_lsn,
             op,

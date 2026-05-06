@@ -1,10 +1,13 @@
+use std::time::Instant;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
 
 use crate::{
@@ -16,9 +19,10 @@ use crate::{
     },
 };
 
-pub fn router(state: AppState) -> Router {
+pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics_endpoint))
         .route(
             "/collections",
             get(list_collections).post(create_collection),
@@ -33,11 +37,16 @@ pub fn router(state: AppState) -> Router {
             get(get_vector).delete(delete_vector),
         )
         .route("/collections/:name/query", post(query_vectors))
+        .layer(Extension(prometheus))
         .with_state(state)
 }
 
 async fn health() -> impl IntoResponse {
     Json(json!({"status": "ok"}))
+}
+
+async fn metrics_endpoint(Extension(handle): Extension<PrometheusHandle>) -> impl IntoResponse {
+    handle.render()
 }
 
 async fn list_collections(State(state): State<AppState>) -> impl IntoResponse {
@@ -104,15 +113,27 @@ async fn drop_collection(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[tracing::instrument(skip(state, req), fields(collection = %name))]
 async fn insert_vector(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<InsertRequest>,
 ) -> Result<StatusCode, ApiError> {
-    state
-        .write()
-        .await
-        .insert(&name, req.id, req.vector, req.payload)?;
+    let start = Instant::now();
+    let (count, index_type) = {
+        let mut guard = state.write().await;
+        guard.insert(&name, req.id, req.vector, req.payload)?;
+        let col = guard.get(&name).map_err(ApiError::from)?;
+        (col.len(), col.index_type().to_string())
+    };
+    metrics::histogram!("likhadb_insert_duration_seconds", "collection" => name.clone())
+        .record(start.elapsed().as_secs_f64());
+    metrics::gauge!(
+        "likhadb_collection_vectors_total",
+        "collection" => name,
+        "index_type" => index_type
+    )
+    .set(count as f64);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -143,19 +164,40 @@ async fn delete_vector(
     State(state): State<AppState>,
     Path((name, id)): Path<(String, u64)>,
 ) -> Result<StatusCode, ApiError> {
-    state.write().await.delete(&name, id)?;
+    let (count, index_type) = {
+        let mut guard = state.write().await;
+        guard.delete(&name, id)?;
+        let col = guard.get(&name).map_err(ApiError::from)?;
+        (col.len(), col.index_type().to_string())
+    };
+    metrics::gauge!(
+        "likhadb_collection_vectors_total",
+        "collection" => name,
+        "index_type" => index_type
+    )
+    .set(count as f64);
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[tracing::instrument(skip(state, req), fields(collection = %name, k = req.k))]
 async fn query_vectors(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let results = {
+    let start = Instant::now();
+    let (results, index_type) = {
         let guard = state.read().await;
         let col = guard.get(&name)?;
-        col.search(&req.vector, req.k, req.filter.as_ref(), req.include_payload)?
+        let index_type = col.index_type().to_string();
+        let results = col.search(&req.vector, req.k, req.filter.as_ref(), req.include_payload)?;
+        (results, index_type)
     };
+    metrics::histogram!(
+        "likhadb_search_duration_seconds",
+        "collection" => name,
+        "index_type" => index_type
+    )
+    .record(start.elapsed().as_secs_f64());
     Ok(Json(QueryResponse { results }))
 }
