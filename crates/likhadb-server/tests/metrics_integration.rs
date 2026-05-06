@@ -35,7 +35,12 @@ async fn metrics_endpoint_is_reachable() {
     let (app, _dir) = build_app();
 
     let res = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -83,7 +88,12 @@ async fn metrics_endpoint_contains_expected_metric_names() {
 
     // Scrape /metrics and verify all four instrumented names appear.
     let res = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -126,7 +136,12 @@ async fn metrics_histogram_uses_custom_buckets() {
         .unwrap();
 
     let res = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let text = body_text(res).await;
