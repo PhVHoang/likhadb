@@ -14,15 +14,18 @@ the next begins.
 | Approx k-NN (`IvfIndex`, IVF+SQ8) | Done | `crates/likhadb-index/src/ivf.rs` |
 | Approx k-NN (`HnswIndex`) | Done | `crates/likhadb-index/src/hnsw.rs` |
 | JSON payload storage | Done | `crates/likhadb-store/src/meta.rs` |
-| Metadata filtering (`eq`, `ne`, `exists`) | Partial | `meta.rs:57-68` |
+| Metadata filtering (`eq`, `ne`, `exists`, `gt`, `lt`, `in`, `and`, `or`) | Done | `crates/likhadb-store/src/meta.rs` |
 | In-process Rust API | Done | `crates/likhadb-store/src/manager.rs` |
 | Serde-ready types | Done | `crates/likhadb-core/src/types.rs` |
-| Persistence | **None** | — |
-| HTTP / gRPC API | **None** | — |
-| Concurrent access | **None** | — |
-| Payload in search results | **Missing** | `ScoredResult` lacks `payload` field |
+| Payload in search results | Done | `crates/likhadb-core/src/types.rs` |
 | Vector retrieval by ID | Done | `crates/likhadb-store/src/collection.rs` |
-| Rich filtering | Done | `crates/likhadb-store/src/meta.rs` |
+| Snapshot persistence | Done | `crates/likhadb-persist/src/snapshot.rs` |
+| Write-Ahead Log (WAL) | Done | `crates/likhadb-persist/src/wal.rs` |
+| Concurrent access (RwLock) | Done | `crates/likhadb-server/src/state.rs` |
+| REST API (axum) | Done | `crates/likhadb-server/` |
+| gRPC API (tonic) | Done | `crates/likhadb-server/` |
+| Prometheus metrics | Done | `crates/likhadb-server/` |
+| Structured tracing | Done | `crates/likhadb-server/` |
 | Full-text search | **None** | — |
 | Lakehouse I/O (Parquet) | **None** | — |
 | Vector transforms | **None** | — |
@@ -30,208 +33,53 @@ the next begins.
 
 ---
 
-## Tier A — Foundation (library improvements, no new crates)
+## Tier A — Foundation ✅ Complete
 
-These are backward-compatible additions to the existing store crate. They must be done first because
-the HTTP API and persistence layer depend on them.
+### A1 — Payload in search results ✅
+`payload: Option<serde_json::Value>` added to `ScoredResult`. `Collection::search` populates it from `MetaStore` behind the `include_payload` flag.
 
-### A1 — Payload in search results
+### A2 — Vector retrieval by ID ✅
+`get()` / `get_batch()` added to `VectorIndex` trait and all three index types. Exposed on `Collection`.
 
-**Gap:** `ScoredResult` (`types.rs:7-11`) only returns `id` and `score`. Users cannot retrieve the
-associated JSON payload from a search result without a second lookup.
-
-**Fix:** Add `payload: Option<serde_json::Value>` to `ScoredResult`. `Collection::search` populates
-it from `MetaStore`. Gate behind a query flag (`include_payload: bool`) so callers that don't need
-it pay zero allocation cost.
-
-**Files to change:**
-- `crates/likhadb-core/src/types.rs` — add `payload` field
-- `crates/likhadb-store/src/collection.rs` — populate payload in `search()`
+### A3 — Richer metadata predicates ✅
+`make_filter` extended to support `gt`, `lt`, `gte`, `lte`, `in`, `and`, `or` in addition to `eq`, `ne`, `exists`.
 
 ---
 
-### A2 — Vector retrieval by ID
+## Tier B — Persistence ✅ Complete
 
-**Gap:** There is no way to fetch a stored vector or its payload by ID. Production apps need this for
-debugging, deduplication, and re-ranking pipelines.
+### B1 — Snapshot serialization ✅
+`CollectionManager::save` / `load` implemented in `crates/likhadb-persist/src/snapshot.rs` using `bincode`.
 
-**Fix:**
-```rust
-// On Collection
-pub fn get(&self, id: VecId) -> Result<Option<(Vector, Option<Value>)>>
-pub fn get_batch(&self, ids: &[VecId]) -> Result<Vec<Option<(Vector, Option<Value>)>>>
-```
-
-Requires adding `get(id)` to the `VectorIndex` trait and implementing it for all three index types.
-FlatIndex and IvfIndex already have flat `Vec<f32>` slabs with `id_to_node` maps. HnswIndex uses
-`id_to_node: HashMap<VecId, usize>` + `data: Vec<f32>`.
-
-**Files to change:**
-- `crates/likhadb-index/src/traits.rs` — add `fn get(&self, id: VecId) -> Option<Vector>`
-- `crates/likhadb-index/src/flat.rs`, `ivf.rs`, `hnsw.rs` — implement `get()`
-- `crates/likhadb-store/src/collection.rs` — expose `get()` / `get_batch()`
+### B2 — Write-Ahead Log (WAL) ✅
+Append-only WAL with fsync in `crates/likhadb-persist/src/wal.rs`. Startup replays entries newer than the last snapshot.
 
 ---
 
-### A3 — Richer metadata predicates
+## Tier C — Concurrency ✅ Complete
 
-**Gap:** `meta.rs` only supports `eq`, `ne`, `exists`. A `TODO` comment at `meta.rs:38` already marks
-this gap. Real workloads need range queries and compound logic.
-
-**Fix:** Extend `make_filter` to handle:
-```json
-{ "op": "gt",  "field": "price", "value": 10.0 }
-{ "op": "lt",  "field": "year",  "value": 2024 }
-{ "op": "gte", "field": "score", "value": 0.5 }
-{ "op": "lte", "field": "rank",  "value": 100 }
-{ "op": "in",  "field": "tag",   "value": ["sports", "news"] }
-{ "op": "and", "filters": [ { "op": "eq", ... }, { "op": "gt", ... } ] }
-{ "op": "or",  "filters": [ { "op": "eq", ... }, { "op": "eq", ... } ] }
-```
-
-**Files to change:**
-- `crates/likhadb-store/src/meta.rs`
+### C1 — RwLock-wrapped state ✅
+`SharedState` wraps `CollectionManager` in `Arc<tokio::sync::RwLock<...>>` in `crates/likhadb-server/src/state.rs`.
 
 ---
 
-## Tier B — Persistence (makes it a database, not a library)
+## Tier D — API ✅ Complete
 
-New crate: `crates/likhadb-persist/`
+### D1 — REST API with axum + tokio ✅
+All collection and vector CRUD endpoints plus `POST /collections/:name/query` implemented in `crates/likhadb-server/`.
 
-### B1 — Snapshot serialization
-
-**Goal:** Serialize the full `CollectionManager` state to disk and reload it on startup. No live
-mutation safety required — this is point-in-time (offline) snapshots.
-
-**Approach:**
-- Derive or implement `serde::Serialize / Deserialize` for `Collection`, `MetaStore`, and all three
-  index types (flat `Vec<f32>` slabs are trivially serializable; HnswIndex needs `nodes`, `data`,
-  `id_to_node`, `deleted`).
-- Persist to a single binary file using `bincode` or `rmp-serde` (compact, fast, no schema).
-- Expose `CollectionManager::save(path: &Path)` and `CollectionManager::load(path: &Path)`.
-
-**New files:**
-- `crates/likhadb-persist/src/snapshot.rs`
+### D2 — gRPC API ✅
+`.proto` schema + `tonic` / `prost` implementation in `crates/likhadb-server/`.
 
 ---
 
-### B2 — Write-Ahead Log (WAL)
+## Tier E — Observability ✅ Complete
 
-**Goal:** Crash durability. Every mutation is appended to an append-only WAL before being applied to
-the in-memory index. On startup, load the last snapshot and replay WAL entries newer than it.
+### E1 — Prometheus metrics ✅
+`GET /metrics` exposes `likhadb_collection_vectors_total`, `likhadb_search_duration_seconds`, `likhadb_insert_duration_seconds`, `likhadb_wal_bytes_written_total` via `metrics` + `metrics-exporter-prometheus`.
 
-**WAL entry schema:**
-```rust
-enum WalOp { Insert, Delete }
-struct WalEntry {
-    lsn:        u64,
-    collection: String,
-    op:         WalOp,
-    id:         VecId,
-    vec:        Option<Vec<f32>>,   // present for Insert
-    payload:    Option<Value>,      // present for Insert
-}
-```
-
-**Lifecycle:**
-1. Append entry → fsync (configurable: per-write or per-batch).
-2. Apply to in-memory index.
-3. Periodic checkpoint: flush snapshot, truncate WAL to entries with LSN > snapshot LSN.
-
-**New files:**
-- `crates/likhadb-persist/src/wal.rs`
-
----
-
-## Tier C — Concurrency
-
-### C1 — RwLock-wrapped state
-
-**Goal:** Allow concurrent reads (`search`, `get`) from multiple threads/tasks while serializing writes (`insert`, `delete`,`create_collection`).
-
-```rust
-pub struct SharedState {
-    inner: Arc<tokio::sync::RwLock<CollectionManager>>,
-}
-```
-
-`VectorIndex: Send + Sync` is already satisfied — no changes to index crates needed.
-
-**New files:**
-- `crates/likhadb-server/src/state.rs`
-
----
-
-## Tier D — HTTP API
-
-New crate: `crates/likhadb-server/` (depends on `likhadb-persist` + `likhadb-store`)
-
-### D1 — REST API with axum + tokio
-
-**Endpoints:**
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/collections` | List all collections |
-| `POST` | `/collections` | Create a collection |
-| `GET` | `/collections/:name` | Get collection info (dim, metric, count, index type) |
-| `DELETE` | `/collections/:name` | Drop a collection |
-| `POST` | `/collections/:name/vectors` | Insert or upsert a vector |
-| `GET` | `/collections/:name/vectors/:id` | Get a vector by ID |
-| `DELETE` | `/collections/:name/vectors/:id` | Delete a vector |
-| `POST` | `/collections/:name/query` | k-NN search with optional filter |
-
-**Request / response (query):**
-```json
-// POST /collections/docs/query
-{
-  "vector": [0.1, 0.2, 0.3],
-  "k": 10,
-  "filter": { "op": "eq", "field": "tag", "value": "news" },
-  "include_payload": true
-}
-
-// 200 OK
-{
-  "results": [
-    { "id": 42, "score": 0.12, "payload": { "tag": "news", "title": "..." } }
-  ]
-}
-```
-
-**Stack:** `axum` + `tokio` + `tower` + `serde_json`.
-
----
-
-### D2 — gRPC API (follow-on)
-
-Define a `.proto` schema mirroring the REST API. Use `tonic` + `prost`. Lower priority than REST;
-higher value for ML inference pipelines that prefer streaming.
-
----
-
-## Tier E — Observability
-
-### E1 — Prometheus metrics
-
-Expose via `GET /metrics`:
-
-| Metric | Type | Labels |
-|---|---|---|
-| `likhadb_collection_vectors_total` | Gauge | `collection`, `index_type` |
-| `likhadb_search_duration_seconds` | Histogram | `collection`, `index_type` |
-| `likhadb_insert_duration_seconds` | Histogram | `collection` |
-| `likhadb_wal_bytes_written_total` | Counter | — |
-
-**Dependency:** `metrics` + `metrics-exporter-prometheus`
-
----
-
-### E2 — Structured tracing
-
-Add `tracing` spans to hot paths (`insert`, `search`, WAL append). Use `tracing-subscriber` with
-JSON formatting for production log aggregation (Datadog, Loki, etc.).
+### E2 — Structured tracing ✅
+`tracing` spans on hot paths; JSON formatting via `tracing-subscriber` for log aggregation.
 
 ---
 
@@ -378,20 +226,20 @@ pub trait VectorTransform: Send + Sync {
 
 ---
 
-## New workspace layout (after all tiers)
+## Workspace layout
 
 ```
 likhadb/
 ├── crates/
-│   ├── likhadb-core/      # Primitives, error types, distance kernels
-│   ├── likhadb-index/     # VectorIndex trait + FlatIndex + IvfIndex + HnswIndex
-│   ├── likhadb-store/     # Collection, CollectionManager, MetaStore
-│   ├── likhadb-persist/   # Snapshot + WAL  [NEW — Tier B]
-│   ├── likhadb-server/    # axum HTTP server + shared state  [NEW — Tier D]
-│   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query [NEW — Tier F]
-│   ├── likhadb-lakehouse/ # Parquet / Delta Lake import-export [NEW — Tier L]
-│   ├── likhadb-transform/ # Insert-time vector transforms      [NEW — Tier T]
-│   └── likhadb-bench/     # Criterion benchmarks
+│   ├── likhadb-core/      # Primitives, error types, distance kernels       ✅
+│   ├── likhadb-index/     # VectorIndex trait + FlatIndex + IvfIndex + HnswIndex  ✅
+│   ├── likhadb-store/     # Collection, CollectionManager, MetaStore         ✅
+│   ├── likhadb-persist/   # Snapshot + WAL                                   ✅
+│   ├── likhadb-server/    # axum REST + tonic gRPC + Prometheus + tracing    ✅
+│   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query                [ Tier F ]
+│   ├── likhadb-lakehouse/ # Parquet / Delta Lake import-export               [ Tier L ]
+│   ├── likhadb-transform/ # Insert-time vector transforms                    [ Tier T ]
+│   └── likhadb-bench/     # Criterion benchmarks                             ✅
 ```
 
 ---
@@ -399,19 +247,19 @@ likhadb/
 ## Build order summary
 
 ```
-A1 → A2 → A3
+A1 → A2 → A3           ✅ done
          ↓
-    B1 → B2            (likhadb-persist)
+    B1 → B2             ✅ done (likhadb-persist)
          ↓
-         C1            (shared state in likhadb-server)
+         C1             ✅ done (shared state in likhadb-server)
          ↓
-    D1 → D2 → E1 → E2  (likhadb-server complete)
+    D1 → D2 → E1 → E2  ✅ done (likhadb-server complete)
          ↓
-    F1 → F2            (full-text + hybrid search)
+    F1 → F2             ← next (full-text + hybrid search)
          ↓
-    L1 → L2 → L3       (parquet → object store → delta lake)
+    L1 → L2 → L3        (parquet → object store → delta lake)
          ↓
-    T1 → T2            (vector transforms)
+    T1 → T2             (vector transforms)
 ```
 
 ---
