@@ -135,7 +135,8 @@ mod tests {
     #[test]
     fn index_and_search_finds_document() {
         let mut idx = make_index();
-        idx.index_document(42, "tantivy full text search engine").unwrap();
+        idx.index_document(42, "tantivy full text search engine")
+            .unwrap();
         let results = idx.search("tantivy", 5).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, 42);
@@ -164,7 +165,8 @@ mod tests {
     fn delete_removes_document_from_results() {
         let mut idx = make_index();
         idx.index_document(1, "delete me from results").unwrap();
-        idx.index_document(2, "keep this document in results").unwrap();
+        idx.index_document(2, "keep this document in results")
+            .unwrap();
 
         let before = idx.search("results", 10).unwrap();
         assert_eq!(before.len(), 2);
