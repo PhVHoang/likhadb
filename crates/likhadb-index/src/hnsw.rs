@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use ordered_float::OrderedFloat;
@@ -160,7 +160,7 @@ impl HnswIndex {
         let mut w: BinaryHeap<(OrderedFloat<f32>, usize)> = BinaryHeap::new();
         // C: candidates to expand (min-heap, nearest at top)
         // We use Reverse to turn BinaryHeap into a min-heap.
-        let mut c: BinaryHeap<std::cmp::Reverse<(OrderedFloat<f32>, usize)>> = BinaryHeap::new();
+        let mut c: BinaryHeap<Reverse<(OrderedFloat<f32>, usize)>> = BinaryHeap::new();
         let mut visited: HashSet<usize> = HashSet::new();
 
         for &ep in entry_points {
@@ -203,16 +203,16 @@ impl HnswIndex {
         w
     }
 
-    /// Select the `m_max` closest candidates from a max-heap, returning their
-    /// node indices sorted nearest-first.
+    /// Select the `m_max` closest candidates from a max-heap, returning their node indices.
     fn select_neighbors(
-        candidates: BinaryHeap<(OrderedFloat<f32>, usize)>,
+        mut candidates: BinaryHeap<(OrderedFloat<f32>, usize)>,
         m_max: usize,
     ) -> Vec<usize> {
-        let mut v: Vec<(OrderedFloat<f32>, usize)> = candidates.into_vec();
-        v.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
-        v.truncate(m_max);
-        v.into_iter().map(|(_, idx)| idx).collect()
+        // Max-heap: pop removes the farthest. Trim until only m_max closest remain.
+        while candidates.len() > m_max {
+            candidates.pop();
+        }
+        candidates.into_iter().map(|(_, idx)| idx).collect()
     }
 
     /// Prune node `node_idx`'s neighbour list at `level` to at most `m_max` entries,
