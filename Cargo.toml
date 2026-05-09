@@ -6,6 +6,7 @@ members = [
     "crates/likhadb-persist",
     "crates/likhadb-server",
     "crates/likhadb-bench",
+    "crates/likhadb-fts",
 ]
 resolver = "2"
 
@@ -19,3 +20,4 @@ criterion     = { version = "0.5", features = ["html_reports"] }
 simsimd       = "6"
 rayon         = "1"
 bincode       = "1"
+tantivy       = "0.22"
