@@ -225,7 +225,12 @@ impl HnswIndex {
         let query = self.vec_of(node_idx).to_vec();
         let heap: BinaryHeap<(OrderedFloat<f32>, usize)> = nbrs
             .into_iter()
-            .map(|n| (OrderedFloat(simd_distance(self.metric, &query, self.vec_of(n))), n))
+            .map(|n| {
+                (
+                    OrderedFloat(simd_distance(self.metric, &query, self.vec_of(n))),
+                    n,
+                )
+            })
             .collect();
         self.nodes[node_idx].layers[level] = Self::select_neighbors(heap, m_max);
     }
