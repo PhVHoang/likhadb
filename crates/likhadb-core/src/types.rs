@@ -24,6 +24,8 @@ pub enum LikhaDbError {
     CollectionAlreadyExists(String),
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+    #[error("fts error: {0}")]
+    Fts(String),
 }
 
 pub type Result<T> = std::result::Result<T, LikhaDbError>;

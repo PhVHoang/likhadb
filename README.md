@@ -8,8 +8,9 @@ A progressively-layered, in-memory vector database written in Rust.
 
 likhadb stores float vectors alongside arbitrary JSON payloads, searches them with
 k-nearest-neighbour queries, and filters candidates using a simple JSON predicate language.
-The internal design is a clean stack of crates with one extension seam — the `VectorIndex`
-trait — so index implementations slot in without changing the store or API layers.
+Collections can optionally enable a Tantivy-backed full-text index over payload string fields.
+The internal design is a clean stack of crates with two extension seams — the `VectorIndex`
+and `FtsIndex` traits — so implementations slot in without changing the store or API layers.
 
 For a deep dive into crate structure, index algorithms, query flows, and persistence
 design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -24,11 +25,16 @@ design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 # Run all tests
 cargo test --workspace
 
+# Run FTS tests (requires the fts feature)
+cargo test -p likhadb-store --features fts
+cargo test -p likhadb-fts
+
 # Run benchmarks
 cargo bench -p likhadb-bench
 
 # Lint (zero warnings enforced)
 cargo clippy --workspace -- -D warnings
+cargo clippy -p likhadb-store --features fts -- -D warnings
 ```
 
 ---
@@ -122,6 +128,41 @@ let results = col.search(&vec![0.5; 384], 10, None, false).unwrap();
 - `ef_construction`: must be ≥ `m`. 200 is a good default.
 - `ef_search`: must be ≥ 1. Increase to trade latency for recall. Start at 50.
 
+### Full-text search (FtsIndex)
+
+Enable per-collection with the `fts` Cargo feature. All string values in the JSON payload
+(including nested objects and arrays) are indexed automatically. Scores are BM25.
+
+```toml
+# Cargo.toml
+likhadb-store = { path = "crates/likhadb-store", features = ["fts"] }
+```
+
+```rust
+use likhadb_core::Metric;
+use likhadb_store::CollectionManager;
+use serde_json::json;
+
+let mut mgr = CollectionManager::new();
+mgr.create_collection("articles", 384, Metric::Cosine).unwrap();
+
+let col = mgr.get_mut("articles").unwrap();
+col.enable_fts().unwrap();   // activates the Tantivy in-memory index
+
+col.insert(1, vec![0.1; 384], Some(json!({"title": "Rust async runtime", "body": "tokio and async-std"}))).unwrap();
+col.insert(2, vec![0.2; 384], Some(json!({"title": "Python data science", "body": "numpy pandas sklearn"}))).unwrap();
+col.insert(3, vec![0.3; 384], Some(json!({"title": "Rust memory model", "body": "ownership borrowing lifetimes"}))).unwrap();
+
+// BM25 full-text search — returns top-k results ranked by relevance
+let results = col.fts_search("Rust ownership", 5).unwrap();
+// results[0].id == 3  (highest BM25 score for "ownership")
+// results[1].id == 1  (matches "Rust")
+```
+
+Deletions are propagated automatically: `col.delete(id)` removes the vector, the payload, and the FTS document in one call.
+
+---
+
 ### Snapshot persistence
 
 ```rust
@@ -208,15 +249,18 @@ Rayon uses the default thread pool (all available cores).
 
 ## Roadmap
 
-| Tier | Status | Description |
+| Item | Status | Description |
 |---|---|---|
-| **Tier 1** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
-| **Tier 2** | Done | IVF approximate k-NN with k-means clustering + SQ8 quantization |
-| **Tier 3** | Done | HNSW graph-based approximate search |
-| **Tier 4 — B1** | Done | Snapshot persistence |
-| **Tier 4 — B2** | Done | WAL crash durability — logs every mutation, replays on restart, atomic checkpoint |
-| **Tier 4 — C1** | Done | Concurrent shared state — `AppState` (`Arc<RwLock<WalManager>>`), background checkpoint task |
-| **Tier 4 — D+** | Done | HTTP REST + gRPC API |
+| **A — Foundation** | Done | Exact brute-force search, in-memory, JSON metadata filtering |
+| **B — Approximate k-NN** | Done | IVF (k-means + SQ8 quantization) + HNSW graph-based search |
+| **C — Persistence** | Done | Snapshot + WAL crash durability, atomic checkpoint |
+| **D — Concurrency** | Done | `Arc<RwLock<WalManager>>`, background checkpoint task |
+| **E — API** | Done | HTTP REST (axum) + gRPC (tonic) |
+| **F — Observability** | Done | Prometheus metrics (`/metrics`) + structured JSON tracing |
+| **F1 — Full-text search** | Done | Tantivy BM25 index per collection, opt-in via `fts` feature |
+| **F2 — Hybrid search** | Planned | RRF fusion of vector similarity + BM25 scores |
+| **L — Lakehouse I/O** | Planned | Parquet import/export, object storage (S3/GCS), Delta Lake |
+| **T — Vector transforms** | Planned | Insert-time L2 normalisation, scalar scaling |
 
 ---
 

@@ -42,6 +42,7 @@ impl From<LikhaDbError> for ApiError {
             LikhaDbError::DimMismatch { .. } | LikhaDbError::InvalidArgument(_) => {
                 ApiError::BadRequest(e.to_string())
             }
+            LikhaDbError::Fts(_) => ApiError::Internal(e.to_string()),
         }
     }
 }

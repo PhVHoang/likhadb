@@ -26,7 +26,7 @@ the next begins.
 | gRPC API (tonic) | Done | `crates/likhadb-server/` |
 | Prometheus metrics | Done | `crates/likhadb-server/` |
 | Structured tracing | Done | `crates/likhadb-server/` |
-| Full-text search | **None** | — |
+| Full-text search (`FtsIndex`, `TantivyFtsIndex`, `enable_fts`, `fts_search`) | Done (F1) | `crates/likhadb-fts/` |
 | Lakehouse I/O (Parquet) | **None** | — |
 | Vector transforms | **None** | — |
 | Hybrid search (vec + FTS) | **None** | — |
@@ -87,7 +87,7 @@ All collection and vector CRUD endpoints plus `POST /collections/:name/query` im
 
 New crate: `crates/likhadb-fts/` (depends on `tantivy`)
 
-### F1 — Tantivy-backed FTS index
+### F1 — Tantivy-backed FTS index ✅
 
 **Goal:** Give each collection an optional full-text index alongside the vector index.
 
@@ -98,11 +98,17 @@ New crate: `crates/likhadb-fts/` (depends on `tantivy`)
 - FTS query: `collection.fts_search(query_str, k) -> Vec<FtsResult>`
 
 **New files:**
-- `crates/likhadb-fts/src/lib.rs` — FtsIndex trait
-- `crates/likhadb-fts/src/tantivy_index.rs` — Tantivy wrapper
-- `crates/likhadb-store/src/collection.rs` — add `fts_index` field
+- `crates/likhadb-fts/src/lib.rs` — `FtsIndex` trait + `FtsResult` type
+- `crates/likhadb-fts/src/tantivy_index.rs` — `TantivyFtsIndex` (in-RAM BM25 via `RAMDirectory`)
+- `crates/likhadb-store/src/collection.rs` — `fts_index` field, `enable_fts()`, `fts_search()`
 
-**New dependency:** `tantivy = "0.22"`
+**New dependency:** `tantivy = "0.22"` (workspace), gated behind `likhadb-store/fts` feature flag.
+
+**Implementation notes:**
+- FTS is opt-in per collection: `collection.enable_fts()` activates it; no tantivy overhead otherwise.
+- All string values are recursively extracted from the JSON payload (nested objects and arrays included).
+- Thread safety: `IndexWriter` is wrapped in `Mutex`; reader is reloaded after each commit.
+- Delete calls `writer.delete_term(Term::from_field_u64(id_field, id))` and commits immediately.
 
 ---
 
@@ -236,7 +242,7 @@ likhadb/
 │   ├── likhadb-store/     # Collection, CollectionManager, MetaStore         ✅
 │   ├── likhadb-persist/   # Snapshot + WAL                                   ✅
 │   ├── likhadb-server/    # axum REST + tonic gRPC + Prometheus + tracing    ✅
-│   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query                [ Tier F ]
+│   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query                ✅ (F1 done)
 │   ├── likhadb-lakehouse/ # Parquet / Delta Lake import-export               [ Tier L ]
 │   ├── likhadb-transform/ # Insert-time vector transforms                    [ Tier T ]
 │   └── likhadb-bench/     # Criterion benchmarks                             ✅
@@ -255,7 +261,9 @@ A1 → A2 → A3           ✅ done
          ↓
     D1 → D2 → E1 → E2  ✅ done (likhadb-server complete)
          ↓
-    F1 → F2             ← next (full-text + hybrid search)
+    F1                  ✅ done (Tantivy FTS index, likhadb-fts)
+         ↓
+    F2                  ← next (hybrid vector + FTS search)
          ↓
     L1 → L2 → L3        (parquet → object store → delta lake)
          ↓

@@ -5,9 +5,11 @@ edition = "2021"
 
 [features]
 persist = ["dep:serde", "likhadb-index/serde"]
+fts     = ["dep:likhadb-fts"]
 
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
 likhadb-index = { path = "../likhadb-index" }
+likhadb-fts   = { path = "../likhadb-fts", optional = true }
 serde_json    = { workspace = true }
 serde         = { workspace = true, optional = true }

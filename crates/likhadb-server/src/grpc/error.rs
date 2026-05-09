@@ -12,6 +12,7 @@ pub fn core_err(e: LikhaDbError) -> tonic::Status {
         LikhaDbError::DimMismatch { .. } | LikhaDbError::InvalidArgument(_) => {
             tonic::Status::invalid_argument(e.to_string())
         }
+        LikhaDbError::Fts(_) => tonic::Status::internal(e.to_string()),
     }
 }
 
