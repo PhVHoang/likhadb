@@ -29,7 +29,7 @@ the next begins.
 | Full-text search (`FtsIndex`, `TantivyFtsIndex`, `enable_fts`, `fts_search`) | Done (F1) | `crates/likhadb-fts/` |
 | Lakehouse I/O (Parquet) | **None** | — |
 | Vector transforms | **None** | — |
-| Hybrid search (vec + FTS) | **None** | — |
+| Hybrid search (vec + FTS) | Done (F2) | `crates/likhadb-store/src/collection.rs`, `crates/likhadb-server/` |
 
 ---
 
@@ -112,29 +112,49 @@ New crate: `crates/likhadb-fts/` (depends on `tantivy`)
 
 ---
 
-### F2 — Hybrid search (vector + FTS)
+### F2 — Hybrid search (vector + FTS) ✅
 
 **Goal:** Single query that fuses vector similarity scores with BM25 text scores using Reciprocal Rank Fusion (RRF):
 
 ```
-rrf_score(id) = 1/(k + rank_vector(id)) + 1/(k + rank_fts(id))
+rrf_score(id) = 1/(rrf_k + rank_vector(id)) + 1/(rrf_k + rank_fts(id))
 ```
 
 **New types in `crates/likhadb-core/src/types.rs`:**
 ```rust
-pub struct HybridQuery<'a> {
-    pub vector: &'a [f32],
-    pub text: &'a str,
+pub struct HybridQuery {
+    pub vector: Vec<f32>,
+    pub text: String,
     pub k: usize,
     pub rrf_k: u32,           // default 60
-    pub filter: Option<&'a Value>,
+    pub filter: Option<serde_json::Value>,
     pub include_payload: bool,
 }
 ```
 
-**Files to change:**
-- `crates/likhadb-core/src/types.rs` — add `HybridQuery`
-- `crates/likhadb-store/src/collection.rs` — add `hybrid_search()`
+**Files changed:**
+- `crates/likhadb-core/src/types.rs` — `HybridQuery` type
+- `crates/likhadb-store/src/collection.rs` — `Collection::hybrid_search()`
+- `crates/likhadb-store/src/manager.rs` — `CollectionManager::enable_fts()`
+- `crates/likhadb-store/src/snapshot.rs` — `CollectionSnapshot.fts_enabled` (persists FTS-enabled state across checkpoints)
+- `crates/likhadb-persist/src/wal/entry.rs` — `WalOp::EnableFts` for WAL durability
+- `crates/likhadb-persist/src/wal/mod.rs` — `WalManager::enable_fts()`
+- `crates/likhadb-persist/src/wal/recovery.rs` — replay `EnableFts` ops
+- `crates/likhadb-server/proto/likhadb.proto` — `HybridQuery` RPC, `enable_fts` on `CreateCollectionRequest`
+- `crates/likhadb-server/src/routes.rs` — `POST /collections/:name/hybrid-query`
+- `crates/likhadb-server/src/grpc/service.rs` — `HybridQuery` RPC implementation
+
+**Implementation notes:**
+- `enable_fts: bool` on collection creation (REST + gRPC) activates the Tantivy index from the start; WAL logs this as `EnableFts` so it survives restarts, and the snapshot's `fts_enabled` field (with `#[serde(default)]`) handles post-checkpoint recovery.
+- Hybrid search retrieves `2k` candidates from each modality, fuses ranks via RRF, truncates to top `k`.
+- When FTS is not enabled on a collection, hybrid search falls back gracefully to vector-only results (FTS contributes no rank terms).
+
+**Build order summary:**
+```
+    F2                  ✅ done (hybrid vector + FTS search, RRF)
+         ↓
+    L1 → L2 → L3        ← next (parquet → object store → delta lake)
+```
 
 ---
 
@@ -263,9 +283,9 @@ A1 → A2 → A3           ✅ done
          ↓
     F1                  ✅ done (Tantivy FTS index, likhadb-fts)
          ↓
-    F2                  ← next (hybrid vector + FTS search)
+    F2                  ✅ done (hybrid vector + FTS search, RRF)
          ↓
-    L1 → L2 → L3        (parquet → object store → delta lake)
+    L1 → L2 → L3        ← next (parquet → object store → delta lake)
          ↓
     T1 → T2             (vector transforms)
 ```
