@@ -9,8 +9,9 @@ pub mod proto {
 
 use proto::{
     likha_db_server::LikhaDb, CollectionInfo, CreateCollectionResponse, DeleteVectorResponse,
-    DropCollectionResponse, HealthRequest, HealthResponse, InsertVectorResponse,
-    ListCollectionsRequest, ListCollectionsResponse, QueryResponse, ScoredResult, VectorRecord,
+    DropCollectionResponse, HealthRequest, HealthResponse, HybridQueryResponse,
+    InsertVectorResponse, ListCollectionsRequest, ListCollectionsResponse, QueryResponse,
+    ScoredResult, VectorRecord,
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -62,17 +63,19 @@ impl LikhaDb for LikhaDbGrpc {
         let dim = req.dim as usize;
 
         use proto::create_collection_request::IndexConfig;
+        let name = req.name;
+        let enable_fts = req.enable_fts;
         let mut guard = self.state.write().await;
         match req.index_config {
             None | Some(IndexConfig::Flat(_)) => guard
-                .create_collection(req.name, dim, metric)
+                .create_collection(name.clone(), dim, metric)
                 .map_err(persist_err)?,
             Some(IndexConfig::Ivf(c)) => guard
-                .create_ivf_collection(req.name, dim, metric, c.nlist as usize, c.nprobe as usize)
+                .create_ivf_collection(name.clone(), dim, metric, c.nlist as usize, c.nprobe as usize)
                 .map_err(persist_err)?,
             Some(IndexConfig::IvfSq8(c)) => guard
                 .create_ivf_sq8_collection(
-                    req.name,
+                    name.clone(),
                     dim,
                     metric,
                     c.nlist as usize,
@@ -81,7 +84,7 @@ impl LikhaDb for LikhaDbGrpc {
                 .map_err(persist_err)?,
             Some(IndexConfig::Hnsw(c)) => guard
                 .create_hnsw_collection(
-                    req.name,
+                    name.clone(),
                     dim,
                     metric,
                     c.m as usize,
@@ -89,6 +92,9 @@ impl LikhaDb for LikhaDbGrpc {
                     c.ef_search as usize,
                 )
                 .map_err(persist_err)?,
+        }
+        if enable_fts {
+            guard.enable_fts(&name).map_err(persist_err)?;
         }
         Ok(Response::new(CreateCollectionResponse {}))
     }
@@ -206,6 +212,30 @@ impl LikhaDb for LikhaDbGrpc {
         };
         let results = encode_scored_results(results)?;
         Ok(Response::new(QueryResponse { results }))
+    }
+
+    async fn hybrid_query(
+        &self,
+        request: Request<proto::HybridQueryRequest>,
+    ) -> Result<Response<HybridQueryResponse>, Status> {
+        let req = request.into_inner();
+        let filter = decode_filter(&req.filter_json)?;
+        let rrf_k = if req.rrf_k == 0 { 60 } else { req.rrf_k };
+        let results = {
+            let guard = self.state.read().await;
+            let col = guard.get(&req.collection).map_err(core_err)?;
+            col.hybrid_search(
+                &req.vector,
+                &req.text,
+                req.k as usize,
+                rrf_k,
+                filter.as_ref(),
+                req.include_payload,
+            )
+            .map_err(core_err)?
+        };
+        let results = encode_scored_results(results)?;
+        Ok(Response::new(HybridQueryResponse { results }))
     }
 
     type QueryStreamStream = ReceiverStream<Result<ScoredResult, Status>>;

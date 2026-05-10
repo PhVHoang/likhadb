@@ -13,6 +13,8 @@ service LikhaDb {
   rpc Query            (QueryRequest)            returns (QueryResponse);
   // Server-streaming variant — results arrive as an async stream.
   rpc QueryStream      (QueryRequest)            returns (stream ScoredResult);
+  // Hybrid vector + full-text search using Reciprocal Rank Fusion.
+  rpc HybridQuery      (HybridQueryRequest)      returns (HybridQueryResponse);
 }
 
 // ── Health ───────────────────────────────────────────────────────────────────
@@ -31,15 +33,16 @@ message IvfSq8Config  { uint32 nlist = 1; uint32 nprobe = 2; }
 message HnswConfig    { uint32 m = 1; uint32 ef_construction = 2; uint32 ef_search = 3; }
 
 message CreateCollectionRequest {
-  string name   = 1;
-  uint32 dim    = 2;
-  string metric = 3;
+  string name       = 1;
+  uint32 dim        = 2;
+  string metric     = 3;
   oneof index_config {
     FlatConfig   flat    = 4;
     IvfConfig    ivf     = 5;
     IvfSq8Config ivf_sq8 = 6;
     HnswConfig   hnsw    = 7;
   }
+  bool enable_fts = 8;
 }
 message CreateCollectionResponse {}
 
@@ -99,3 +102,19 @@ message ScoredResult {
 }
 
 message QueryResponse { repeated ScoredResult results = 1; }
+
+// ── Hybrid Query ──────────────────────────────────────────────────────────────
+
+message HybridQueryRequest {
+  string         collection      = 1;
+  repeated float vector          = 2;
+  string         text            = 3;
+  uint32         k               = 4;
+  // RRF rank constant. If 0, the server uses the default of 60.
+  uint32         rrf_k           = 5;
+  // JSON-encoded filter object; omit or send empty bytes for no filter.
+  bytes          filter_json     = 6;
+  bool           include_payload = 7;
+}
+
+message HybridQueryResponse { repeated ScoredResult results = 1; }

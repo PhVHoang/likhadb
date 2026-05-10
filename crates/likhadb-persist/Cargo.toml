@@ -3,6 +3,9 @@ name    = "likhadb-persist"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+fts = ["likhadb-store/fts"]
+
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
 likhadb-index = { path = "../likhadb-index", features = ["serde"] }

@@ -12,6 +12,8 @@ pub struct CollectionSnapshot {
     pub metric: Metric,
     pub index: IndexSnapshot,
     pub meta: MetaStore,
+    #[serde(default)]
+    pub fts_enabled: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -29,12 +31,33 @@ impl Collection {
             metric: self.metric,
             index: self.index.to_snapshot(),
             meta: self.meta.clone(),
+            fts_enabled: self.is_fts_enabled(),
+        }
+    }
+
+    fn is_fts_enabled(&self) -> bool {
+        #[cfg(feature = "fts")]
+        {
+            self.fts_index.is_some()
+        }
+        #[cfg(not(feature = "fts"))]
+        {
+            false
         }
     }
 
     pub fn from_snapshot(snap: CollectionSnapshot) -> Self {
-        Self::with_index(snap.name, snap.dim, snap.metric, snap.index.into_box())
-            .with_meta(snap.meta)
+        let col = Self::with_index(snap.name, snap.dim, snap.metric, snap.index.into_box())
+            .with_meta(snap.meta);
+        #[cfg(feature = "fts")]
+        let col = {
+            let mut c = col;
+            if snap.fts_enabled {
+                let _ = c.enable_fts();
+            }
+            c
+        };
+        col
     }
 }
 

@@ -133,6 +133,11 @@ impl CollectionManager {
         Ok(())
     }
 
+    #[cfg(feature = "fts")]
+    pub fn enable_fts(&mut self, name: &str) -> likhadb_core::Result<()> {
+        self.get_mut(name)?.enable_fts()
+    }
+
     #[cfg(feature = "persist")]
     pub(crate) fn insert_collection(&mut self, col: Collection) {
         self.collections.insert(col.name.clone(), col);
