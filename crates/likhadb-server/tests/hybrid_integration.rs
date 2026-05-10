@@ -62,7 +62,11 @@ async fn hybrid_query_returns_results() {
         .to_string();
         let res = app
             .clone()
-            .oneshot(json_req("POST", "/collections/hybrid_test/vectors", req_body))
+            .oneshot(json_req(
+                "POST",
+                "/collections/hybrid_test/vectors",
+                req_body,
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NO_CONTENT);

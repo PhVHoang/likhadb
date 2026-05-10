@@ -437,17 +437,28 @@ mod tests {
             }
             // sorted descending
             for w in results.windows(2) {
-                assert!(w[0].score >= w[1].score, "results must be sorted by score descending");
+                assert!(
+                    w[0].score >= w[1].score,
+                    "results must be sorted by score descending"
+                );
             }
         }
 
         #[test]
         fn hybrid_include_payload_returns_payload() {
             let mut c = make_fts_collection();
-            c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"body": "hello world", "tag": "a"})))
-                .unwrap();
-            c.insert(2, vec![2.0, 0.0, 0.0], Some(json!({"body": "foo bar", "tag": "b"})))
-                .unwrap();
+            c.insert(
+                1,
+                vec![1.0, 0.0, 0.0],
+                Some(json!({"body": "hello world", "tag": "a"})),
+            )
+            .unwrap();
+            c.insert(
+                2,
+                vec![2.0, 0.0, 0.0],
+                Some(json!({"body": "foo bar", "tag": "b"})),
+            )
+            .unwrap();
 
             let with_payload = c
                 .hybrid_search(&[1.0, 0.0, 0.0], "hello", 2, 60, None, true)
@@ -482,18 +493,42 @@ mod tests {
             //   id=2:  1/66 + 1/62    ≈ 0.03128
             let mut c = make_fts_collection();
 
-            c.insert(0, vec![0.001, 0.0, 0.0], Some(json!({"body": "animals birds completely unrelated"})))
-                .unwrap();
-            c.insert(99, vec![0.1, 0.0, 0.0], Some(json!({"body": "special word"})))
-                .unwrap();
-            c.insert(3, vec![1.0, 0.0, 0.0], Some(json!({"body": "generic noise text"})))
-                .unwrap();
-            c.insert(4, vec![5.0, 0.0, 0.0], Some(json!({"body": "generic noise content"})))
-                .unwrap();
-            c.insert(1, vec![100.0, 0.0, 0.0], Some(json!({"body": "special special special highlight"})))
-                .unwrap();
-            c.insert(2, vec![101.0, 0.0, 0.0], Some(json!({"body": "special special mention"})))
-                .unwrap();
+            c.insert(
+                0,
+                vec![0.001, 0.0, 0.0],
+                Some(json!({"body": "animals birds completely unrelated"})),
+            )
+            .unwrap();
+            c.insert(
+                99,
+                vec![0.1, 0.0, 0.0],
+                Some(json!({"body": "special word"})),
+            )
+            .unwrap();
+            c.insert(
+                3,
+                vec![1.0, 0.0, 0.0],
+                Some(json!({"body": "generic noise text"})),
+            )
+            .unwrap();
+            c.insert(
+                4,
+                vec![5.0, 0.0, 0.0],
+                Some(json!({"body": "generic noise content"})),
+            )
+            .unwrap();
+            c.insert(
+                1,
+                vec![100.0, 0.0, 0.0],
+                Some(json!({"body": "special special special highlight"})),
+            )
+            .unwrap();
+            c.insert(
+                2,
+                vec![101.0, 0.0, 0.0],
+                Some(json!({"body": "special special mention"})),
+            )
+            .unwrap();
 
             let query_vec = [0.0_f32, 0.0, 0.0];
             let query_text = "special";
@@ -512,7 +547,8 @@ mod tests {
                 .hybrid_search(&query_vec, query_text, 6, 60, None, false)
                 .unwrap();
             assert_eq!(
-                hybrid[0].id, 99,
+                hybrid[0].id,
+                99,
                 "hybrid top-1 should be id=99; got {:?}",
                 hybrid.iter().map(|r| r.id).collect::<Vec<_>>()
             );

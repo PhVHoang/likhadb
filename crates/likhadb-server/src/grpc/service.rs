@@ -71,7 +71,13 @@ impl LikhaDb for LikhaDbGrpc {
                 .create_collection(name.clone(), dim, metric)
                 .map_err(persist_err)?,
             Some(IndexConfig::Ivf(c)) => guard
-                .create_ivf_collection(name.clone(), dim, metric, c.nlist as usize, c.nprobe as usize)
+                .create_ivf_collection(
+                    name.clone(),
+                    dim,
+                    metric,
+                    c.nlist as usize,
+                    c.nprobe as usize,
+                )
                 .map_err(persist_err)?,
             Some(IndexConfig::IvfSq8(c)) => guard
                 .create_ivf_sq8_collection(

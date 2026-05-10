@@ -322,9 +322,12 @@ impl WalManager {
     #[cfg(feature = "fts")]
     pub fn enable_fts(&mut self, name: &str) -> Result<(), PersistError> {
         let col = name.to_owned();
-        self.log_and_apply(WalOp::EnableFts { collection: col.clone() }, |mgr| {
-            mgr.enable_fts(&col)
-        })
+        self.log_and_apply(
+            WalOp::EnableFts {
+                collection: col.clone(),
+            },
+            |mgr| mgr.enable_fts(&col),
+        )
     }
 
     // ── Read-through ────────────────────────────────────────────────────────
