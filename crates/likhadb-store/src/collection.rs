@@ -91,6 +91,65 @@ impl Collection {
         }
     }
 
+    /// Hybrid vector + full-text search using Reciprocal Rank Fusion.
+    ///
+    /// `rrf_score(id) = 1/(rrf_k + rank_vec(id)) + 1/(rrf_k + rank_fts(id))`
+    /// where ranks are 1-based. IDs appearing in only one result list
+    /// contribute that list's term alone.
+    #[cfg(feature = "fts")]
+    pub fn hybrid_search(
+        &self,
+        vector: &[f32],
+        text: &str,
+        k: usize,
+        rrf_k: u32,
+        filter: Option<&Value>,
+        include_payload: bool,
+    ) -> Result<Vec<ScoredResult>> {
+        use std::collections::HashMap;
+
+        let candidate_k = k.saturating_mul(2).max(k);
+
+        let vec_results = self.search(vector, candidate_k, filter, false)?;
+        let fts_results = match &self.fts_index {
+            Some(idx) => idx.search(text, candidate_k)?,
+            None => vec![],
+        };
+
+        let mut scores: HashMap<VecId, f32> = HashMap::new();
+
+        for (rank0, r) in vec_results.iter().enumerate() {
+            let rrf = 1.0 / (rrf_k as f32 + rank0 as f32 + 1.0);
+            *scores.entry(r.id).or_insert(0.0) += rrf;
+        }
+
+        for (rank0, r) in fts_results.iter().enumerate() {
+            let rrf = 1.0 / (rrf_k as f32 + rank0 as f32 + 1.0);
+            *scores.entry(r.id).or_insert(0.0) += rrf;
+        }
+
+        let mut ranked: Vec<(VecId, f32)> = scores.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(k);
+
+        let mut results: Vec<ScoredResult> = ranked
+            .into_iter()
+            .map(|(id, score)| ScoredResult {
+                id,
+                score,
+                payload: None,
+            })
+            .collect();
+
+        if include_payload {
+            for r in &mut results {
+                r.payload = self.meta.get(r.id).cloned();
+            }
+        }
+
+        Ok(results)
+    }
+
     pub fn insert(&mut self, id: VecId, vec: Vector, payload: Option<Value>) -> Result<()> {
         self.index.insert(id, vec)?;
         if let Some(p) = payload {
@@ -354,6 +413,145 @@ mod tests {
             let results = c.fts_search("xylophone", 5).unwrap();
             assert!(!results.is_empty(), "should find the unique doc");
             assert_eq!(results[0].id, 42, "best match should be id 42");
+        }
+
+        // ── hybrid_search tests ───────────────────────────────────────────────
+
+        #[test]
+        fn hybrid_rrf_scores_are_positive_and_top_k_respected() {
+            let mut c = make_fts_collection();
+            for i in 0..10u64 {
+                c.insert(
+                    i,
+                    vec![i as f32, 0.0, 0.0],
+                    Some(json!({"body": format!("doc {i} content")})),
+                )
+                .unwrap();
+            }
+            let results = c
+                .hybrid_search(&[0.0, 0.0, 0.0], "doc", 3, 60, None, false)
+                .unwrap();
+            assert_eq!(results.len(), 3);
+            for r in &results {
+                assert!(r.score > 0.0, "RRF score must be positive");
+            }
+            // sorted descending
+            for w in results.windows(2) {
+                assert!(
+                    w[0].score >= w[1].score,
+                    "results must be sorted by score descending"
+                );
+            }
+        }
+
+        #[test]
+        fn hybrid_include_payload_returns_payload() {
+            let mut c = make_fts_collection();
+            c.insert(
+                1,
+                vec![1.0, 0.0, 0.0],
+                Some(json!({"body": "hello world", "tag": "a"})),
+            )
+            .unwrap();
+            c.insert(
+                2,
+                vec![2.0, 0.0, 0.0],
+                Some(json!({"body": "foo bar", "tag": "b"})),
+            )
+            .unwrap();
+
+            let with_payload = c
+                .hybrid_search(&[1.0, 0.0, 0.0], "hello", 2, 60, None, true)
+                .unwrap();
+            assert!(with_payload.iter().all(|r| r.payload.is_some()));
+
+            let without_payload = c
+                .hybrid_search(&[1.0, 0.0, 0.0], "hello", 2, 60, None, false)
+                .unwrap();
+            assert!(without_payload.iter().all(|r| r.payload.is_none()));
+        }
+
+        #[test]
+        fn hybrid_beats_each_modality_alone_on_mixed_dataset() {
+            // Success criterion from BIZ.md:
+            // TARGET (id=99) wins hybrid top-1 even though:
+            //   - vector alone puts id=0 at top-1  (id=99 is vec rank 2)
+            //   - fts alone puts id=1 at top-1     (id=99 is fts rank 3)
+            //
+            // Dataset layout (6 docs):
+            //   id=0  (VEC CHAMP):   vec=[0.001], text="animals birds"   → vec rank 1, no FTS match
+            //   id=99 (TARGET):      vec=[0.1],   text="special word"    → vec rank 2, fts rank 3
+            //   id=3  (FILLER VEC):  vec=[1.0],   text="generic noise"   → vec rank 3, no FTS match
+            //   id=4  (FILLER VEC):  vec=[5.0],   text="generic noise"   → vec rank 4, no FTS match
+            //   id=1  (TEXT CHAMP):  vec=[100.0], text="special special special" → vec rank 5, fts rank 1
+            //   id=2  (NOISE TEXT):  vec=[101.0], text="special special mention" → vec rank 6, fts rank 2
+            //
+            // RRF scores (rrf_k=60, 0-based ranks):
+            //   id=0:  1/61            ≈ 0.01639
+            //   id=99: 1/62 + 1/63    ≈ 0.03200  ← WINS
+            //   id=1:  1/65 + 1/61    ≈ 0.03178
+            //   id=2:  1/66 + 1/62    ≈ 0.03128
+            let mut c = make_fts_collection();
+
+            c.insert(
+                0,
+                vec![0.001, 0.0, 0.0],
+                Some(json!({"body": "animals birds completely unrelated"})),
+            )
+            .unwrap();
+            c.insert(
+                99,
+                vec![0.1, 0.0, 0.0],
+                Some(json!({"body": "special word"})),
+            )
+            .unwrap();
+            c.insert(
+                3,
+                vec![1.0, 0.0, 0.0],
+                Some(json!({"body": "generic noise text"})),
+            )
+            .unwrap();
+            c.insert(
+                4,
+                vec![5.0, 0.0, 0.0],
+                Some(json!({"body": "generic noise content"})),
+            )
+            .unwrap();
+            c.insert(
+                1,
+                vec![100.0, 0.0, 0.0],
+                Some(json!({"body": "special special special highlight"})),
+            )
+            .unwrap();
+            c.insert(
+                2,
+                vec![101.0, 0.0, 0.0],
+                Some(json!({"body": "special special mention"})),
+            )
+            .unwrap();
+
+            let query_vec = [0.0_f32, 0.0, 0.0];
+            let query_text = "special";
+
+            // vector alone: id=0 is closest → top-1; id=99 is rank 2, not top-1
+            let vec_only = c.search(&query_vec, 6, None, false).unwrap();
+            assert_eq!(vec_only[0].id, 0, "vector alone: id=0 should be top-1");
+
+            // fts alone: id=1 has highest TF → top-1; id=99 is rank 3, not top-1
+            let fts_only = c.fts_search(query_text, 6).unwrap();
+            assert_eq!(fts_only[0].id, 1, "fts alone: id=1 should be top-1");
+            assert_ne!(fts_only[0].id, 99, "fts alone: id=99 must not be top-1");
+
+            // hybrid: id=99 accumulates from vec rank 2 + fts rank 3 → beats both champions
+            let hybrid = c
+                .hybrid_search(&query_vec, query_text, 6, 60, None, false)
+                .unwrap();
+            assert_eq!(
+                hybrid[0].id,
+                99,
+                "hybrid top-1 should be id=99; got {:?}",
+                hybrid.iter().map(|r| r.id).collect::<Vec<_>>()
+            );
         }
     }
 }

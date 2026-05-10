@@ -29,3 +29,17 @@ pub enum LikhaDbError {
 }
 
 pub type Result<T> = std::result::Result<T, LikhaDbError>;
+
+/// Parameters for a hybrid vector + full-text search using Reciprocal Rank Fusion.
+///
+/// RRF formula: `rrf_score(id) = 1/(rrf_k + rank_vec(id)) + 1/(rrf_k + rank_fts(id))`
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HybridQuery {
+    pub vector: Vec<f32>,
+    pub text: String,
+    pub k: usize,
+    /// Rank constant for RRF. Typical default is 60.
+    pub rrf_k: u32,
+    pub filter: Option<serde_json::Value>,
+    pub include_payload: bool,
+}

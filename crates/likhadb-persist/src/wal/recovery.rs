@@ -55,5 +55,15 @@ pub fn apply_op(mgr: &mut CollectionManager, op: WalOp) -> Result<(), PersistErr
             .get_mut(&collection)
             .and_then(|col| col.delete(id).map(|_| ()))
             .map_err(PersistError::Apply),
+        WalOp::EnableFts { collection } => {
+            #[cfg(feature = "fts")]
+            match mgr.enable_fts(&collection) {
+                Ok(()) | Err(LikhaDbError::CollectionNotFound(_)) => {}
+                Err(e) => return Err(PersistError::Apply(e)),
+            }
+            #[cfg(not(feature = "fts"))]
+            let _ = collection;
+            Ok(())
+        }
     }
 }

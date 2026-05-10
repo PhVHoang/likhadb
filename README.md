@@ -161,6 +161,55 @@ let results = col.fts_search("Rust ownership", 5).unwrap();
 
 Deletions are propagated automatically: `col.delete(id)` removes the vector, the payload, and the FTS document in one call.
 
+### Hybrid search (vector + BM25 via RRF)
+
+Pass `enable_fts: true` at collection creation. Hybrid search fuses vector similarity ranks and BM25 text ranks using Reciprocal Rank Fusion:
+
+```
+rrf_score(id) = 1/(rrf_k + rank_vec) + 1/(rrf_k + rank_fts)    // default rrf_k = 60
+```
+
+A document that ranks 2nd by vector similarity and 3rd by keyword relevance beats a document that is top-1 in only one modality.
+
+```rust
+use likhadb_core::Metric;
+use likhadb_store::CollectionManager;
+use serde_json::json;
+
+let mut mgr = CollectionManager::new();
+mgr.create_collection("articles", 384, Metric::Cosine).unwrap();
+
+let col = mgr.get_mut("articles").unwrap();
+col.enable_fts().unwrap();   // activates Tantivy BM25 index
+
+col.insert(1, vec![0.1; 384], Some(json!({"title": "Rust async runtime", "body": "tokio"}))).unwrap();
+col.insert(2, vec![0.5; 384], Some(json!({"title": "Python ML", "body": "numpy sklearn"}))).unwrap();
+col.insert(3, vec![0.2; 384], Some(json!({"title": "Rust memory model", "body": "ownership lifetimes"}))).unwrap();
+
+// Returns top-5 fusing semantic + keyword signals
+let results = col.hybrid_search(
+    &vec![0.15; 384],  // query embedding
+    "Rust ownership",  // keyword query
+    5,                 // k
+    60,                // rrf_k
+    None,              // metadata filter
+    true,              // include_payload
+).unwrap();
+```
+
+**REST API:**
+```sh
+# Create collection with FTS enabled
+curl -X POST localhost:8080/collections \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"articles","dim":384,"metric":"cosine","enable_fts":true}'
+
+# Hybrid query
+curl -X POST localhost:8080/collections/articles/hybrid-query \
+  -H 'Content-Type: application/json' \
+  -d '{"vector":[...],"text":"Rust ownership","k":5,"include_payload":true}'
+```
+
 ---
 
 ### Snapshot persistence

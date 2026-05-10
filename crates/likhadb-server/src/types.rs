@@ -13,6 +13,8 @@ pub struct CreateCollectionRequest {
     pub metric: String,
     #[serde(default)]
     pub index: IndexConfig,
+    #[serde(default)]
+    pub enable_fts: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -74,6 +76,29 @@ pub struct QueryRequest {
 
 #[derive(Serialize)]
 pub struct QueryResponse {
+    pub results: Vec<ScoredResult>,
+}
+
+// ── Hybrid Query ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct HybridQueryRequest {
+    pub vector: Vector,
+    pub text: String,
+    pub k: usize,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: u32,
+    pub filter: Option<Value>,
+    #[serde(default)]
+    pub include_payload: bool,
+}
+
+fn default_rrf_k() -> u32 {
+    60
+}
+
+#[derive(Serialize)]
+pub struct HybridQueryResponse {
     pub results: Vec<ScoredResult>,
 }
 

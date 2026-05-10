@@ -14,8 +14,9 @@ use crate::{
     error::ApiError,
     state::AppState,
     types::{
-        metric_str, parse_metric, CollectionInfo, CreateCollectionRequest, IndexConfig,
-        InsertRequest, QueryRequest, QueryResponse, VectorResponse,
+        metric_str, parse_metric, CollectionInfo, CreateCollectionRequest, HybridQueryRequest,
+        HybridQueryResponse, IndexConfig, InsertRequest, QueryRequest, QueryResponse,
+        VectorResponse,
     },
 };
 
@@ -37,6 +38,10 @@ pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
             get(get_vector).delete(delete_vector),
         )
         .route("/collections/:name/query", post(query_vectors))
+        .route(
+            "/collections/:name/hybrid-query",
+            post(hybrid_query_vectors),
+        )
         .layer(Extension(prometheus))
         .with_state(state)
 }
@@ -62,27 +67,32 @@ async fn create_collection(
     Json(req): Json<CreateCollectionRequest>,
 ) -> Result<StatusCode, ApiError> {
     let metric = parse_metric(&req.metric)?;
+    let name = req.name;
+    let enable_fts = req.enable_fts;
     let mut guard = state.write().await;
     match req.index {
-        IndexConfig::Flat => guard.create_collection(req.name, req.dim, metric)?,
+        IndexConfig::Flat => guard.create_collection(name.clone(), req.dim, metric)?,
         IndexConfig::Ivf { nlist, nprobe } => {
-            guard.create_ivf_collection(req.name, req.dim, metric, nlist, nprobe)?
+            guard.create_ivf_collection(name.clone(), req.dim, metric, nlist, nprobe)?
         }
         IndexConfig::IvfSq8 { nlist, nprobe } => {
-            guard.create_ivf_sq8_collection(req.name, req.dim, metric, nlist, nprobe)?
+            guard.create_ivf_sq8_collection(name.clone(), req.dim, metric, nlist, nprobe)?
         }
         IndexConfig::Hnsw {
             m,
             ef_construction,
             ef_search,
         } => guard.create_hnsw_collection(
-            req.name,
+            name.clone(),
             req.dim,
             metric,
             m,
             ef_construction,
             ef_search,
         )?,
+    }
+    if enable_fts {
+        guard.enable_fts(&name)?;
     }
     Ok(StatusCode::CREATED)
 }
@@ -200,4 +210,34 @@ async fn query_vectors(
     )
     .record(start.elapsed().as_secs_f64());
     Ok(Json(QueryResponse { results }))
+}
+
+#[tracing::instrument(skip(state, req), fields(collection = %name, k = req.k))]
+async fn hybrid_query_vectors(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<HybridQueryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let start = Instant::now();
+    let (results, index_type) = {
+        let guard = state.read().await;
+        let col = guard.get(&name)?;
+        let index_type = col.index_type().to_string();
+        let results = col.hybrid_search(
+            &req.vector,
+            &req.text,
+            req.k,
+            req.rrf_k,
+            req.filter.as_ref(),
+            req.include_payload,
+        )?;
+        (results, index_type)
+    };
+    metrics::histogram!(
+        "likhadb_search_duration_seconds",
+        "collection" => name,
+        "index_type" => index_type
+    )
+    .record(start.elapsed().as_secs_f64());
+    Ok(Json(HybridQueryResponse { results }))
 }

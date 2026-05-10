@@ -43,6 +43,9 @@ pub enum WalOp {
         collection: String,
         id: VecId,
     },
+    EnableFts {
+        collection: String,
+    },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
