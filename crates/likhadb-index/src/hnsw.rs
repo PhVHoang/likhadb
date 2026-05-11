@@ -6,8 +6,8 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 // stamp array so concurrent `search` calls on different threads never interfere.
 // Epoch wraps at u64::MAX (18 quintillion searches per thread before collision).
 thread_local! {
-    static SEARCH_EPOCH: Cell<u64> = Cell::new(0);
-    static VISIT_STAMPS: RefCell<Vec<u64>> = RefCell::new(Vec::new());
+    static SEARCH_EPOCH: Cell<u64> = const { Cell::new(0) };
+    static VISIT_STAMPS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
 use ordered_float::OrderedFloat;
