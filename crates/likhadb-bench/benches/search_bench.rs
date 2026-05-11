@@ -4,6 +4,7 @@ use likhadb_index::HnswIndex;
 use likhadb_index::{IvfIndex, VectorIndex};
 use likhadb_store::CollectionManager;
 use rand::{rngs::StdRng, Rng, SeedableRng};
+use std::time::Duration;
 
 fn random_vec(rng: &mut StdRng, dim: usize) -> Vec<f32> {
     (0..dim).map(|_| rng.gen::<f32>()).collect()
@@ -240,7 +241,7 @@ fn bench_hnsw_build(
                 }
                 black_box(idx);
             },
-            BatchSize::SmallInput,
+            BatchSize::LargeInput,
         );
     });
 }
@@ -317,15 +318,7 @@ fn benchmarks(c: &mut Criterion) {
         bench_ivf_sq8_search(c, label, n, dim, nlist, nprobe);
     }
 
-    // HNSW build cost (one-time construction)
-    for &(label, n, dim) in &[
-        ("10k_d384", 10_000usize, 384usize),
-        ("100k_d384", 100_000, 384),
-    ] {
-        bench_hnsw_build(c, label, n, dim, 16, 200);
-    }
-
-    // HNSW search at varying ef_search
+    // HNSW search at varying ef_search (index pre-built outside the timing loop)
     for &(label, n, dim, ef_search) in &[
         ("10k_d384", 10_000usize, 384usize, 50usize),
         ("10k_d384", 10_000, 384, 100),
@@ -336,5 +329,23 @@ fn benchmarks(c: &mut Criterion) {
     }
 }
 
+/// HNSW build benchmarks in a separate group with tight time limits.
+/// Each iteration rebuilds the full index, so 100k vectors at d=384 takes
+/// several seconds — Criterion's default 100-sample target would take hours.
+fn hnsw_build_benchmarks(c: &mut Criterion) {
+    // Only 10k: a 100k build takes 5-10s per iteration; even sample_size=10
+    // at that cost would run for minutes. The 100k *search* bench (pre-built)
+    // already covers scale for query-time measurements.
+    bench_hnsw_build(c, "10k_d384", 10_000, 384, 16, 200);
+}
+
 criterion_group!(benches, benchmarks);
-criterion_main!(benches);
+criterion_group! {
+    name    = slow_benches;
+    config  = Criterion::default()
+        .sample_size(10)
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(15));
+    targets = hnsw_build_benchmarks
+}
+criterion_main!(benches, slow_benches);

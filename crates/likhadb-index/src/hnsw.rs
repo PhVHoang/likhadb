@@ -1,5 +1,14 @@
+use std::cell::{Cell, RefCell};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
+
+// Per-thread visited tracking: each thread maintains its own epoch counter and
+// stamp array so concurrent `search` calls on different threads never interfere.
+// Epoch wraps at u64::MAX (18 quintillion searches per thread before collision).
+thread_local! {
+    static SEARCH_EPOCH: Cell<u64> = Cell::new(0);
+    static VISIT_STAMPS: RefCell<Vec<u64>> = RefCell::new(Vec::new());
+}
 
 use ordered_float::OrderedFloat;
 
@@ -156,51 +165,64 @@ impl HnswIndex {
         ef: usize,
         level: usize,
     ) -> BinaryHeap<(OrderedFloat<f32>, usize)> {
-        // W: result set (max-heap, worst/farthest at top, size ≤ ef)
-        let mut w: BinaryHeap<(OrderedFloat<f32>, usize)> = BinaryHeap::new();
-        // C: candidates to expand (min-heap, nearest at top)
-        // We use Reverse to turn BinaryHeap into a min-heap.
-        let mut c: BinaryHeap<Reverse<(OrderedFloat<f32>, usize)>> = BinaryHeap::new();
-        let mut visited: HashSet<usize> = HashSet::new();
+        // Bump the per-thread epoch so every node looks unvisited at the start.
+        // No allocation: we reuse the thread-local stamps Vec across calls.
+        let epoch = SEARCH_EPOCH.with(|e| {
+            let next = e.get().wrapping_add(1);
+            e.set(next);
+            next
+        });
 
-        for &ep in entry_points {
-            let d = OrderedFloat(self.dist(query, ep));
-            w.push((d, ep));
-            c.push(std::cmp::Reverse((d, ep)));
-            visited.insert(ep);
-        }
-
-        while let Some(std::cmp::Reverse((c_dist, c_idx))) = c.pop() {
-            let f_dist = w.peek().map(|&(d, _)| d).unwrap_or(OrderedFloat(f32::MAX));
-            if c_dist > f_dist {
-                break; // every remaining candidate is farther than the worst result
+        VISIT_STAMPS.with(|cell| {
+            let mut stamps = cell.borrow_mut();
+            if stamps.len() < self.nodes.len() {
+                stamps.resize(self.nodes.len(), 0);
             }
 
-            // Expand neighbours of c_idx at this level
-            let neighbours = if level < self.nodes[c_idx].layers.len() {
-                self.nodes[c_idx].layers[level].clone()
-            } else {
-                vec![]
-            };
+            // W: result set (max-heap, worst/farthest at top, size ≤ ef)
+            let mut w: BinaryHeap<(OrderedFloat<f32>, usize)> = BinaryHeap::new();
+            // C: candidates to expand (min-heap, nearest at top)
+            let mut c: BinaryHeap<Reverse<(OrderedFloat<f32>, usize)>> = BinaryHeap::new();
 
-            for nbr in neighbours {
-                if visited.contains(&nbr) {
-                    continue;
-                }
-                visited.insert(nbr);
-                let d = OrderedFloat(self.dist(query, nbr));
+            for &ep in entry_points {
+                let d = OrderedFloat(self.dist(query, ep));
+                w.push((d, ep));
+                c.push(Reverse((d, ep)));
+                stamps[ep] = epoch;
+            }
+
+            while let Some(Reverse((c_dist, c_idx))) = c.pop() {
                 let f_dist = w.peek().map(|&(d, _)| d).unwrap_or(OrderedFloat(f32::MAX));
-                if d < f_dist || w.len() < ef {
-                    c.push(std::cmp::Reverse((d, nbr)));
-                    w.push((d, nbr));
-                    if w.len() > ef {
-                        w.pop(); // evict worst
+                if c_dist > f_dist {
+                    break; // every remaining candidate is farther than the worst result
+                }
+
+                // Borrow neighbours as a slice to avoid a Vec allocation per hop.
+                let neighbours: &[usize] = self.nodes[c_idx]
+                    .layers
+                    .get(level)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+
+                for &nbr in neighbours {
+                    if stamps[nbr] == epoch {
+                        continue;
+                    }
+                    stamps[nbr] = epoch;
+                    let d = OrderedFloat(self.dist(query, nbr));
+                    let f_dist = w.peek().map(|&(d, _)| d).unwrap_or(OrderedFloat(f32::MAX));
+                    if d < f_dist || w.len() < ef {
+                        c.push(Reverse((d, nbr)));
+                        w.push((d, nbr));
+                        if w.len() > ef {
+                            w.pop(); // evict worst
+                        }
                     }
                 }
             }
-        }
 
-        w
+            w
+        })
     }
 
     /// Select the `m_max` closest candidates from a max-heap, returning their node indices.
