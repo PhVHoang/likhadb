@@ -260,10 +260,12 @@ wal.checkpoint().unwrap();
 
 ## Benchmark results
 
+### Apple M2
+
 Measured on Apple M2 (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON).
 Rayon uses the default thread pool (all available cores).
 
-### FlatIndex (exact search)
+#### FlatIndex (exact search)
 
 | Benchmark | Vectors | Dim | k | Scalar | SIMD (1 thread) | SIMD + rayon | vs scalar |
 |---|---|---|---|---|---|---|---|
@@ -271,7 +273,7 @@ Rayon uses the default thread pool (all available cores).
 | `10k_d384`  |  10 000 | 384 | 10 | 2.80 ms | 0.888 ms | 0.396 ms | **7.1×** |
 | `100k_d384` | 100 000 | 384 | 10 | 26.5 ms | 8.84 ms | 2.82 ms | **9.4×** |
 
-### IvfIndex (approximate search)
+#### IvfIndex (approximate search)
 
 | Vectors | Dim | nlist | nprobe | Training (one-time) | Query latency | vs FlatIndex SIMD+rayon |
 |---|---|---|---|---|---|---|
@@ -280,7 +282,7 @@ Rayon uses the default thread pool (all available cores).
 | 100 000 | 384 | 1024 | 16 | 320 ms  | 272 µs   | **10.4×** |
 | 100 000 | 384 | 1024 | 64 | 320 ms  | 554 µs   | **5.1×** |
 
-### IvfIndex + SQ8 (approximate, 4× smaller posting lists)
+#### IvfIndex + SQ8 (approximate, 4× smaller posting lists)
 
 | Vectors | Dim | nlist | nprobe | Query latency | vs IvfIndex (f32) |
 |---|---|---|---|---|---|
@@ -289,7 +291,7 @@ Rayon uses the default thread pool (all available cores).
 | 100 000 | 384 | 1024 | 16 | 848 µs | 0.32× |
 | 100 000 | 384 | 1024 | 64 | 1.92 ms | 0.29× |
 
-### HnswIndex (graph-based approximate search)
+#### HnswIndex (graph-based approximate search)
 
 | Vectors | Dim | m | ef_construction | ef_search | Query latency | vs FlatIndex SIMD+rayon |
 |---|---|---|---|---|---|---|
@@ -305,10 +307,65 @@ Rayon uses the default thread pool (all available cores).
 | 10 000 | 384 | 16 | 200 | 4.57 s |
 
 **Notes:**
-- `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **10× speedup** over exact SIMD+rayon search.
+- `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **10.4× speedup** over exact SIMD+rayon search.
 - SQ8 reduces posting-list memory 4× but is slower per query due to asymmetric decode overhead; best for memory-constrained deployments.
 - At 1 k vectors, Rayon dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
 - HNSW at `ef_search=50` on 100 k vectors achieves **16.9× speedup** vs exact SIMD+rayon with sub-200 µs latency.
+
+---
+
+### Apple M4 Mac Mini (16 GB RAM)
+
+Measured on Apple M4 Mac Mini, 16 GB RAM (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON).
+Rayon uses the default thread pool (all available cores).
+
+#### FlatIndex (exact search)
+
+| Benchmark | Vectors | Dim | k | Scalar | SIMD (1 thread) | SIMD + rayon | vs scalar |
+|---|---|---|---|---|---|---|---|
+| `1k_d128`   |   1 000 | 128 | 10 | 34.6 µs | 27.2 µs | 55.4 µs | 0.6× |
+| `10k_d384`  |  10 000 | 384 | 10 | 1.30 ms | 0.603 ms | 0.230 ms | **5.6×** |
+| `100k_d384` | 100 000 | 384 | 10 | 13.9 ms | 5.72 ms | 1.41 ms | **9.8×** |
+
+#### IvfIndex (approximate search)
+
+| Vectors | Dim | nlist | nprobe | Training (one-time) | Query latency | vs FlatIndex SIMD+rayon |
+|---|---|---|---|---|---|---|
+|  10 000 | 384 |  256 |  8 | 13.5 ms |  84.5 µs | **2.7×** |
+|  10 000 | 384 |  256 | 32 | 13.5 ms |  95.5 µs | **2.4×** |
+| 100 000 | 384 | 1024 | 16 | 193 ms  | 197 µs   | **7.2×** |
+| 100 000 | 384 | 1024 | 64 | 193 ms  | 335 µs   | **4.2×** |
+
+#### IvfIndex + SQ8 (approximate, 4× smaller posting lists)
+
+| Vectors | Dim | nlist | nprobe | Query latency | vs IvfIndex (f32) |
+|---|---|---|---|---|---|
+|  10 000 | 384 |  256 |  8 | 222 µs | 0.38× |
+|  10 000 | 384 |  256 | 32 | 286 µs | 0.33× |
+| 100 000 | 384 | 1024 | 16 | 568 µs | 0.35× |
+| 100 000 | 384 | 1024 | 64 | 1.16 ms | 0.29× |
+
+#### HnswIndex (graph-based approximate search)
+
+| Vectors | Dim | m | ef_construction | ef_search | Query latency | vs FlatIndex SIMD+rayon |
+|---|---|---|---|---|---|---|
+|  10 000 | 384 | 16 | 200 |  50 | 103 µs | **2.2×** |
+|  10 000 | 384 | 16 | 200 | 100 | 178 µs | **1.3×** |
+| 100 000 | 384 | 16 | 200 |  50 | 128 µs | **11.0×** |
+| 100 000 | 384 | 16 | 200 | 100 | 225 µs | **6.3×** |
+
+**Build time** (one-time, amortised across all queries):
+
+| Vectors | Dim | m | ef_construction | Build time |
+|---|---|---|---|---|
+| 10 000 | 384 | 16 | 200 | 3.07 s |
+
+**Notes:**
+- `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **7.2× speedup** over exact SIMD+rayon search.
+- SQ8 reduces posting-list memory 4× but is slower per query due to asymmetric decode overhead; best for memory-constrained deployments.
+- At 1 k vectors, Rayon dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
+- HNSW at `ef_search=50` on 100 k vectors achieves **11.0× speedup** vs exact SIMD+rayon with sub-130 µs latency.
+- IVF training is ~40% faster than M2 (13.5 ms vs 21.6 ms at 10 k vectors), HNSW build is ~33% faster (3.07 s vs 4.57 s at 10 k vectors).
 
 ---
 
