@@ -35,8 +35,16 @@ fn parquet_round_trip_10k_vectors() {
 
     // 4. Verify search results are identical
     let query: Vec<f32> = (0..16).map(|d| d as f32 / 1000.0).collect();
-    let src_results = src.get("src").unwrap().search(&query, 10, None, false).unwrap();
-    let dst_results = dst.get("dst").unwrap().search(&query, 10, None, false).unwrap();
+    let src_results = src
+        .get("src")
+        .unwrap()
+        .search(&query, 10, None, false)
+        .unwrap();
+    let dst_results = dst
+        .get("dst")
+        .unwrap()
+        .search(&query, 10, None, false)
+        .unwrap();
 
     assert_eq!(src_results.len(), dst_results.len());
 
@@ -44,5 +52,8 @@ fn parquet_round_trip_10k_vectors() {
     let mut dst_ids: Vec<u64> = dst_results.iter().map(|r| r.id).collect();
     src_ids.sort_unstable();
     dst_ids.sort_unstable();
-    assert_eq!(src_ids, dst_ids, "top-10 result IDs must match after round-trip");
+    assert_eq!(
+        src_ids, dst_ids,
+        "top-10 result IDs must match after round-trip"
+    );
 }

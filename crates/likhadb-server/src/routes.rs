@@ -44,14 +44,8 @@ pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
             "/collections/:name/hybrid-query",
             post(hybrid_query_vectors),
         )
-        .route(
-            "/collections/:name/import-parquet",
-            post(import_parquet),
-        )
-        .route(
-            "/collections/:name/export-parquet",
-            post(export_parquet),
-        )
+        .route("/collections/:name/import-parquet", post(import_parquet))
+        .route("/collections/:name/export-parquet", post(export_parquet))
         .layer(Extension(prometheus))
         .with_state(state)
 }

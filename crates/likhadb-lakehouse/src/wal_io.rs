@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, Float32Array, FixedSizeListArray, StringArray, UInt64Array, UInt64Builder,
+    ArrayRef, FixedSizeListArray, Float32Array, StringArray, UInt64Array, UInt64Builder,
 };
 use arrow::compute;
 use arrow::datatypes::{DataType, Field, Schema};
@@ -18,11 +18,7 @@ use crate::parquet_io::{build_payload, LakehouseExt};
 const ROW_GROUP_SIZE: usize = 65_536;
 
 impl LakehouseExt for WalManager {
-    fn export_parquet(
-        &self,
-        collection_name: &str,
-        path: &Path,
-    ) -> Result<(), LakehouseError> {
+    fn export_parquet(&self, collection_name: &str, path: &Path) -> Result<(), LakehouseError> {
         let collection = self
             .get(collection_name)
             .map_err(|_| LakehouseError::CollectionNotFound(collection_name.to_string()))?;
@@ -70,10 +66,8 @@ impl LakehouseExt for WalManager {
             )?);
             let payload_array: ArrayRef = Arc::new(StringArray::from(payload_strings));
 
-            let batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![id_array, vector_array, payload_array],
-            )?;
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![id_array, vector_array, payload_array])?;
             writer.write(&batch)?;
         }
 
@@ -168,9 +162,7 @@ impl LakehouseExt for WalManager {
                 .as_any()
                 .downcast_ref::<FixedSizeListArray>()
                 .ok_or_else(|| {
-                    LakehouseError::Schema(
-                        "vector column is not FixedSizeListArray".to_string(),
-                    )
+                    LakehouseError::Schema("vector column is not FixedSizeListArray".to_string())
                 })?;
             let float_values = vec_array
                 .values()

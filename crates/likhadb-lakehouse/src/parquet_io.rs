@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, FixedSizeListArray, Int32Array,
+    Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array,
     Int64Array, StringArray, UInt32Array, UInt64Array, UInt64Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
@@ -21,11 +21,7 @@ pub trait LakehouseExt {
     ///
     /// Output schema: `id: UInt64`, `vector: FixedSizeList<Float32>[dim]`,
     /// `payload: Utf8` (nullable, JSON-serialised payload).
-    fn export_parquet(
-        &self,
-        collection_name: &str,
-        path: &Path,
-    ) -> Result<(), LakehouseError>;
+    fn export_parquet(&self, collection_name: &str, path: &Path) -> Result<(), LakehouseError>;
 
     /// Import vectors from a Parquet file into an existing collection.
     ///
@@ -47,11 +43,7 @@ pub trait LakehouseExt {
 }
 
 impl LakehouseExt for CollectionManager {
-    fn export_parquet(
-        &self,
-        collection_name: &str,
-        path: &Path,
-    ) -> Result<(), LakehouseError> {
+    fn export_parquet(&self, collection_name: &str, path: &Path) -> Result<(), LakehouseError> {
         let collection = self
             .get(collection_name)
             .map_err(|_| LakehouseError::CollectionNotFound(collection_name.to_string()))?;
@@ -176,12 +168,11 @@ impl LakehouseExt for CollectionManager {
                 .index_of(id_col)
                 .map_err(|_| LakehouseError::ColumnNotFound(id_col.to_string()))?;
             let id_array_raw = batch.column(id_col_idx);
-            let id_array_cast: Arc<dyn Array> =
-                if id_array_raw.data_type() == &DataType::UInt64 {
-                    id_array_raw.clone()
-                } else {
-                    arrow::compute::cast(id_array_raw, &DataType::UInt64)?
-                };
+            let id_array_cast: Arc<dyn Array> = if id_array_raw.data_type() == &DataType::UInt64 {
+                id_array_raw.clone()
+            } else {
+                arrow::compute::cast(id_array_raw, &DataType::UInt64)?
+            };
             let id_array = id_array_cast
                 .as_any()
                 .downcast_ref::<UInt64Array>()
@@ -332,7 +323,12 @@ mod tests {
 
         let mut m = make_manager_with_collection("c", 4);
         let col = m.get_mut("c").unwrap();
-        col.insert(1, vec![1.0, 2.0, 3.0, 4.0], Some(serde_json::json!({"tag": "a"}))).unwrap();
+        col.insert(
+            1,
+            vec![1.0, 2.0, 3.0, 4.0],
+            Some(serde_json::json!({"tag": "a"})),
+        )
+        .unwrap();
         col.insert(2, vec![5.0, 6.0, 7.0, 8.0], None).unwrap();
 
         m.export_parquet("c", &path).unwrap();
@@ -342,13 +338,19 @@ mod tests {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
         let schema = builder.schema();
 
-        assert_eq!(schema.field_with_name("id").unwrap().data_type(), &DataType::UInt64);
+        assert_eq!(
+            schema.field_with_name("id").unwrap().data_type(),
+            &DataType::UInt64
+        );
         assert_eq!(
             schema.field_with_name("payload").unwrap().data_type(),
             &DataType::Utf8
         );
         let vec_field = schema.field_with_name("vector").unwrap();
-        assert!(matches!(vec_field.data_type(), DataType::FixedSizeList(_, 4)));
+        assert!(matches!(
+            vec_field.data_type(),
+            DataType::FixedSizeList(_, 4)
+        ));
     }
 
     #[test]
@@ -359,16 +361,26 @@ mod tests {
         let mut m = make_manager_with_collection("c", 2);
         let col = m.get_mut("c").unwrap();
         col.insert(1, vec![1.0, 2.0], None).unwrap();
-        col.insert(2, vec![3.0, 4.0], Some(serde_json::json!({"x": 1}))).unwrap();
+        col.insert(2, vec![3.0, 4.0], Some(serde_json::json!({"x": 1})))
+            .unwrap();
 
         m.export_parquet("c", &path).unwrap();
 
         let file = std::fs::File::open(&path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
         let batch = reader.into_iter().next().unwrap().unwrap();
-        let payload_col = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+        let payload_col = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
 
-        let null_count = (0..payload_col.len()).filter(|&i| payload_col.is_null(i)).count();
+        let null_count = (0..payload_col.len())
+            .filter(|&i| payload_col.is_null(i))
+            .count();
         assert_eq!(null_count, 1);
     }
 
@@ -380,29 +392,37 @@ mod tests {
         let vector_field = Arc::new(Field::new("item", DataType::Float32, false));
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::UInt64, false),
-            Field::new("vector", DataType::FixedSizeList(vector_field.clone(), 3), false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(vector_field.clone(), 3),
+                false,
+            ),
             Field::new("payload", DataType::Utf8, true),
         ]));
 
         let id_array: ArrayRef = Arc::new(UInt64Array::from(vec![10u64, 20, 30]));
-        let float_array = Arc::new(Float32Array::from(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]));
-        let vec_array: ArrayRef = Arc::new(
-            FixedSizeListArray::try_new(vector_field, 3, float_array, None).unwrap()
-        );
+        let float_array = Arc::new(Float32Array::from(vec![
+            1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+        ]));
+        let vec_array: ArrayRef =
+            Arc::new(FixedSizeListArray::try_new(vector_field, 3, float_array, None).unwrap());
         let payload_array: ArrayRef = Arc::new(StringArray::from(vec![
             Some(r#"{"label":"a"}"#),
             None,
             Some(r#"{"label":"c"}"#),
         ]));
 
-        let batch = RecordBatch::try_new(schema.clone(), vec![id_array, vec_array, payload_array]).unwrap();
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![id_array, vec_array, payload_array]).unwrap();
         let file = std::fs::File::create(&path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
         let mut m = make_manager_with_collection("dst", 3);
-        let count = m.import_parquet("dst", &path, "id", "vector", &["payload"]).unwrap();
+        let count = m
+            .import_parquet("dst", &path, "id", "vector", &["payload"])
+            .unwrap();
         assert_eq!(count, 3);
 
         let col = m.get("dst").unwrap();
@@ -420,14 +440,17 @@ mod tests {
         let vector_field = Arc::new(Field::new("item", DataType::Float32, false));
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
-            Field::new("vector", DataType::FixedSizeList(vector_field.clone(), 2), false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(vector_field.clone(), 2),
+                false,
+            ),
         ]));
 
         let id_array: ArrayRef = Arc::new(Int64Array::from(vec![100i64, 200]));
         let float_array = Arc::new(Float32Array::from(vec![1.0f32, 2.0, 3.0, 4.0]));
-        let vec_array: ArrayRef = Arc::new(
-            FixedSizeListArray::try_new(vector_field, 2, float_array, None).unwrap()
-        );
+        let vec_array: ArrayRef =
+            Arc::new(FixedSizeListArray::try_new(vector_field, 2, float_array, None).unwrap());
         let batch = RecordBatch::try_new(schema.clone(), vec![id_array, vec_array]).unwrap();
 
         let file = std::fs::File::create(&path).unwrap();
@@ -450,14 +473,17 @@ mod tests {
         let vector_field = Arc::new(Field::new("item", DataType::Float32, false));
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::UInt64, false),
-            Field::new("vector", DataType::FixedSizeList(vector_field.clone(), 2), false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(vector_field.clone(), 2),
+                false,
+            ),
         ]));
 
         let id_array: ArrayRef = Arc::new(UInt64Array::from(vec![1u64]));
         let float_array = Arc::new(Float32Array::from(vec![1.0f32, 2.0]));
-        let vec_array: ArrayRef = Arc::new(
-            FixedSizeListArray::try_new(vector_field, 2, float_array, None).unwrap()
-        );
+        let vec_array: ArrayRef =
+            Arc::new(FixedSizeListArray::try_new(vector_field, 2, float_array, None).unwrap());
         let batch = RecordBatch::try_new(schema.clone(), vec![id_array, vec_array]).unwrap();
 
         let file = std::fs::File::create(&path).unwrap();
@@ -466,7 +492,9 @@ mod tests {
         writer.close().unwrap();
 
         let mut m = make_manager_with_collection("dst", 2);
-        let err = m.import_parquet("dst", &path, "id", "no_such_col", &[]).unwrap_err();
+        let err = m
+            .import_parquet("dst", &path, "id", "no_such_col", &[])
+            .unwrap_err();
         assert!(matches!(err, LakehouseError::ColumnNotFound(_)));
     }
 
@@ -478,14 +506,17 @@ mod tests {
         let vector_field = Arc::new(Field::new("item", DataType::Float32, false));
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::UInt64, false),
-            Field::new("vector", DataType::FixedSizeList(vector_field.clone(), 3), false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(vector_field.clone(), 3),
+                false,
+            ),
         ]));
 
         let id_array: ArrayRef = Arc::new(UInt64Array::from(vec![1u64]));
         let float_array = Arc::new(Float32Array::from(vec![1.0f32, 2.0, 3.0]));
-        let vec_array: ArrayRef = Arc::new(
-            FixedSizeListArray::try_new(vector_field, 3, float_array, None).unwrap()
-        );
+        let vec_array: ArrayRef =
+            Arc::new(FixedSizeListArray::try_new(vector_field, 3, float_array, None).unwrap());
         let batch = RecordBatch::try_new(schema.clone(), vec![id_array, vec_array]).unwrap();
 
         let file = std::fs::File::create(&path).unwrap();
@@ -494,7 +525,15 @@ mod tests {
         writer.close().unwrap();
 
         let mut m = make_manager_with_collection("dst", 4); // dim=4, file has dim=3
-        let err = m.import_parquet("dst", &path, "id", "vector", &[]).unwrap_err();
-        assert!(matches!(err, LakehouseError::DimMismatch { expected: 4, got: 3 }));
+        let err = m
+            .import_parquet("dst", &path, "id", "vector", &[])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            LakehouseError::DimMismatch {
+                expected: 4,
+                got: 3
+            }
+        ));
     }
 }
