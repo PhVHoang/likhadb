@@ -267,32 +267,48 @@ Rayon uses the default thread pool (all available cores).
 
 | Benchmark | Vectors | Dim | k | Scalar | SIMD (1 thread) | SIMD + rayon | vs scalar |
 |---|---|---|---|---|---|---|---|
-| `1k_d128`   |   1 000 | 128 | 10 |  70.2 µs |  45.7 µs |  54.8 µs | **1.3×** |
-| `10k_d384`  |  10 000 | 384 | 10 |  2.55 ms | 0.883 ms | 0.342 ms | **7.5×** |
-| `100k_d384` | 100 000 | 384 | 10 | 26.9 ms  |  8.50 ms |  2.67 ms | **10×** |
+| `1k_d128`   |   1 000 | 128 | 10 | 80.5 µs | 55.3 µs | 70.3 µs | **1.1×** |
+| `10k_d384`  |  10 000 | 384 | 10 | 2.80 ms | 0.888 ms | 0.396 ms | **7.1×** |
+| `100k_d384` | 100 000 | 384 | 10 | 26.5 ms | 8.84 ms | 2.82 ms | **9.4×** |
 
 ### IvfIndex (approximate search)
 
 | Vectors | Dim | nlist | nprobe | Training (one-time) | Query latency | vs FlatIndex SIMD+rayon |
 |---|---|---|---|---|---|---|
-|  10 000 | 384 |  256 |  8 | 20.8 ms |  91.7 µs | **3.7×** |
-|  10 000 | 384 |  256 | 32 | 20.8 ms | 124 µs   | **2.8×** |
-| 100 000 | 384 | 1024 | 16 | 309 ms  | 268 µs   | **10×**  |
-| 100 000 | 384 | 1024 | 64 | 309 ms  | 512 µs   | **5.2×** |
+|  10 000 | 384 |  256 |  8 | 21.6 ms |  93.1 µs | **4.2×** |
+|  10 000 | 384 |  256 | 32 | 21.6 ms | 141 µs   | **2.8×** |
+| 100 000 | 384 | 1024 | 16 | 320 ms  | 272 µs   | **10.4×** |
+| 100 000 | 384 | 1024 | 64 | 320 ms  | 554 µs   | **5.1×** |
 
 ### IvfIndex + SQ8 (approximate, 4× smaller posting lists)
 
 | Vectors | Dim | nlist | nprobe | Query latency | vs IvfIndex (f32) |
 |---|---|---|---|---|---|
-|  10 000 | 384 |  256 |  8 | 295 µs | 0.31× |
-|  10 000 | 384 |  256 | 32 | 436 µs | 0.28× |
-| 100 000 | 384 | 1024 | 16 | 765 µs | 0.35× |
-| 100 000 | 384 | 1024 | 64 | 1.82 ms | 0.28× |
+|  10 000 | 384 |  256 |  8 | 342 µs | 0.27× |
+|  10 000 | 384 |  256 | 32 | 648 µs | 0.22× |
+| 100 000 | 384 | 1024 | 16 | 848 µs | 0.32× |
+| 100 000 | 384 | 1024 | 64 | 1.92 ms | 0.29× |
+
+### HnswIndex (graph-based approximate search)
+
+| Vectors | Dim | m | ef_construction | ef_search | Query latency | vs FlatIndex SIMD+rayon |
+|---|---|---|---|---|---|---|
+|  10 000 | 384 | 16 | 200 |  50 | 146 µs | **2.7×** |
+|  10 000 | 384 | 16 | 200 | 100 | 233 µs | **1.7×** |
+| 100 000 | 384 | 16 | 200 |  50 | 167 µs | **16.9×** |
+| 100 000 | 384 | 16 | 200 | 100 | 320 µs | **8.8×** |
+
+**Build time** (one-time, amortised across all queries):
+
+| Vectors | Dim | m | ef_construction | Build time |
+|---|---|---|---|---|
+| 10 000 | 384 | 16 | 200 | 4.57 s |
 
 **Notes:**
 - `nprobe=16` on 100 k vectors (1.6% of clusters) delivers **10× speedup** over exact SIMD+rayon search.
 - SQ8 reduces posting-list memory 4× but is slower per query due to asymmetric decode overhead; best for memory-constrained deployments.
 - At 1 k vectors, Rayon dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
+- HNSW at `ef_search=50` on 100 k vectors achieves **16.9× speedup** vs exact SIMD+rayon with sub-200 µs latency.
 
 ---
 
@@ -307,7 +323,7 @@ Rayon uses the default thread pool (all available cores).
 | **E — API** | Done | HTTP REST (axum) + gRPC (tonic) |
 | **F — Observability** | Done | Prometheus metrics (`/metrics`) + structured JSON tracing |
 | **F1 — Full-text search** | Done | Tantivy BM25 index per collection, opt-in via `fts` feature |
-| **F2 — Hybrid search** | Planned | RRF fusion of vector similarity + BM25 scores |
+| **F2 — Hybrid search** | Done | RRF fusion of vector similarity + BM25 scores |
 | **L — Lakehouse I/O** | Planned | Parquet import/export, object storage (S3/GCS), Delta Lake |
 | **T — Vector transforms** | Planned | Insert-time L2 normalisation, scalar scaling |
 
