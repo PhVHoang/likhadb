@@ -10,13 +10,15 @@ use axum::{
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
 
+use likhadb_lakehouse::LakehouseExt;
+
 use crate::{
     error::ApiError,
     state::AppState,
     types::{
-        metric_str, parse_metric, CollectionInfo, CreateCollectionRequest, HybridQueryRequest,
-        HybridQueryResponse, IndexConfig, InsertRequest, QueryRequest, QueryResponse,
-        VectorResponse,
+        metric_str, parse_metric, CollectionInfo, CreateCollectionRequest, ExportParquetRequest,
+        HybridQueryRequest, HybridQueryResponse, ImportParquetRequest, ImportParquetResponse,
+        IndexConfig, InsertRequest, QueryRequest, QueryResponse, VectorResponse,
     },
 };
 
@@ -41,6 +43,14 @@ pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
         .route(
             "/collections/:name/hybrid-query",
             post(hybrid_query_vectors),
+        )
+        .route(
+            "/collections/:name/import-parquet",
+            post(import_parquet),
+        )
+        .route(
+            "/collections/:name/export-parquet",
+            post(export_parquet),
         )
         .layer(Extension(prometheus))
         .with_state(state)
@@ -240,4 +250,31 @@ async fn hybrid_query_vectors(
     )
     .record(start.elapsed().as_secs_f64());
     Ok(Json(HybridQueryResponse { results }))
+}
+
+async fn import_parquet(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<ImportParquetRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let path = std::path::Path::new(&req.path);
+    let payload_cols: Vec<&str> = req.payload_cols.iter().map(String::as_str).collect();
+    let imported = {
+        let mut guard = state.write().await;
+        guard.import_parquet(&name, path, &req.id_col, &req.vector_col, &payload_cols)?
+    };
+    Ok((StatusCode::OK, Json(ImportParquetResponse { imported })))
+}
+
+async fn export_parquet(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<ExportParquetRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let path = std::path::Path::new(&req.path);
+    {
+        let guard = state.read().await;
+        guard.export_parquet(&name, path)?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }

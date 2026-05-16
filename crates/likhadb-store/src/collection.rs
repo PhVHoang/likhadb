@@ -204,6 +204,10 @@ impl Collection {
         ids.iter().map(|&id| self.get(id)).collect()
     }
 
+    pub fn list_ids(&self) -> Vec<likhadb_core::VecId> {
+        self.index.list_ids()
+    }
+
     pub fn len(&self) -> usize {
         self.index.len()
     }

@@ -200,6 +200,10 @@ impl VectorIndex for FlatIndex {
         self.dim
     }
 
+    fn list_ids(&self) -> Vec<VecId> {
+        self.ids.clone()
+    }
+
     fn index_type(&self) -> &'static str {
         "FlatIndex"
     }

@@ -29,6 +29,9 @@ pub trait VectorIndex: Send + Sync {
         self.len() == 0
     }
 
+    /// Return all live vector IDs stored in this index.
+    fn list_ids(&self) -> Vec<VecId>;
+
     /// Index type name — used for observability/logging only.
     fn index_type(&self) -> &'static str;
 

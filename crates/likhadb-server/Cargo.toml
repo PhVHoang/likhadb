@@ -7,6 +7,7 @@ edition = "2021"
 likhadb-core                 = { path = "../likhadb-core" }
 likhadb-store                = { path = "../likhadb-store", features = ["fts"] }
 likhadb-persist              = { path = "../likhadb-persist", features = ["fts"] }
+likhadb-lakehouse            = { path = "../likhadb-lakehouse", features = ["persist"] }
 axum                         = "0.7"
 tokio                        = { version = "1", features = ["full"] }
 serde                        = { workspace = true }

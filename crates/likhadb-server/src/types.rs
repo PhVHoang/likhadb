@@ -102,6 +102,27 @@ pub struct HybridQueryResponse {
     pub results: Vec<ScoredResult>,
 }
 
+// ── Lakehouse I/O ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ImportParquetRequest {
+    pub path: String,
+    pub id_col: String,
+    pub vector_col: String,
+    #[serde(default)]
+    pub payload_cols: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ImportParquetResponse {
+    pub imported: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ExportParquetRequest {
+    pub path: String,
+}
+
 // ── Metric helpers ────────────────────────────────────────────────────────────
 
 pub fn parse_metric(s: &str) -> Result<Metric, ApiError> {

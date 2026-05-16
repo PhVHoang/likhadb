@@ -1,0 +1,19 @@
+[package]
+name    = "likhadb-lakehouse"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+persist = ["dep:likhadb-persist"]
+
+[dependencies]
+likhadb-core    = { path = "../likhadb-core" }
+likhadb-store   = { path = "../likhadb-store" }
+likhadb-persist = { path = "../likhadb-persist", optional = true, features = ["fts"] }
+arrow           = "53"
+parquet         = { version = "53", features = ["arrow"] }
+serde_json      = { workspace = true }
+thiserror       = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

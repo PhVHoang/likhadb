@@ -449,6 +449,14 @@ impl VectorIndex for HnswIndex {
         self.dim
     }
 
+    fn list_ids(&self) -> Vec<VecId> {
+        self.id_to_node
+            .keys()
+            .filter(|id| !self.deleted.contains(id))
+            .copied()
+            .collect()
+    }
+
     fn index_type(&self) -> &'static str {
         "HnswIndex"
     }
