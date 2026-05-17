@@ -160,7 +160,7 @@ pub struct HybridQuery {
 
 ## Tier L — Lakehouse I/O
 
-New crate: `crates/likhadb-lakehouse/` (depends on `arrow-rs`, `parquet`, `delta-rs`, `object_store`)
+New crate: `crates/likhadb-lakehouse/` (depends on `arrow-rs`, `parquet`, `iceberg-rust`, `object_store`)
 
 ### L1 — Parquet import / export ✅ Done
 
@@ -202,20 +202,22 @@ manager.export_parquet_url("gs://bucket/out/", ...) -> Result<()>
 
 ---
 
-### L3 — Delta Lake integration
+### L3 — Apache Iceberg integration
 
-**Goal:** Scan a Delta table as the source for vectors + metadata; support incremental sync.
+**Goal:** Register an Iceberg catalog and expose Iceberg tables to the DataFusion query
+layer (Tier Q). Also support direct import from an Iceberg table as a one-shot bulk load.
 
 **API:**
 ```rust
-// Full load from a Delta table
-manager.import_delta(collection_name: &str, table_uri: &str, ...) -> Result<usize>
-
-// Incremental sync: load only rows added since last_version
-manager.sync_delta(collection_name: &str, table_uri: &str, since_version: u64) -> Result<usize>
+// Bulk import from an Iceberg table (snapshot read)
+manager.import_iceberg(collection_name: &str, table_uri: &str, ...) -> Result<usize>
 ```
 
-**New dependency:** `deltalake = "0.18"` (with `datafusion` feature for predicate pushdown)
+The primary use of Iceberg tables at runtime is via the DataFusion query layer (Tier Q),
+not via direct import. L3 covers catalog registration and table discovery; Tier Q builds
+the enrichment and scoring pipeline on top.
+
+**New dependencies:** `iceberg = "0.4"`, `iceberg-datafusion = "0.4"` (from `apache/iceberg-rust`)
 
 ---
 
@@ -252,6 +254,99 @@ pub trait VectorTransform: Send + Sync {
 
 ---
 
+## Tier Q — DataFusion Query Layer
+
+New crate: `crates/likhadb-query/` (depends on `datafusion`, `iceberg-datafusion`)
+
+This tier adds Apache DataFusion as the post-ANN execution layer: metadata enrichment,
+access control enforcement, multi-signal score fusion, and multi-stage reranking. It sits
+downstream of the ANN index (likhadb's own HNSW/IVF) and upstream of the API response.
+
+```
+ANN Store (likhadb)  →   candidate IDs + distances
+DataFusion           →   enrichment + filtering + scoring + reranking
+Iceberg (object store) → source of truth for embeddings, metadata, business tables
+```
+
+### Q1 — SessionContext + Iceberg catalog registration
+
+**Goal:** Register an Iceberg catalog with a shared `SessionContext` at application startup.
+All Iceberg tables become queryable via DataFusion SQL.
+
+**Acceptance criteria:** All Iceberg tables queryable; auth via Workload Identity (GCP) or
+IAM role (AWS).
+
+**New dependencies:** `datafusion = "44"`, `iceberg = "0.4"`, `iceberg-datafusion = "0.4"`
+
+---
+
+### Q2 — Candidate MemTable + enrichment pipeline
+
+**Goal:** Register ANN candidates as a request-scoped in-memory table, then enrich with
+metadata and enforce access control via DataFusion SQL joins.
+
+**Candidate schema:** `id: Utf8, ann_distance: Float32, ann_rank: UInt64`
+
+**Concurrency model:** Clone the shared `SessionContext` config and catalog provider per
+request (child context pattern), registering the `candidates` MemTable in the isolated
+registry. This avoids candidate table interference under concurrent load without the memory
+overhead of a context pool.
+
+**ACL enforcement:** Applied in the enrichment `WHERE` clause using `array_has`:
+```sql
+WHERE array_has(acl.allowed_teams, ?) AND classifications.sensitivity_label != 'restricted'
+```
+
+**Acceptance criteria:** ACL filter verified; pushdowns confirmed via `EXPLAIN ANALYZE`
+(sensitivity_label eliminates row groups; embedding column absent from plan when not selected).
+
+---
+
+### Q3 — Score fusion (SQL window functions)
+
+**Goal:** Combine retrieval, temporal, authority, and content signals into a single
+`fusion_score` using normalised weighted sum, computed entirely in DataFusion SQL.
+
+**Normalization:** Min-max via `MAX() OVER ()` window functions within the candidate set —
+no precomputed global statistics required.
+
+**Fusion formula:**
+```
+fusion_score = Σ (weight_i × (signal_i - MIN(signal_i) OVER ()) / NULLIF(MAX(signal_i) OVER () - MIN(signal_i) OVER (), 0))
+```
+
+Weights are configuration-driven (`scoring.weights`), validated at startup to sum to 1.0.
+
+**Acceptance criteria:** Scores in `[0, 1]`; weight sum validated at startup; correct
+descending ordering; top-M candidates passed to Q4.
+
+---
+
+### Q4 — Reranking (bi-encoder + cross-encoder, materialize-then-call)
+
+**Goal:** Two-stage reranking over the top-M candidates from score fusion.
+
+Both stages use the **materialize-then-call** pattern — collect the RecordBatch out of
+DataFusion, make a single batched model call, zip scores back to IDs. DataFusion's
+`ScalarUDFImpl` interface is synchronous and cannot `await` HTTP calls; materialising
+before the call is the correct pattern at these cardinalities (top-100 → top-20 → top-K).
+
+**Stage 4b — Bi-encoder** (top-M → top-P):
+```
+collect top-M RecordBatch → batched bi-encoder call → zip bi_scores → sort → top-P
+combined_score = α × bi_score + (1 - α) × fusion_score
+```
+
+**Stage 4c — Cross-encoder** (top-P → top-K):
+```
+collect top-P RecordBatch → batched cross-encoder call → zip scores → sort → top-K
+```
+
+**Acceptance criteria:** Single batched model call per stage confirmed (not per-row);
+correct result ordering; latency within budget; all stage metrics emitted.
+
+---
+
 ## Workspace layout
 
 ```
@@ -263,7 +358,8 @@ likhadb/
 │   ├── likhadb-persist/   # Snapshot + WAL                                   ✅
 │   ├── likhadb-server/    # axum REST + tonic gRPC + Prometheus + tracing    ✅
 │   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query                ✅ (F1 done)
-│   ├── likhadb-lakehouse/ # Parquet / Delta Lake import-export               [ Tier L ]
+│   ├── likhadb-lakehouse/ # Parquet / Iceberg import-export                  [ Tier L ]
+│   ├── likhadb-query/     # DataFusion query layer (enrichment + scoring)    [ Tier Q ]
 │   ├── likhadb-transform/ # Insert-time vector transforms                    [ Tier T ]
 │   └── likhadb-bench/     # Criterion benchmarks                             ✅
 ```
@@ -285,7 +381,9 @@ A1 → A2 → A3           ✅ done
          ↓
     F2                  ✅ done (hybrid vector + FTS search, RRF)
          ↓
-    L1 → L2 → L3        ← next (parquet → object store → delta lake)
+    L1 → L2 → L3        ← next (parquet → object store → iceberg)
+         ↓
+    Q1 → Q2 → Q3 → Q4  (DataFusion query layer: enrichment → scoring → reranking)
          ↓
     T1 → T2             (vector transforms)
 ```
@@ -325,8 +423,14 @@ curl -s -X POST localhost:8080/collections/smoke/query \
 # After L1 (Parquet)
 # Round-trip: insert 10k vectors → export to Parquet → import into new collection → assert identical search results.
 
-# After L3 (Delta Lake)
-# Incremental sync: import Delta table v0, add rows, sync with since_version=1, verify new vectors searchable.
+# After L3 (Iceberg)
+# Register Iceberg catalog; query embeddings table via DataFusion; assert row count matches source.
+
+# After Q2 (enrichment)
+# Run EXPLAIN ANALYZE on enrichment query; verify candidates is build side; sensitivity_label filter eliminates row groups.
+
+# After Q3 (score fusion)
+# Assert all fusion_scores in [0, 1]; verify weight sum check fires on invalid config.
 
 # After T1 (transforms)
 # Insert un-normalized vectors with L2Normalizer; assert stored vectors have unit length (norm ≈ 1.0).
