@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use likhadb_core::LikhaDbError;
+use likhadb_lakehouse::LakehouseError;
 use likhadb_persist::PersistError;
 use serde_json::json;
 
@@ -43,6 +44,19 @@ impl From<LikhaDbError> for ApiError {
                 ApiError::BadRequest(e.to_string())
             }
             LikhaDbError::Fts(_) => ApiError::Internal(e.to_string()),
+        }
+    }
+}
+
+impl From<LakehouseError> for ApiError {
+    fn from(e: LakehouseError) -> Self {
+        match e {
+            LakehouseError::CollectionNotFound(_) => ApiError::NotFound(e.to_string()),
+            LakehouseError::DimMismatch { .. }
+            | LakehouseError::TypeMismatch { .. }
+            | LakehouseError::Schema(_)
+            | LakehouseError::ColumnNotFound(_) => ApiError::BadRequest(e.to_string()),
+            _ => ApiError::Internal(e.to_string()),
         }
     }
 }

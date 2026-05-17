@@ -27,7 +27,7 @@ the next begins.
 | Prometheus metrics | Done | `crates/likhadb-server/` |
 | Structured tracing | Done | `crates/likhadb-server/` |
 | Full-text search (`FtsIndex`, `TantivyFtsIndex`, `enable_fts`, `fts_search`) | Done (F1) | `crates/likhadb-fts/` |
-| Lakehouse I/O (Parquet) | **None** | — |
+| Lakehouse I/O (Parquet) | Done (L1) | `crates/likhadb-lakehouse/` |
 | Vector transforms | **None** | — |
 | Hybrid search (vec + FTS) | Done (F2) | `crates/likhadb-store/src/collection.rs`, `crates/likhadb-server/` |
 
@@ -162,7 +162,7 @@ pub struct HybridQuery {
 
 New crate: `crates/likhadb-lakehouse/` (depends on `arrow-rs`, `parquet`, `delta-rs`, `object_store`)
 
-### L1 — Parquet import / export
+### L1 — Parquet import / export ✅ Done
 
 **Goal:** Load vectors + metadata from Parquet files; export collections back to Parquet.
 

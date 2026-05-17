@@ -7,6 +7,7 @@ members = [
     "crates/likhadb-server",
     "crates/likhadb-bench",
     "crates/likhadb-fts",
+    "crates/likhadb-lakehouse",
 ]
 resolver = "2"
 

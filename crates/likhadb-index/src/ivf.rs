@@ -666,6 +666,14 @@ impl VectorIndex for IvfIndex {
         self.dim
     }
 
+    fn list_ids(&self) -> Vec<VecId> {
+        if self.trained {
+            self.id_to_list.keys().copied().collect()
+        } else {
+            self.staging_ids.clone()
+        }
+    }
+
     fn index_type(&self) -> &'static str {
         "IvfIndex"
     }
