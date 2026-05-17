@@ -1,6 +1,7 @@
 # likhadb
 
-A progressively-layered, in-memory vector database written in Rust.
+**The hybrid vector database built for the data lakehouse.**
+Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Delta tables — no ETL pipeline required.
 
 <p align="center">
   <img src="images/vecdb_tier_overview.svg" alt="Tier overview — Tier 1 through Tier 4 roadmap" width="720" />
