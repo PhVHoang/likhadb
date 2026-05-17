@@ -1,7 +1,7 @@
 # likhadb
 
 **The hybrid vector database built for the data lakehouse.**
-Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Delta tables — no ETL pipeline required.
+Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Iceberg — no ETL pipeline required.
 
 <p align="center">
   <img src="images/likhadb_logo.svg" alt="LikhaDB" width="720" />
