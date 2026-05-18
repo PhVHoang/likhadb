@@ -1,369 +1,189 @@
 # LikhaDB Architecture
 
-## Crate Structure
+## What LikhaDB Is
 
-LikhaDB is a workspace of six crates with a strict layered dependency order:
+LikhaDB is a hybrid vector database designed for the data lakehouse. It provides fast approximate nearest-neighbour (ANN) search and full-text search that reads and writes directly in Parquet, Apache Iceberg, and cloud object storage — without requiring an ETL pipeline to feed a separate vector store.
+
+---
+
+## The Problem
+
+Traditional vector databases are standalone systems: you extract data from your data lake, transform it, and load it into the vector store. This model has compounding costs:
+
+1. **Data duplication** — embeddings and metadata are duplicated between the lakehouse and the vector store. Every update in the lakehouse requires a corresponding update to the vector store.
+2. **Staleness** — the vector store is eventually consistent with the lakehouse. Synchronisation pipelines introduce latency, operational complexity, and additional failure modes.
+3. **Limited richness at query time** — standalone vector stores have no natural way to join ANN candidates with business data for enrichment, ACL enforcement, or multi-signal scoring. That logic ends up scattered across application code.
+4. **Two systems to operate** — the lakehouse and the vector store have separate monitoring, scaling, and access control surface areas.
+
+LikhaDB's goal is to eliminate this split. It is a first-class citizen of the lakehouse: it reads embeddings from Parquet and Iceberg, writes results back in the same format, and uses Apache DataFusion — the same query engine powering many modern lakehouse toolchains — as the post-retrieval execution layer.
+
+---
+
+## Mental Model
 
 ```
-likhadb-core
-    └── likhadb-index
-            └── likhadb-store
-                    └── likhadb-persist
-                            └── likhadb-server
-likhadb-bench  (depends on likhadb-index directly)
+Lakehouse (Iceberg / Parquet on object storage)
+         ↕  native read / write
+LikhaDB — ANN index + FTS + query pipeline
+         ↕  REST / gRPC
+Your application
 ```
 
-| Crate | Responsibility |
+The ANN index (HNSW, IVF, or flat brute-force) is LikhaDB's *recall layer*. Its sole responsibility is: given a query vector, return the top-N most similar candidate IDs and their distances, fast.
+
+Everything downstream of recall — metadata enrichment, ACL enforcement, multi-signal score fusion, and reranking — is handled by Apache DataFusion. DataFusion's columnar SQL execution engine can join the small candidate set against large Iceberg tables with predicate pushdown and partition pruning, making it the right tool for this second stage.
+
+The source of truth for embeddings, metadata, and business data is the Iceberg catalog on cloud object storage. LikhaDB's in-memory index is a *query accelerator* over that data, not an independent store. When the index is cold or empty, it is rebuilt from Iceberg. When new data arrives in Iceberg, the index is updated to reflect it.
+
+---
+
+## Architecture Layers
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   Application / API layer                    │
+│              REST (port 8080)  +  gRPC (port 50051)          │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+┌────────────────────────────▼─────────────────────────────────┐
+│              Tier Q — DataFusion Query Layer                  │
+│    Enrichment · ACL enforcement · Score fusion · Reranking   │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+┌────────────────────────────▼─────────────────────────────────┐
+│              Tier R — ANN Retrieval                          │
+│         HNSW · IVF · FlatIndex · BM25 · Hybrid RRF           │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+┌────────────────────────────▼─────────────────────────────────┐
+│              Tier L — Lakehouse I/O                          │
+│          Parquet · Object storage · Apache Iceberg           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Tier L — Lakehouse I/O
+
+This tier is what makes LikhaDB a lakehouse-native system rather than an isolated database. It handles reading and writing vector data in formats that are already standard across the lakehouse ecosystem.
+
+**Parquet** is the canonical format for embedding tables. LikhaDB can bulk-import vectors and metadata from any Parquet file that carries a `FixedSizeList<f32>` column for embeddings and export collections back to Parquet for downstream consumption.
+
+**Object storage** (S3, GCS, ADLS) — the planned next step — removes the requirement to materialise files locally. Parquet is read and written directly from cloud object storage, so LikhaDB can sit in the same VPC as the rest of the lakehouse infrastructure without local disk dependencies.
+
+**Apache Iceberg** is the target long-term data source. Iceberg's partitioning model (by embedding model version, by time) maps directly onto two important LikhaDB needs: clean cutover when a new embedding model is deployed, and efficient time-based pruning during enrichment queries. Registering an Iceberg catalog at startup makes all Iceberg tables queryable via DataFusion SQL, enabling the enrichment and scoring pipeline to join against production data without any duplication.
+
+The design principle is: **LikhaDB should not own the data**. The lakehouse owns the data; LikhaDB accelerates queries over it.
+
+---
+
+### Tier R — ANN Retrieval
+
+The retrieval tier has a single responsibility: given a query vector, return the top-N most similar candidates as fast as possible.
+
+Three index types cover the recall–memory–latency trade-off space:
+
+| Index | Characteristics |
 |---|---|
-| `likhadb-core` | Shared primitives: `VecId`, `Vector`, `Metric`, `ScoredResult`, `LikhaDbError`, distance functions |
-| `likhadb-index` | Index implementations (`FlatIndex`, `IvfIndex`, `HnswIndex`) and the `VectorIndex` trait |
-| `likhadb-store` | `Collection` (index + metadata) and `CollectionManager` (named-collection registry) |
-| `likhadb-persist` | WAL + snapshot durability layer wrapping `CollectionManager` |
-| `likhadb-server` | HTTP/REST (Axum, port 8080) and gRPC (Tonic, port 50051) servers |
-| `likhadb-bench` | Criterion benchmarks for index search performance |
+| `FlatIndex` | Exact brute-force; perfect recall; best suited for small collections |
+| `IvfIndex` | Approximate; k-means clustering; optional SQ8 quantisation for 4× memory reduction |
+| `HnswIndex` | Approximate; hierarchical proximity graph; sub-200µs on 100k vectors |
+
+All three are interchangeable behind a common `VectorIndex` contract, so the rest of the system — the store layer, the API layer, the DataFusion pipeline — does not care which index backs a given collection. The choice is a deployment parameter tuned to dataset size and latency budget.
+
+**Full-text search** is available as an opt-in layer alongside any vector index. When enabled, all string fields in the JSON payload are indexed for BM25 search (via Tantivy). Full-text results are fused with vector results using Reciprocal Rank Fusion (RRF).
+
+**Hybrid search** is the combination of vector ANN and BM25 text search via RRF:
+
+```
+rrf_score(id) = 1/(k + rank_vector) + 1/(k + rank_fts)
+```
+
+A document that ranks 2nd by vector similarity and 3rd by keyword relevance will outscore a document that is first in only one modality. This is the right default for knowledge retrieval workloads where the query has both semantic and lexical intent — neither signal alone is sufficient.
 
 ---
 
-## Index Types
+### Tier Q — DataFusion Query Layer (in design)
 
-All index implementations live in `likhadb-index` and satisfy the `VectorIndex` trait
-(`crates/likhadb-index/src/traits.rs`), which is the sole coupling point between the
-store layer and any index implementation:
+After the ANN index returns a candidate set (typically 100–500 IDs with their distances), the DataFusion layer takes over. It handles all the business logic that the ANN index is not designed to handle.
 
-```rust
-pub trait VectorIndex: Send + Sync {
-    fn insert(&mut self, id: VecId, vec: Vector) -> Result<()>;
-    fn delete(&mut self, id: VecId) -> bool;
-    fn search(&self, query: &[f32], k: usize, filter: Option<FilterFn<'_>>) -> Result<Vec<ScoredResult>>;
-    fn get(&self, id: VecId) -> Option<Vector>;
-    fn len(&self) -> usize;
-    fn dim(&self) -> usize;
-    fn index_type(&self) -> &'static str;
-}
+**Stage 1 — Enrichment.** The candidate IDs are registered as a small in-memory Arrow table. DataFusion joins this table against the relevant Iceberg tables (document text, author metadata, timestamps, sensitivity labels, access control lists). Because the candidate set is tiny (the build side of a hash join), DataFusion's optimizer automatically applies hash-build-on-candidates and probes the large Iceberg tables, with Parquet row-group-level predicate pushdown eliminating most of the data from the scan before it is read.
+
+**Stage 2 — ACL enforcement.** Access control predicates are expressed as SQL `WHERE` clauses evaluated inside the enrichment stage. This is intentional: ACL enforcement happens in one place, is expressed as auditable SQL, and is applied before any scoring or model inference touches restricted data. There is no separate access-control lookup in application code.
+
+**Stage 3 — Score fusion.** Multiple signals are combined into a single `fusion_score` using a weighted normalised sum computed with SQL window functions:
+
+```
+fusion_score = Σ (weight_i × normalised_signal_i)
 ```
 
-### FlatIndex (`crates/likhadb-index/src/flat.rs`)
+Min-max normalisation uses `MAX() OVER ()` window functions within the candidate set — no precomputed global statistics are required. Signals include vector distance, recency decay, author authority, and content quality. Weights are configuration-driven, validated at startup to sum to 1.0.
 
-Brute-force exact nearest-neighbour search.
+**Stage 4 — Reranking.** Two-stage reranking narrows the candidate set further using learned models:
+- A *bi-encoder* pass scores the top-M candidates using the query and each document's text representation, combining this score with the fusion score to produce top-P candidates.
+- A *cross-encoder* pass performs full query-document interaction scoring on top-P, producing the final top-K results.
 
-- **Storage layout**: a single contiguous `Vec<f32>` slab (`data[i*dim..(i+1)*dim]` owns
-  vector `ids[i]`). Eliminates per-vector heap allocations; enables sequential hardware
-  prefetching during search.
-- **Distance**: `simsimd` hardware-accelerated kernels (NEON on aarch64/M2, AVX-512 on
-  x86_64) with scalar fallback for unsupported targets or empty slices.
-- **Search**: Rayon parallel fold+reduce. Each thread maintains a local top-k max-heap
-  of size `k`; heaps are merged in the reduce step (O(T·k) total allocation, no shared
-  mutable state).
-- **Delete**: swap-remove — the deleted slot is filled with the last element's data,
-  then the slab is truncated. O(1) and avoids shifts.
+Both stages use the *materialise-then-call* pattern: the RecordBatch is collected out of DataFusion, a single batched model call is made, and scores are zipped back to IDs. This is the correct pattern because DataFusion's execution model is synchronous; embedding blocking HTTP calls inside a UDF would stall the tokio thread pool under concurrent load.
 
-### IvfIndex (`crates/likhadb-index/src/ivf.rs`)
-
-Approximate nearest-neighbour using an Inverted File (IVF) structure.
-
-- **Clustering**: Lloyd's k-means with up to 25 iterations and a `1e-4` convergence
-  tolerance. Assignment and accumulation steps are Rayon-parallelised.
-- **Staging buffer**: before `nlist` vectors have been inserted, all vectors live in a
-  flat staging slab and searches fall back to brute-force. This makes the index always
-  queryable. Training fires automatically on the insert that brings the count to `nlist`.
-- **Post-training layout**: `nlist` `PostingList` buckets (each a flat slab). An
-  `id_to_list: HashMap<VecId, usize>` provides O(1) cluster lookup for deletes and
-  overwrites.
-- **Search**: find `nprobe` nearest centroids (sequential, `nlist` is small), then
-  parallel fold+reduce over the probed posting lists.
-- **SQ8 variant** (`IvfIndex::new_sq8`): after training, each vector is compressed
-  from `dim × 4` bytes (f32) to `dim × 1` byte (u8) — a 4× reduction. Query distance
-  is computed asymmetrically: the query stays in f32 while stored codes are decoded
-  on-the-fly using a per-dimension `(min, scale)` pair. Decoding uses a thread-local
-  buffer to avoid per-vector heap allocations.
-- **Key parameters**: `nlist` (cluster count / training threshold), `nprobe` (clusters
-  searched per query; `nprobe == nlist` gives exact recall).
-
-### HnswIndex (`crates/likhadb-index/src/hnsw.rs`)
-
-Approximate nearest-neighbour using Hierarchical Navigable Small World graphs
-(Malkov & Yashunin, 2018).
-
-- **Graph structure**: multi-layer proximity graph. Layer 0 holds every node; each
-  higher layer is an exponentially smaller random subset. `m` controls max edges per
-  node per layer (layer 0 uses `2*m`).
-- **Insert**: random level sampled from geometric distribution with multiplier
-  `1/ln(m)`. Phase 1 greedily descends from `max_level` to `level+1` with `ef=1`.
-  Phase 2 runs beam search (ef=`ef_construction`) from `min(level, max_level)` down
-  to layer 0, connecting bidirectional edges and pruning over-full neighbour lists.
-- **Delete**: tombstoning. Deleted nodes remain in the graph as valid traversal
-  stepping-stones but are excluded from search results. `len()` returns
-  `id_to_node.len() - deleted.len()`. If the entry point is deleted, a replacement is
-  found by scanning nodes in reverse-insertion order.
-- **Search**: greedy descent with `ef=1` from `max_level` to layer 1, then beam search
-  at layer 0 with `ef = max(ef_search, k)`. Deleted nodes and user-filter misses are
-  excluded from the result set.
-- **Key parameters**: `m` (graph connectivity), `ef_construction` (build quality vs.
-  speed; must be ≥ `m`), `ef_search` (query recall vs. latency).
+**Why DataFusion?** Because the enrichment problem is fundamentally a join problem. The candidate set (~500 rows) is tiny; the Iceberg tables it must join against are not. DataFusion's optimizer, with Iceberg partition pruning and Parquet column projection, handles this efficiently without custom code. SQL window functions handle normalisation cleanly. SQL predicates are auditable. This is the kind of work a columnar query engine is built for, and it separates business logic from retrieval logic cleanly.
 
 ---
 
-## Distance Metrics
+## The Query Pipeline
 
-Three metrics are supported across all index types, defined in `likhadb-core`:
+```
+1.  Application submits query (text + optional vector)
+2.  LikhaDB embeds the text query → query vector
+3.  ANN index returns top-N candidates (id, distance, rank)
+4.  [If hybrid] BM25 index returns top-N text candidates
+5.  [If hybrid] RRF fuses vector and BM25 ranks → merged candidate set
+6.  DataFusion registers candidate set as in-memory table
+7.  DataFusion enriches candidates by joining against Iceberg tables
+8.  DataFusion enforces ACL: filter out documents the caller cannot access
+9.  DataFusion computes fusion_score (multi-signal, normalised, weighted)
+10. Bi-encoder narrows top-M candidates to top-P using combined score
+11. Cross-encoder produces final top-K results
+12. Response returned with enriched metadata
+```
 
-| Metric | Score semantics | Formula |
-|---|---|---|
-| `L2` | lower = more similar | Euclidean distance (`sqrt(Σ(aᵢ−bᵢ)²)`) |
-| `Cosine` | lower = more similar | `1 − cosine_similarity` |
-| `Dot` | lower = more similar | negated dot product (`−Σaᵢbᵢ`) |
-
-The unified "lower is better" convention means all three metrics can share the same
-max-heap top-k logic. `simsimd` is used for hardware-accelerated kernels; scalar
-implementations in `likhadb-core/src/distance.rs` serve as fallbacks.
+Steps 6–11 are the DataFusion layer. At the current state of the project, the pipeline runs through step 5 and returns the fused candidates directly. Steps 6–11 are the planned Tier Q work.
 
 ---
 
-## Store Layer
+## Durability and State
 
-### Collection (`crates/likhadb-store/src/collection.rs`)
+LikhaDB uses a **Write-Ahead Log + periodic snapshot** model. Every mutation is durably logged before being applied in memory. Periodic checkpoints collapse the WAL into a compact snapshot image. On restart, the snapshot is loaded and WAL entries after the checkpoint are replayed.
 
-Pairs a `Box<dyn VectorIndex>` with a `MetaStore` (JSON payload storage). All DML
-routes through `Collection`:
+The durability contract is: **no committed operation is lost if the process crashes**. The WAL covers the gap between checkpoints; the snapshot avoids replaying the entire write history on startup.
 
-- `insert(id, vec, payload)` — delegates to the index, stores payload separately.
-- `delete(id)` — removes from the index and from `MetaStore`.
-- `search(query, k, predicate, include_payload)` — `MetaStore::make_filter` builds a
-  `FilterFn` from the JSON predicate; the filter is passed into `VectorIndex::search`
-  so candidates are excluded before entering the result set. Payloads are attached
-  after search if `include_payload` is true.
-
-### CollectionManager (`crates/likhadb-store/src/manager.rs`)
-
-A `HashMap<String, Collection>` registry. Factory methods create collections backed
-by the chosen index type (`FlatIndex` default, `IvfIndex`, `IvfIndex+SQ8`, `HnswIndex`).
+As the Iceberg integration matures, the durability story shifts. Because Iceberg is the authoritative source of truth, the ANN index becomes rebuildable from the catalog on a cold start. The WAL's role shrinks to covering the gap between Iceberg ingestion events and the live index — a much shorter window than today.
 
 ---
 
-## Persistence Layer (`crates/likhadb-persist`)
+## Expected Future State
 
-### Data Directory Layout
+When fully realised, LikhaDB will:
 
-```
-<dir>/
-  snapshot.bin       ← full serialised CollectionManager (written on checkpoint)
-  snapshot.bin.tmp   ← temporary; renamed atomically over snapshot.bin
-  wal.log            ← append-only Write-Ahead Log
-```
+**Be the search layer of a lakehouse, not a parallel system.** Embeddings live in Iceberg tables partitioned by model version and ingestion time. LikhaDB's ANN index is loaded from and synced back to those tables. There is no duplication, no ETL pipeline, no synchronisation lag.
 
-### WAL Frame Format
+**Enforce data access at query time, in one place.** ACL is expressed as SQL over the Iceberg `access_control` table, evaluated inside DataFusion during enrichment. The access control logic is in one place, is testable, and is applied before any scoring or reranking touches restricted data.
 
-Each WAL entry is wrapped in a length-prefixed, CRC32-checksummed frame:
+**Return semantically rich results without external orchestration.** A single query to LikhaDB returns results that have been enriched with business metadata, scored by multiple signals, and reranked by a cross-encoder. The caller does not orchestrate this pipeline; LikhaDB owns it end-to-end.
 
-```
-[payload_len: u32 LE][crc32: u32 LE][payload: payload_len bytes]
-```
+**Scale without operational complexity.** Because the source of truth is Iceberg on object storage, the in-memory ANN index is stateless and rebuildable. Multiple LikhaDB instances share the same Iceberg catalog and operate independently. The index is an acceleration layer, not a single point of failure for data availability.
 
-Payloads are `bincode`-serialised `WalEntry { lsn: u64, op: WalOp }`. `WalOp`
-variants cover `CreateCollection`, `DropCollection`, `Insert`, and `Delete`.
-`serde_json::Value` payloads are serialised as strings inside `bincode` to work
-around bincode's lack of `deserialize_any`.
-
-### WalManager
-
-Wraps `CollectionManager` and durably logs every mutation before applying it in
-memory via `log_and_apply`. A monotonically increasing LSN is assigned to each entry.
-
-### Recovery Flow (`WalManager::open`)
-
-```
-1. If snapshot.bin exists:
-   a. Deserialise CollectionManager from snapshot.
-   b. Read snapshot_lsn from the snapshot header.
-2. If wal.log exists:
-   a. Iterate frames via FrameIter.
-   b. CRC-check each frame:
-      - Mismatch with no trailing bytes → crash-truncated tail; discard and stop.
-      - Mismatch with trailing bytes → mid-log corruption; surface as hard error.
-   c. Skip entries with LSN ≤ snapshot_lsn.
-   d. Apply remaining ops to the in-memory CollectionManager.
-3. Open wal.log in append mode for new writes.
-```
-
-### Checkpoint Flow (`WalManager::checkpoint`)
-
-```
-1. Serialise CollectionManager (with current last_lsn) to snapshot.bin.tmp.
-2. Atomic rename: snapshot.bin.tmp → snapshot.bin.
-3. Truncate wal.log and reopen for appending.
-```
-
-The server spawns a periodic checkpoint task every 300 seconds
-(`likhadb_server::spawn_checkpoint_task`).
+**Support multi-modal and multi-signal retrieval extensibly.** The scoring model is open: new signals (social engagement, explicit user feedback, freshness) are expressed as columns in the Iceberg enrichment tables and added to the DataFusion scoring SQL with a corresponding weight in the `scoring.weights` config block. No index code changes.
 
 ---
 
-## Server Layer (`crates/likhadb-server`)
+## Design Principles
 
-### AppState
+**The index is not the database.** LikhaDB's ANN index accelerates queries over data that the lakehouse owns. The lakehouse is the authoritative store; the index is derived and rebuildable. This keeps the data architecture simple: one source of truth.
 
-```rust
-type AppState = Arc<RwLock<WalManager>>;
-```
+**Separation of recall from relevance.** The ANN index is optimised for recall and latency. All business logic — enrichment, access control, multi-signal scoring, reranking — runs downstream in DataFusion. Each layer is independently tunable without affecting the other.
 
-Concurrent reads (search, get, list) hold a read lock. Exclusive writes (insert,
-delete, DDL) hold a write lock. Both are async RwLock from Tokio.
+**Hybrid by default.** Combining vector similarity and BM25 text search consistently outperforms either signal alone on knowledge retrieval tasks. RRF is a principled, parameter-light fusion method. LikhaDB makes hybrid search a first-class primitive, not an afterthought.
 
-### REST API (Axum, port 8080)
+**Lakehouse formats, not proprietary formats.** Embeddings are stored in Parquet. Tables are managed by Iceberg. Any tool that reads Parquet or Iceberg can read LikhaDB's data. There is no vendor lock-in at the storage layer.
 
-| Method | Path | Operation |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/collections` | List collections |
-| `POST` | `/collections` | Create collection |
-| `GET` | `/collections/:name` | Get collection info |
-| `DELETE` | `/collections/:name` | Drop collection |
-| `POST` | `/collections/:name/vectors` | Insert vector |
-| `GET` | `/collections/:name/vectors/:id` | Get vector by ID |
-| `DELETE` | `/collections/:name/vectors/:id` | Delete vector |
-| `POST` | `/collections/:name/query` | k-NN search |
-
-### gRPC API (Tonic, port 50051)
-
-Defined in `likhadb.proto`. Mirrors the REST surface plus a `QueryStream` RPC that
-streams results one-by-one over a Tokio `mpsc::channel(32)` rather than returning a
-single batch response.
-
-### Startup
-
-Both servers run concurrently under `tokio::select!`. The process exits with code 1
-if either server terminates.
-
----
-
-## Query Flows
-
-### Flat index — insert then search
-
-```
-Client (REST/gRPC)
-  │  write lock
-  ▼
-WalManager::insert
-  ├─ WalWriter::append(WalEntry { lsn, WalOp::Insert { ... } })
-  └─ CollectionManager::get_mut → Collection::insert
-       ├─ FlatIndex::insert  (overwrite in-place or append to flat slab)
-       └─ MetaStore::set      (store JSON payload)
-
-Client (REST/gRPC)
-  │  read lock
-  ▼
-WalManager::get → Collection::search
-  ├─ MetaStore::make_filter   (compile JSON predicate → FilterFn)
-  └─ FlatIndex::search
-       ├─ Rayon par_iter over flat slab
-       ├─ simd_distance (simsimd or scalar fallback)
-       ├─ per-thread top-k max-heap
-       └─ merge heaps → sort ascending → Vec<ScoredResult>
-```
-
-### IVF — insert path (pre-training → training → post-training)
-
-```
-IvfIndex::insert
-  ├─ [pre-training]  append id + vec to staging_ids / staging_data
-  │     └─ if staging_ids.len() >= nlist → IvfIndex::train()
-  │           ├─ kmeans(staging_data, n, dim, nlist, metric)  [Rayon parallel]
-  │           ├─ Sq8Quantizer::fit(staging_data) if quantize=true
-  │           ├─ for each staged vector: nearest_centroid → PostingList::push / push_codes
-  │           └─ staging cleared, trained = true
-  └─ [post-training] nearest_centroid → PostingList::push / push_codes
-                     id_to_list.insert(id, cluster)
-```
-
-### IVF — search path
-
-```
-IvfIndex::search
-  ├─ [pre-training]  search_staging  (brute-force over staging slab)
-  └─ [post-training] search_trained
-       ├─ rank all nlist centroids by distance → take nprobe nearest
-       └─ Rayon parallel fold+reduce over nprobe PostingLists
-            ├─ f32 path:  simd_distance(query, chunk)
-            └─ SQ8 path:  Sq8Quantizer::asym_distance (decode via thread-local buffer)
-            → merge heaps → sort ascending → Vec<ScoredResult>
-```
-
-### HNSW — insert path
-
-```
-HnswIndex::insert(id, vec)
-  ├─ if id already exists: tombstone old node (deleted.insert(old_id))
-  ├─ push new HnswNode { id, layers: vec![vec![]; level+1] } + extend data slab
-  ├─ id_to_node.insert(id, node_idx); deleted.remove(id)
-  ├─ Phase 1 (greedy, ef=1): descend from max_level to level+1
-  │     search_layer(ef=1, lc) → update entry point
-  └─ Phase 2 (beam, ef=ef_construction): descend from min(level, max_level) to 0
-        for each layer lc:
-          candidates = search_layer(ef=ef_construction, lc)
-          neighbours = select_neighbors(candidates, m_at(lc))
-          connect bidirectional edges + prune over-full neighbour lists
-```
-
-### HNSW — search path
-
-```
-HnswIndex::search(query, k, filter)
-  ├─ greedy descent (ef=1) from max_level down to layer 1
-  │     → update entry point at each layer
-  └─ beam search at layer 0 (ef = max(ef_search, k))
-       → candidates heap
-       → filter: skip deleted nodes; apply user FilterFn
-       → sort ascending by distance
-       → truncate to k
-       → Vec<ScoredResult>
-```
-
-### WAL recovery
-
-```
-WalManager::open(dir)
-  ├─ load snapshot.bin → CollectionManager (or fresh manager if absent)
-  ├─ FrameIter over wal.log
-  │     for each frame:
-  │       CRC32 check
-  │         bad CRC + no trailing bytes → discard tail (crash-truncated), stop
-  │         bad CRC + trailing bytes    → hard PersistError::Crc
-  │       bincode::deserialize → WalEntry
-  │       skip if entry.lsn ≤ snapshot_lsn
-  │       apply_op(mgr, entry.op)
-  └─ WalWriter::open_append(wal.log) → ready for new writes
-```
-
----
-
-## Notable Design Decisions
-
-- **Flat slab layout** (`FlatIndex`, `IvfIndex`, `HnswIndex`): all vector data lives in
-  a single contiguous `Vec<f32>` indexed by slot position. This eliminates N separate
-  heap allocations and makes the hardware prefetcher effective during sequential scans.
-
-- **Swap-remove on delete** (`FlatIndex`, `IvfIndex`): the deleted slot is filled with
-  the last element's data block, then the slab is truncated. O(1) and preserves slab
-  contiguity without shifting.
-
-- **IVF always queryable**: the staging buffer means searches work correctly at any
-  point — before, during, and after training — without requiring the caller to manage
-  index lifecycle.
-
-- **HNSW tombstone deletion**: removing a node from a navigable small world graph while
-  preserving search correctness is complex. Tombstoning keeps deleted nodes as valid
-  traversal stepping-stones, so the graph topology remains intact and recall is not
-  degraded.
-
-- **SQ8 asymmetric distance**: the query vector stays in f32 precision; only the
-  stored codes are compressed. This avoids quantisation error accumulating on both
-  sides of the distance computation.
-
-- **Atomic snapshot write**: the checkpoint writes to `snapshot.bin.tmp` first and
-  then renames it over `snapshot.bin`. If the process crashes during the write, the
-  old snapshot remains intact and WAL replay recovers the gap.
-
-- **Single WAL entry format for all index types**: `IndexKind` is embedded in
-  `WalOp::CreateCollection` so replay can reconstruct the correct index type without
-  storing per-index schema separately.
+**SQL as the business logic layer.** Enrichment, ACL enforcement, and score fusion are expressed in SQL, not scattered across application code. This makes business logic auditable, independently testable, and decoupled from the retrieval path.
