@@ -3,8 +3,13 @@ name: Docker
 on:
   pull_request:
     branches: ["**"]
-    paths-ignore:
-      - "docs/**"
+    paths:
+      - "Dockerfile"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/docker.yml"
 
 jobs:
   build:
