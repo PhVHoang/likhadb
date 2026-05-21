@@ -77,7 +77,7 @@ cost of FTS indexing and demonstrates the hybrid retrieval path.
   hybrid      4.1k/s    1.60ms   2.20ms   3.40ms      680/s    9.20ms  11.50ms  14.10ms
 ```
 
-2nd sample run:
+2nd sample run: cargo run --release -p likhadb-stress -- --vectors 1000 --queries 100
 
 ```
 index           ins/s       p50       p95       p99        qry/s       p50       p95       p99
@@ -86,6 +86,17 @@ flat          23.4k/s     339µs     448µs     580µs       1.7k/s    1.91ms   
 ivf           26.9k/s     282µs     393µs     471µs      14.6k/s     513µs     791µs     919µs
 hnsw           1.3k/s    6.76ms    7.81ms    8.16ms      12.2k/s     564µs    1.09ms    1.26ms
 hybrid          108/s   65.49ms  174.93ms  291.90ms       4.6k/s    1.25ms    3.18ms    4.16ms
+```
+
+3rd sample run: cargo run --release -p likhadb-stress -- --vectors 100000 --queries 2000
+
+```
+index           ins/s       p50       p95       p99        qry/s       p50       p95       p99
+──────────────────────────────────────────────────────────────────────────
+flat           6.0k/s    1.36ms    2.30ms    2.38ms        412/s    7.64ms   36.47ms  147.61ms
+ivf           26.9k/s     286µs     396µs     462µs       5.5k/s    1.38ms    2.38ms    2.85ms
+hnsw            705/s   11.77ms   14.44ms   15.21ms       8.6k/s     843µs    1.47ms    1.70ms
+hybrid          106/s   70.59ms   75.12ms  186.12ms       1.2k/s    2.91ms   14.27ms   45.55ms
 ```
 
 | Column | Meaning |
