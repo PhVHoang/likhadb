@@ -408,9 +408,14 @@ async fn main() {
     println!("  ╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("  host={}", args.host);
-    println!("  dim={dim}  vectors={v}  queries={q}  concurrency={c}  k={k}",
-        dim = args.dim, v = args.vectors, q = args.queries,
-        c = args.concurrency, k = args.k);
+    println!(
+        "  dim={dim}  vectors={v}  queries={q}  concurrency={c}  k={k}",
+        dim = args.dim,
+        v = args.vectors,
+        q = args.queries,
+        c = args.concurrency,
+        k = args.k
+    );
     println!();
 
     // ── Preflight ─────────────────────────────────────────────────────────────
@@ -531,11 +536,7 @@ async fn main() {
 
         print!("  Creating collection (enable_fts=true)... ");
         match create_collection(
-            &client,
-            &args.host,
-            name,
-            args.dim,
-            None, // flat index under the hood
+            &client, &args.host, name, args.dim, None, // flat index under the hood
             true,
         )
         .await
@@ -607,9 +608,7 @@ async fn main() {
 }
 
 fn goto_summary(results: &[(&str, Timing, Timing)], args: &Args) {
-    println!(
-        "  ══════════════════════════════════════════════════════════════════════════"
-    );
+    println!("  ══════════════════════════════════════════════════════════════════════════");
     println!(
         "  SUMMARY  dim={}  vectors={}  queries={}  concurrency={}",
         args.dim, args.vectors, args.queries, args.concurrency
@@ -633,8 +632,6 @@ fn goto_summary(results: &[(&str, Timing, Timing)], args: &Args) {
             fmt_us(qry.percentile(99)),
         );
     }
-    println!(
-        "  ══════════════════════════════════════════════════════════════════════════"
-    );
+    println!("  ══════════════════════════════════════════════════════════════════════════");
     println!();
 }
