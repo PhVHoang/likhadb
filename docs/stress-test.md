@@ -66,6 +66,7 @@ cost of FTS indexing and demonstrates the hybrid retrieval path.
 ---
 
 ## Reading the output
+1st sample run:
 
 ```
   index       ins/s        p50      p95      p99       qry/s        p50      p95      p99
@@ -74,6 +75,17 @@ cost of FTS indexing and demonstrates the hybrid retrieval path.
   ivf         7.8k/s    0.88ms   1.15ms   1.90ms    3.9k/s     1.80ms   2.30ms   3.10ms
   hnsw        6.5k/s    1.05ms   1.40ms   2.10ms    5.2k/s     1.40ms   1.80ms   2.50ms
   hybrid      4.1k/s    1.60ms   2.20ms   3.40ms      680/s    9.20ms  11.50ms  14.10ms
+```
+
+2nd sample run:
+
+```
+index           ins/s       p50       p95       p99        qry/s       p50       p95       p99
+──────────────────────────────────────────────────────────────────────────
+flat          23.4k/s     339µs     448µs     580µs       1.7k/s    1.91ms   10.36ms   51.06ms
+ivf           26.9k/s     282µs     393µs     471µs      14.6k/s     513µs     791µs     919µs
+hnsw           1.3k/s    6.76ms    7.81ms    8.16ms      12.2k/s     564µs    1.09ms    1.26ms
+hybrid          108/s   65.49ms  174.93ms  291.90ms       4.6k/s    1.25ms    3.18ms    4.16ms
 ```
 
 | Column | Meaning |
