@@ -382,7 +382,8 @@ Rayon uses the default thread pool (all available cores).
 | **F — Observability** | Done | Prometheus metrics (`/metrics`) + structured JSON tracing |
 | **F1 — Full-text search** | Done | Tantivy BM25 index per collection, opt-in via `fts` feature |
 | **F2 — Hybrid search** | Done | RRF fusion of vector similarity + BM25 scores |
-| **L — Lakehouse I/O** | Planned | Parquet import/export, object storage (S3/GCS), Delta Lake |
+| **L — Lakehouse I/O** | Planned | Parquet import/export, object storage (S3/GCS), Iceberg |
+| **Q — DataFusion pipeline** | In Progress | Post-ANN enrichment, ACL enforcement, multi-signal score fusion, reranking (`likhadb-query` crate) |
 | **T — Vector transforms** | Planned | Insert-time L2 normalisation, scalar scaling |
 
 ---
