@@ -9,6 +9,7 @@ members = [
     "crates/likhadb-fts",
     "crates/likhadb-lakehouse",
     "crates/likhadb-stress",
+    "crates/likhadb-query",
 ]
 resolver = "2"
 

@@ -168,7 +168,7 @@ ANN Store output
         │
         ▼
 ┌───────────────────────────────────────────────────────────────┐
-│                    DataFusion SessionContext                   │
+│                    DataFusion SessionContext                  │
 │                                                               │
 │  Stage 2: Candidate Registration  →  MemTable                 │
 │                │                                              │
@@ -178,7 +178,7 @@ ANN Store output
 │                │                                              │
 │  Stage 4b: Bi-encoder Reranking   →  AsyncUDF, top-M → top-P  │
 │                │                                              │
-│  Stage 4c: Cross-encoder Reranking → materialize-then-call   │
+│  Stage 4c: Cross-encoder Reranking → materialize-then-call    │
 └───────────────────────────────────────────────────────────────┘
         │
         ▼

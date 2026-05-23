@@ -268,6 +268,25 @@ DataFusion           →   enrichment + filtering + scoring + reranking
 Iceberg (object store) → source of truth for embeddings, metadata, business tables
 ```
 
+### Q0 — Config + error type ✅ Done
+
+**Goal:** Scaffold the `likhadb-query` crate with typed configuration and a structured error
+type. All invariants are validated at construction time so the service can refuse to start
+on misconfiguration rather than silently using invalid parameters.
+
+**Structs implemented:**
+- `QueryConfig` — top-level config (parquet dir, DataFusion runtime, ANN params, scoring, top-M)
+- `DataFusionRuntimeConfig` — batch size, target_partitions, `SessionStrategy` (Child / Pool)
+- `AnnConfig` — `top_n` candidates retrieved per query
+- `ScoringConfig` → `ScoringWeights` (vector + recency, validated sum = 1.0 ± 1e-5) + `RecencyConfig` (grace period + decay lambda)
+- `QueryError` — `thiserror`-derived; `Config(String)` variant now; Arrow / DataFusion / IO variants added per step
+
+**No DataFusion dependency yet** — only `thiserror`. DataFusion/Arrow added in Q1.
+
+**16 unit tests** covering all validation paths (negative weights, sum-out-of-tolerance, negative grace period, zero/negative lambda, session strategy equality).
+
+---
+
 ### Q1 — SessionContext + Iceberg catalog registration
 
 **Goal:** Register an Iceberg catalog with a shared `SessionContext` at application startup.
@@ -359,7 +378,7 @@ likhadb/
 │   ├── likhadb-server/    # axum REST + tonic gRPC + Prometheus + tracing    ✅
 │   ├── likhadb-fts/       # Tantivy-backed FTS + hybrid query                ✅ (F1 done)
 │   ├── likhadb-lakehouse/ # Parquet / Iceberg import-export                  [ Tier L ]
-│   ├── likhadb-query/     # DataFusion query layer (enrichment + scoring)    [ Tier Q ]
+│   ├── likhadb-query/     # DataFusion query layer (enrichment + scoring)    [ Q0 ✅ config/error ]
 │   ├── likhadb-transform/ # Insert-time vector transforms                    [ Tier T ]
 │   └── likhadb-bench/     # Criterion benchmarks                             ✅
 ```
@@ -383,7 +402,7 @@ A1 → A2 → A3           ✅ done
          ↓
     L1 → L2 → L3        ← next (parquet → object store → iceberg)
          ↓
-    Q1 → Q2 → Q3 → Q4  (DataFusion query layer: enrichment → scoring → reranking)
+    Q0 ✅ → Q1 → Q2 → Q3 → Q4  (DataFusion query layer: config → SessionContext → enrichment → scoring → reranking)
          ↓
     T1 → T2             (vector transforms)
 ```
