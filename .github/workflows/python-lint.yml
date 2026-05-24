@@ -1,0 +1,39 @@
+name: Python SDK — Lint
+
+on:
+  pull_request:
+    branches: ["**"]
+    paths:
+      - "sdk/python/**"
+      - ".github/workflows/python-lint.yml"
+
+jobs:
+  lint:
+    name: ruff + mypy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: sdk/python/pyproject.toml
+
+      - name: Install SDK and lint tools
+        working-directory: sdk/python
+        run: pip install -e ".[dev,lint]"
+
+      - name: ruff check (lint)
+        working-directory: sdk/python
+        run: ruff check likhadb/ tests/
+
+      - name: ruff format (check)
+        working-directory: sdk/python
+        run: ruff format --check likhadb/ tests/
+
+      - name: mypy
+        working-directory: sdk/python
+        run: mypy likhadb/
