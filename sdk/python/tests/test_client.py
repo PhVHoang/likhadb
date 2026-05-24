@@ -1,14 +1,15 @@
 """Client tests using respx to mock the httpx transport — no server required."""
+
+import httpx
 import pytest
 import respx
-import httpx
 
 from likhadb import (
-    LikhaDB,
     AsyncLikhaDB,
-    LikhaDBNotFoundError,
-    LikhaDBConflictError,
+    LikhaDB,
     LikhaDBBadRequestError,
+    LikhaDBConflictError,
+    LikhaDBNotFoundError,
 )
 
 BASE = "http://localhost:8080"
@@ -58,6 +59,7 @@ def test_create_collection_flat():
         db.create_collection("docs", dim=384, metric="cosine")
     body = route.calls[0].request.content
     import json
+
     payload = json.loads(body)
     assert payload["name"] == "docs"
     assert payload["index"]["type"] == "flat"
@@ -69,10 +71,13 @@ def test_create_collection_hnsw():
     route = respx.post(f"{BASE}/collections").mock(return_value=httpx.Response(201))
     with LikhaDB(BASE) as db:
         db.create_collection(
-            "docs", dim=128, metric="l2",
+            "docs",
+            dim=128,
+            metric="l2",
             index={"type": "hnsw", "m": 16, "ef_construction": 200, "ef_search": 50},
         )
     import json
+
     payload = json.loads(route.calls[0].request.content)
     assert payload["index"] == {"type": "hnsw", "m": 16, "ef_construction": 200, "ef_search": 50}
 
@@ -123,12 +128,11 @@ def test_delete_collection():
 
 @respx.mock
 def test_insert_vector():
-    route = respx.post(f"{BASE}/collections/docs/vectors").mock(
-        return_value=httpx.Response(204)
-    )
+    route = respx.post(f"{BASE}/collections/docs/vectors").mock(return_value=httpx.Response(204))
     with LikhaDB(BASE) as db:
         db.collection("docs").insert(1, [0.1] * 4, payload={"label": "x"})
     import json
+
     body = json.loads(route.calls[0].request.content)
     assert body["id"] == 1
     assert body["payload"] == {"label": "x"}
@@ -136,12 +140,11 @@ def test_insert_vector():
 
 @respx.mock
 def test_insert_vector_no_payload_omits_field():
-    route = respx.post(f"{BASE}/collections/docs/vectors").mock(
-        return_value=httpx.Response(204)
-    )
+    route = respx.post(f"{BASE}/collections/docs/vectors").mock(return_value=httpx.Response(204))
     with LikhaDB(BASE) as db:
         db.collection("docs").insert(2, [0.2] * 4)
     import json
+
     body = json.loads(route.calls[0].request.content)
     assert "payload" not in body
 
@@ -185,6 +188,7 @@ def test_search_filter_sent():
     with LikhaDB(BASE) as db:
         db.collection("docs").search([0.1], k=5, filter=f)
     import json
+
     body = json.loads(route.calls[0].request.content)
     assert body["filter"] == f
 
@@ -195,9 +199,7 @@ def test_hybrid_search():
         return_value=httpx.Response(200, json={"results": SCORED_RESULTS})
     )
     with LikhaDB(BASE) as db:
-        results = db.collection("docs").hybrid_search(
-            [0.1] * 4, text="hello world", k=2
-        )
+        results = db.collection("docs").hybrid_search([0.1] * 4, text="hello world", k=2)
     assert len(results) == 2
 
 
@@ -215,9 +217,7 @@ def test_import_parquet():
 
 @respx.mock
 def test_export_parquet():
-    respx.post(f"{BASE}/collections/docs/export-parquet").mock(
-        return_value=httpx.Response(204)
-    )
+    respx.post(f"{BASE}/collections/docs/export-parquet").mock(return_value=httpx.Response(204))
     with LikhaDB(BASE) as db:
         db.collection("docs").export_parquet("/data/out.parquet")
 
@@ -288,6 +288,7 @@ async def test_async_not_found():
 
 def test_parse_index_unknown_raises():
     from likhadb.client import _parse_index
+
     with pytest.raises(ValueError, match="Unknown index type"):
         _parse_index({"type": "faiss"})
 
@@ -295,4 +296,5 @@ def test_parse_index_unknown_raises():
 def test_parse_index_none_gives_flat():
     from likhadb.client import _parse_index
     from likhadb.models import FlatIndex
+
     assert isinstance(_parse_index(None), FlatIndex)

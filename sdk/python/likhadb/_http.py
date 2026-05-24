@@ -1,5 +1,8 @@
 """Thin httpx wrappers that map HTTP status codes to SDK exceptions."""
+
 from __future__ import annotations
+
+from typing import Any
 
 import httpx
 
@@ -35,25 +38,25 @@ class HttpClient:
     def __init__(self, base_url: str, timeout: float) -> None:
         self._client = httpx.Client(base_url=base_url, timeout=timeout)
 
-    def get(self, path: str, **kwargs: object) -> httpx.Response:
+    def get(self, path: str) -> httpx.Response:
         try:
-            r = self._client.get(path, **kwargs)
+            r = self._client.get(path)
         except httpx.ConnectError as exc:
             raise LikhaDBConnectionError(str(exc)) from exc
         _raise_for_status(r)
         return r
 
-    def post(self, path: str, **kwargs: object) -> httpx.Response:
+    def post(self, path: str, json: Any | None = None) -> httpx.Response:
         try:
-            r = self._client.post(path, **kwargs)
+            r = self._client.post(path, json=json)
         except httpx.ConnectError as exc:
             raise LikhaDBConnectionError(str(exc)) from exc
         _raise_for_status(r)
         return r
 
-    def delete(self, path: str, **kwargs: object) -> httpx.Response:
+    def delete(self, path: str) -> httpx.Response:
         try:
-            r = self._client.delete(path, **kwargs)
+            r = self._client.delete(path)
         except httpx.ConnectError as exc:
             raise LikhaDBConnectionError(str(exc)) from exc
         _raise_for_status(r)
@@ -62,10 +65,10 @@ class HttpClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "HttpClient":
+    def __enter__(self) -> HttpClient:
         return self
 
-    def __exit__(self, *_: object) -> None:
+    def __exit__(self, *_: Any) -> None:
         self.close()
 
 
@@ -73,25 +76,25 @@ class AsyncHttpClient:
     def __init__(self, base_url: str, timeout: float) -> None:
         self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
 
-    async def get(self, path: str, **kwargs: object) -> httpx.Response:
+    async def get(self, path: str) -> httpx.Response:
         try:
-            r = await self._client.get(path, **kwargs)
+            r = await self._client.get(path)
         except httpx.ConnectError as exc:
             raise LikhaDBConnectionError(str(exc)) from exc
         _raise_for_status(r)
         return r
 
-    async def post(self, path: str, **kwargs: object) -> httpx.Response:
+    async def post(self, path: str, json: Any | None = None) -> httpx.Response:
         try:
-            r = await self._client.post(path, **kwargs)
+            r = await self._client.post(path, json=json)
         except httpx.ConnectError as exc:
             raise LikhaDBConnectionError(str(exc)) from exc
         _raise_for_status(r)
         return r
 
-    async def delete(self, path: str, **kwargs: object) -> httpx.Response:
+    async def delete(self, path: str) -> httpx.Response:
         try:
-            r = await self._client.delete(path, **kwargs)
+            r = await self._client.delete(path)
         except httpx.ConnectError as exc:
             raise LikhaDBConnectionError(str(exc)) from exc
         _raise_for_status(r)
@@ -100,8 +103,8 @@ class AsyncHttpClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def __aenter__(self) -> "AsyncHttpClient":
+    async def __aenter__(self) -> AsyncHttpClient:
         return self
 
-    async def __aexit__(self, *_: object) -> None:
+    async def __aexit__(self, *_: Any) -> None:
         await self.aclose()

@@ -1,7 +1,8 @@
 """Collection handles — sync and async — for vector operations."""
+
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from ._http import AsyncHttpClient, HttpClient
 from .models import (
@@ -36,7 +37,7 @@ class Collection:
         self,
         id: int,
         vector: list[float],
-        payload: Optional[dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         """Insert or overwrite a vector."""
         req = InsertRequest(id=id, vector=vector, payload=payload)
@@ -58,13 +59,11 @@ class Collection:
         self,
         vector: list[float],
         k: int,
-        filter: Optional[Any] = None,
+        filter: Any | None = None,
         include_payload: bool = False,
     ) -> list[ScoredResult]:
         """k-nearest-neighbour search with optional metadata filter."""
-        req = QueryRequest(
-            vector=vector, k=k, filter=filter, include_payload=include_payload
-        )
+        req = QueryRequest(vector=vector, k=k, filter=filter, include_payload=include_payload)
         r = self._http.post(
             f"/collections/{self._name}/query",
             json=req.model_dump(exclude_none=True),
@@ -77,7 +76,7 @@ class Collection:
         text: str,
         k: int,
         rrf_k: int = 60,
-        filter: Optional[Any] = None,
+        filter: Any | None = None,
         include_payload: bool = False,
     ) -> list[ScoredResult]:
         """Hybrid vector + BM25 search fused via Reciprocal Rank Fusion."""
@@ -100,7 +99,7 @@ class Collection:
         path: str,
         id_col: str,
         vector_col: str,
-        payload_cols: Optional[list[str]] = None,
+        payload_cols: list[str] | None = None,
     ) -> int:
         """Bulk-import vectors from a Parquet file. Returns the number imported."""
         req = ImportParquetRequest(
@@ -143,7 +142,7 @@ class AsyncCollection:
         self,
         id: int,
         vector: list[float],
-        payload: Optional[dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         req = InsertRequest(id=id, vector=vector, payload=payload)
         await self._http.post(
@@ -162,12 +161,10 @@ class AsyncCollection:
         self,
         vector: list[float],
         k: int,
-        filter: Optional[Any] = None,
+        filter: Any | None = None,
         include_payload: bool = False,
     ) -> list[ScoredResult]:
-        req = QueryRequest(
-            vector=vector, k=k, filter=filter, include_payload=include_payload
-        )
+        req = QueryRequest(vector=vector, k=k, filter=filter, include_payload=include_payload)
         r = await self._http.post(
             f"/collections/{self._name}/query",
             json=req.model_dump(exclude_none=True),
@@ -180,7 +177,7 @@ class AsyncCollection:
         text: str,
         k: int,
         rrf_k: int = 60,
-        filter: Optional[Any] = None,
+        filter: Any | None = None,
         include_payload: bool = False,
     ) -> list[ScoredResult]:
         req = HybridQueryRequest(
@@ -202,7 +199,7 @@ class AsyncCollection:
         path: str,
         id_col: str,
         vector_col: str,
-        payload_cols: Optional[list[str]] = None,
+        payload_cols: list[str] | None = None,
     ) -> int:
         req = ImportParquetRequest(
             path=path,

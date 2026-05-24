@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -57,13 +57,13 @@ class CreateCollectionRequest(BaseModel):
 class InsertRequest(BaseModel):
     id: VecId
     vector: Vector
-    payload: Optional[Payload] = None
+    payload: Payload | None = None
 
 
 class QueryRequest(BaseModel):
     vector: Vector
     k: int
-    filter: Optional[Any] = None
+    filter: Any | None = None
     include_payload: bool = False
 
 
@@ -72,7 +72,7 @@ class HybridQueryRequest(BaseModel):
     text: str
     k: int
     rrf_k: int = 60
-    filter: Optional[Any] = None
+    filter: Any | None = None
     include_payload: bool = False
 
 
@@ -86,6 +86,7 @@ class ImportParquetRequest(BaseModel):
 class ExportParquetRequest(BaseModel):
     path: str
 
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
@@ -94,13 +95,13 @@ class ExportParquetRequest(BaseModel):
 class ScoredResult(BaseModel):
     id: VecId
     score: float
-    payload: Optional[Payload] = None
+    payload: Payload | None = None
 
 
 class VectorRecord(BaseModel):
     id: VecId
     vector: Vector
-    payload: Optional[Payload] = None
+    payload: Payload | None = None
 
 
 class CollectionInfo(BaseModel):

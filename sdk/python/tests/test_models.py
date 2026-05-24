@@ -1,4 +1,5 @@
 """Unit tests for request/response models — no server required."""
+
 import pytest
 from pydantic import ValidationError
 
@@ -13,7 +14,6 @@ from likhadb.models import (
     ScoredResult,
     VectorRecord,
 )
-
 
 # ---------------------------------------------------------------------------
 # Index configs
@@ -104,9 +104,7 @@ def test_scored_result_parses():
 
 
 def test_scored_result_with_payload():
-    result = ScoredResult.model_validate(
-        {"id": 1, "score": 0.8, "payload": {"title": "hello"}}
-    )
+    result = ScoredResult.model_validate({"id": 1, "score": 0.8, "payload": {"title": "hello"}})
     assert result.payload == {"title": "hello"}
 
 

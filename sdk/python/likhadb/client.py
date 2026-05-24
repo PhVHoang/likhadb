@@ -1,7 +1,8 @@
 """Top-level LikhaDB clients — sync (LikhaDB) and async (AsyncLikhaDB)."""
+
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Union, cast
 
 from ._http import AsyncHttpClient, HttpClient
 from .collection import AsyncCollection, Collection
@@ -17,8 +18,10 @@ from .models import (
 _DEFAULT_URL = "http://localhost:8080"
 _DEFAULT_TIMEOUT = 30.0
 
+_IndexConfig = Union[FlatIndex, IvfIndex, IvfSq8Index, HnswIndex]
 
-def _parse_index(index: Optional[dict]) -> object:
+
+def _parse_index(index: dict[str, Any] | None) -> _IndexConfig:
     if not index or index.get("type", "flat") == "flat":
         return FlatIndex()
     t = index["type"]
@@ -59,7 +62,7 @@ class LikhaDB:
     def close(self) -> None:
         self._http.close()
 
-    def __enter__(self) -> "LikhaDB":
+    def __enter__(self) -> LikhaDB:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -67,22 +70,22 @@ class LikhaDB:
 
     # ── Health ───────────────────────────────────────────────────────────────
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         """Return the server health payload."""
-        return self._http.get("/health").json()
+        return cast(dict[str, Any], self._http.get("/health").json())
 
     # ── Collection DDL ───────────────────────────────────────────────────────
 
     def list_collections(self) -> list[str]:
         """Return the names of all collections."""
-        return self._http.get("/collections").json()["collections"]
+        return cast(list[str], self._http.get("/collections").json()["collections"])
 
     def create_collection(
         self,
         name: str,
         dim: int,
         metric: Literal["l2", "cosine", "dot"] = "cosine",
-        index: Optional[dict] = None,
+        index: dict[str, Any] | None = None,
         enable_fts: bool = False,
     ) -> None:
         """Create a new collection.
@@ -148,7 +151,7 @@ class AsyncLikhaDB:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def __aenter__(self) -> "AsyncLikhaDB":
+    async def __aenter__(self) -> AsyncLikhaDB:
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -156,22 +159,22 @@ class AsyncLikhaDB:
 
     # ── Health ───────────────────────────────────────────────────────────────
 
-    async def health(self) -> dict:
+    async def health(self) -> dict[str, Any]:
         r = await self._http.get("/health")
-        return r.json()
+        return cast(dict[str, Any], r.json())
 
     # ── Collection DDL ───────────────────────────────────────────────────────
 
     async def list_collections(self) -> list[str]:
         r = await self._http.get("/collections")
-        return r.json()["collections"]
+        return cast(list[str], r.json()["collections"])
 
     async def create_collection(
         self,
         name: str,
         dim: int,
         metric: Literal["l2", "cosine", "dot"] = "cosine",
-        index: Optional[dict] = None,
+        index: dict[str, Any] | None = None,
         enable_fts: bool = False,
     ) -> None:
         req = CreateCollectionRequest(
