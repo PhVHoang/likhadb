@@ -119,7 +119,7 @@ the execution model passes full arrays to UDFs rather than invoking them row-by-
 ### 3.4 Relationship to the Real-Time Insert RFC
 
 This RFC describes the query path only. The staging tier flat scan described in the
-Real-Time Insert RFC (rfc_realtime_insert_vectordb.md) is a direct extension of the
+Real-Time Insert RFC (rfc/rfc_realtime_insert_vectordb.md) is a direct extension of the
 enrichment stage specified here — the staging Iceberg table is simply an additional join
 source in Stage 3, searched via the same distance UDFs defined in Section 7.3 of this RFC.
 
