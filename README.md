@@ -117,6 +117,45 @@ See [`docs/quick-usages.md`](docs/quick-usages.md) for Rust API and REST usage e
 
 ---
 
+## Python SDK
+
+A typed Python client ships under `sdk/python/`. It supports both sync and async usage and covers the full REST API surface.
+
+**Install (development):**
+
+```sh
+cd sdk/python
+pip install -e ".[dev]"
+```
+
+**Sync usage:**
+
+```python
+from likhadb import LikhaDB
+
+with LikhaDB("http://localhost:8080") as db:
+    db.create_collection("docs", dim=384, metric="cosine")
+    col = db.collection("docs")
+    col.insert(1, vector=[0.1] * 384, payload={"title": "hello"})
+    results = col.search([0.1] * 384, k=5, include_payload=True)
+```
+
+**Async usage:**
+
+```python
+from likhadb import AsyncLikhaDB
+
+async with AsyncLikhaDB("http://localhost:8080") as db:
+    await db.create_collection("docs", dim=384, metric="cosine")
+    col = db.collection("docs")
+    await col.insert(1, vector=[0.1] * 384, payload={"title": "hello"})
+    results = await col.search([0.1] * 384, k=5, include_payload=True)
+```
+
+Index types (`flat`, `ivf`, `ivf_sq8`, `hnsw`), hybrid search, Parquet import/export, and per-request payload filters are all supported. See [`sdk/python/`](sdk/python/) for the full API.
+
+---
+
 ## Distance metrics
 
 | Metric | Formula | Best for |
