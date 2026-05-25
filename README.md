@@ -111,7 +111,7 @@ sequenceDiagram
 
 > **Tier Q note:** stages inside the blue box are implemented by the `likhadb-query` crate (currently in progress — Q0 config/error done; Q1–Q4 planned). Without Tier Q the server returns the ANN/RRF result directly.
 
-For a deeper walkthrough of each stage see [`docs/rfc_datafusion_integration.md`](docs/rfc_datafusion_integration.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+For a deeper walkthrough of each stage see [`rfc/rfc_datafusion_integration.md`](rfc/rfc_datafusion_integration.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 See [`docs/quick-usages.md`](docs/quick-usages.md) for Rust API and REST usage examples.
 
