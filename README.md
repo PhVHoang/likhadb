@@ -4,7 +4,7 @@
 Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Iceberg — no ETL pipeline required.
 
 <p align="center">
-  <img src="images/likhadb_logo.svg" alt="LikhaDB" width="720" />
+  <img src="images/likhadb_logo_adaptive.svg" alt="LikhaDB" width="720" />
 </p>
 
 likhadb stores float vectors alongside arbitrary JSON payloads, searches them with
