@@ -25,7 +25,8 @@ async fn round_trip_in_memory_store() {
         let col = src.get_mut("src").unwrap();
         for i in 0u64..100 {
             let vec = vec![i as f32, (i + 1) as f32, (i + 2) as f32, (i + 3) as f32];
-            col.insert(i, vec, Some(serde_json::json!({"idx": i}))).unwrap();
+            col.insert(i, vec, Some(serde_json::json!({"idx": i})))
+                .unwrap();
         }
     }
 
@@ -74,7 +75,10 @@ async fn dim_mismatch_returns_error() {
 
     // Export dim=4 collection
     let mut src = make_manager("src", 4);
-    src.get_mut("src").unwrap().insert(1, vec![1.0, 2.0, 3.0, 4.0], None).unwrap();
+    src.get_mut("src")
+        .unwrap()
+        .insert(1, vec![1.0, 2.0, 3.0, 4.0], None)
+        .unwrap();
     src.export_parquet_to_store("src", &store, &path)
         .await
         .unwrap();
@@ -86,7 +90,13 @@ async fn dim_mismatch_returns_error() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, likhadb_lakehouse::LakehouseError::DimMismatch { expected: 8, got: 4 }),
+        matches!(
+            err,
+            likhadb_lakehouse::LakehouseError::DimMismatch {
+                expected: 8,
+                got: 4
+            }
+        ),
         "unexpected error: {err}"
     );
 }
@@ -130,8 +140,11 @@ async fn minio_real_round_trip() {
     {
         let col = src.get_mut("src").unwrap();
         for i in 0..n {
-            let vec: Vec<f32> = (0..dim).map(|d| (i * dim as u64 + d as u64) as f32 / 1000.0).collect();
-            col.insert(i, vec, Some(serde_json::json!({"i": i}))).unwrap();
+            let vec: Vec<f32> = (0..dim)
+                .map(|d| (i * dim as u64 + d as u64) as f32 / 1000.0)
+                .collect();
+            col.insert(i, vec, Some(serde_json::json!({"i": i})))
+                .unwrap();
         }
     }
 

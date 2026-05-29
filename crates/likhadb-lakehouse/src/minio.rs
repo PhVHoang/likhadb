@@ -109,7 +109,14 @@ impl ObjectStoreLakehouseExt for CollectionManager {
             .bytes()
             .await
             .map_err(LakehouseError::ObjectStore)?;
-        parquet_bytes_into_collection(self, collection_name, bytes, id_col, vector_col, payload_cols)
+        parquet_bytes_into_collection(
+            self,
+            collection_name,
+            bytes,
+            id_col,
+            vector_col,
+            payload_cols,
+        )
     }
 }
 
@@ -169,10 +176,8 @@ fn collection_to_parquet_bytes(
             )?);
             let payload_array: ArrayRef = Arc::new(StringArray::from(payload_strings));
 
-            let batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![id_array, vector_array, payload_array],
-            )?;
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![id_array, vector_array, payload_array])?;
             writer.write(&batch)?;
         }
 
