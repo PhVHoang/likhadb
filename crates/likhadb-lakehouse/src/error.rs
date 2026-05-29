@@ -32,4 +32,8 @@ pub enum LakehouseError {
 
     #[error("store error: {0}")]
     Store(#[from] likhadb_core::LikhaDbError),
+
+    #[cfg(feature = "minio")]
+    #[error("object store error: {0}")]
+    ObjectStore(object_store::Error),
 }
