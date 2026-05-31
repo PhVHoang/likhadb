@@ -22,9 +22,9 @@ loaded and WAL entries with LSN > snapshot LSN are replayed in order.
 **Layer 2 — Lakehouse (target state).** The Iceberg catalog on object storage is the
 ultimate source of truth. ARCHITECTURE.md states this explicitly:
 
-> *"The source of truth for embeddings, metadata, and business data is the Iceberg catalog
+> _"The source of truth for embeddings, metadata, and business data is the Iceberg catalog
 > on cloud object storage. LikhaDB's in-memory index is a query accelerator over that data,
-> not an independent store."*
+> not an independent store."_
 
 The `feat/iceberg-integration-minio` branch is the transition point — wiring up the second
 layer so the Iceberg table, not the local WAL, becomes the durability anchor, and
@@ -50,20 +50,20 @@ short-lived buffer.
 
 From ARCHITECTURE.md:
 
-> *"The WAL's role shrinks to covering the gap between Iceberg ingestion events and the
-> live index — a much shorter window than today."*
+> _"The WAL's role shrinks to covering the gap between Iceberg ingestion events and the
+> live index — a much shorter window than today."_
 
 The RFC (`rfc/rfc_realtime_insert_vectordb.md`) makes this concrete. In the future insert
-path, writes go directly to the Iceberg staging tier. The Iceberg append commit *is* the
+path, writes go directly to the Iceberg staging tier. The Iceberg append commit _is_ the
 durability guarantee — Iceberg uses append-only Parquet files plus atomic snapshot commits,
 giving the same log-as-truth property, but owned by the lakehouse rather than LikhaDB.
 
-| | Current | Target |
-|---|---|---|
-| Durable record | WAL (`wal.log`) | Iceberg staging tier |
-| WAL role | Primary source of truth | Gap filler (short window only) |
-| Cold start | Replay WAL from last snapshot | Rebuild index from Iceberg catalog |
-| ANN index | Derived from WAL | Derived from Iceberg tables |
+|                | Current                       | Target                             |
+| -------------- | ----------------------------- | ---------------------------------- |
+| Durable record | WAL (`wal.log`)               | Iceberg staging tier               |
+| WAL role       | Primary source of truth       | Gap filler (short window only)     |
+| Cold start     | Replay WAL from last snapshot | Rebuild index from Iceberg catalog |
+| ANN index      | Derived from WAL              | Derived from Iceberg tables        |
 
 In the fully realised design, the WAL disappears as a **correctness mechanism**. Iceberg
 provides atomicity, durability, sequencing, and snapshot isolation natively — the exact
@@ -170,7 +170,7 @@ accumulating. If the rebuild takes 30 minutes and the staging hard limit trigger
 vectors, there is a queue problem the design does not fully resolve.
 
 **The drift monitor adds complexity with uncertain payoff.** Operating a stateful
-Flink/Dataflow job, a Pub/Sub topic, and a distributed lock just to decide *when* to
+Flink/Dataflow job, a Pub/Sub topic, and a distributed lock just to decide _when_ to
 rebuild is significant surface area. The RFC acknowledges the fallback cron fires when the
 drift monitor is down — which means the cron is doing the real work under failure. Whether
 JSD-triggered rebuilds actually outperform a well-tuned schedule enough to justify that
@@ -196,12 +196,12 @@ makes it explicit.
 
 ### The core tension
 
-| | WAL | Iceberg |
-|---|---|---|
-| Write latency | ~1ms (local disk) | 10–100ms (S3 round trip) |
-| Durability scope | Process-local | Distributed, survives node loss |
-| Queryability | None | Full SQL, partition pruning |
-| Recovery | Sequential replay | Parallel structured scan |
+|                  | WAL               | Iceberg                         |
+| ---------------- | ----------------- | ------------------------------- |
+| Write latency    | ~1ms (local disk) | 10–100ms (S3 round trip)        |
+| Durability scope | Process-local     | Distributed, survives node loss |
+| Queryability     | None              | Full SQL, partition pruning     |
+| Recovery         | Sequential replay | Parallel structured scan        |
 
 They are not competing — they are good at different things across a timeline. The design
 question is where one hands off to the other.
@@ -264,16 +264,16 @@ total write history.
 
 ### Responsibility table
 
-| Concern | Owner | Reasoning |
-|---|---|---|
-| Write ACK latency | WAL | Local disk is orders of magnitude faster than S3 |
-| In-flight durability (pre-flush) | WAL | Covers the async flush window |
-| Persistent durability (post-flush) | Iceberg | Distributed, survives node loss |
-| Query freshness | In-memory buffer (updated on WAL write) | Vectors visible before Iceberg flush |
-| Cold-start recovery (bulk) | Iceberg | Parallel scan beats sequential replay |
-| Cold-start recovery (gap) | WAL replay for LSN > watermark | Narrow window only |
-| Index structure (IVF centroids, inverted lists) | Iceberg | Atomic snapshot swap in merge job |
-| Collection schema | Iceberg catalog | Table create/drop is catalog-level |
+| Concern                                         | Owner                                   | Reasoning                                        |
+| ----------------------------------------------- | --------------------------------------- | ------------------------------------------------ |
+| Write ACK latency                               | WAL                                     | Local disk is orders of magnitude faster than S3 |
+| In-flight durability (pre-flush)                | WAL                                     | Covers the async flush window                    |
+| Persistent durability (post-flush)              | Iceberg                                 | Distributed, survives node loss                  |
+| Query freshness                                 | In-memory buffer (updated on WAL write) | Vectors visible before Iceberg flush             |
+| Cold-start recovery (bulk)                      | Iceberg                                 | Parallel scan beats sequential replay            |
+| Cold-start recovery (gap)                       | WAL replay for LSN > watermark          | Narrow window only                               |
+| Index structure (IVF centroids, inverted lists) | Iceberg                                 | Atomic snapshot swap in merge job                |
+| Collection schema                               | Iceberg catalog                         | Table create/drop is catalog-level               |
 
 ### Why they do not step on each other
 
