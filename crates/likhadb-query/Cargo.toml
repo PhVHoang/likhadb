@@ -3,7 +3,22 @@ name    = "likhadb-query"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enables the DataFusion post-ANN query pipeline (Q1+).
+# Requires arrow 53-compatible datafusion (>=43) and iceberg 0.4.
+datafusion = [
+    "dep:datafusion",
+    "dep:iceberg",
+    "dep:futures-util",
+    "dep:tokio",
+]
+
 [dependencies]
-thiserror = { workspace = true }
+thiserror    = { workspace = true }
+datafusion   = { version = "43", optional = true }
+iceberg      = { version = "0.4", optional = true }
+futures-util = { version = "0.3", optional = true }
+tokio        = { version = "1", features = ["rt"], optional = true }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
