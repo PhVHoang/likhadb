@@ -36,4 +36,8 @@ pub enum LakehouseError {
     #[cfg(feature = "minio")]
     #[error("object store error: {0}")]
     ObjectStore(object_store::Error),
+
+    #[cfg(feature = "iceberg")]
+    #[error("iceberg error: {0}")]
+    Iceberg(iceberg::Error),
 }
