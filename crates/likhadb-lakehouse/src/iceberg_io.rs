@@ -38,7 +38,10 @@ pub fn build_rest_catalog(config: &IcebergConfig) -> Result<RestCatalog, Lakehou
     let mut props = HashMap::from([
         ("s3.endpoint".to_string(), config.s3_endpoint.clone()),
         ("s3.access-key-id".to_string(), config.access_key.clone()),
-        ("s3.secret-access-key".to_string(), config.secret_key.clone()),
+        (
+            "s3.secret-access-key".to_string(),
+            config.secret_key.clone(),
+        ),
         ("s3.region".to_string(), config.region.clone()),
         ("s3.path-style-access".to_string(), "true".to_string()),
         ("warehouse".to_string(), config.warehouse.clone()),

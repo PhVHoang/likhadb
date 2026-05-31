@@ -70,8 +70,7 @@ fn make_manager(name: &str, dim: usize) -> CollectionManager {
 #[tokio::test]
 #[ignore]
 async fn iceberg_real_round_trip() {
-    let catalog_uri =
-        std::env::var("ICEBERG_CATALOG_URI").expect("ICEBERG_CATALOG_URI required");
+    let catalog_uri = std::env::var("ICEBERG_CATALOG_URI").expect("ICEBERG_CATALOG_URI required");
     let s3_endpoint = std::env::var("MINIO_ENDPOINT").expect("MINIO_ENDPOINT required");
     let bucket = std::env::var("MINIO_BUCKET").expect("MINIO_BUCKET required");
     let access_key = std::env::var("MINIO_ACCESS_KEY").expect("MINIO_ACCESS_KEY required");
@@ -143,7 +142,10 @@ async fn missing_collection_errors_before_catalog_hit() {
         .unwrap_err();
 
     assert!(
-        matches!(err, likhadb_lakehouse::LakehouseError::CollectionNotFound(_)),
+        matches!(
+            err,
+            likhadb_lakehouse::LakehouseError::CollectionNotFound(_)
+        ),
         "unexpected error: {err}"
     );
 }

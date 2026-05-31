@@ -64,10 +64,7 @@ impl DataFusionSession {
     ) -> Result<Self> {
         let ctx = base_context(config);
         for ns in namespaces {
-            let table_idents = catalog
-                .list_tables(ns)
-                .await
-                .map_err(QueryError::Iceberg)?;
+            let table_idents = catalog.list_tables(ns).await.map_err(QueryError::Iceberg)?;
             for ident in table_idents {
                 register_iceberg_table(&ctx, catalog.as_ref(), &ident).await?;
             }
@@ -95,10 +92,7 @@ impl DataFusionSession {
 ///
 /// Call this on the per-request child context returned by
 /// [`DataFusionSession::child_context`].
-pub fn register_candidates_in(
-    ctx: &SessionContext,
-    batch: RecordBatch,
-) -> Result<()> {
+pub fn register_candidates_in(ctx: &SessionContext, batch: RecordBatch) -> Result<()> {
     let schema: SchemaRef = batch.schema();
     let table = MemTable::try_new(schema, vec![vec![batch]])?;
     ctx.register_table("candidates", Arc::new(table))
@@ -193,7 +187,10 @@ async fn register_iceberg_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AnnConfig, DataFusionRuntimeConfig, QueryConfig, RecencyConfig, ScoringConfig, ScoringWeights};
+    use crate::config::{
+        AnnConfig, DataFusionRuntimeConfig, QueryConfig, RecencyConfig, ScoringConfig,
+        ScoringWeights,
+    };
     use datafusion::arrow::array::{Float32Array, UInt64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::path::PathBuf;
