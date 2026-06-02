@@ -50,7 +50,6 @@ struct Args {
     no_cleanup: bool,
 
     // ── Stress controls ───────────────────────────────────────────────────────
-
     /// Per-request timeout in milliseconds (0 = disabled)
     #[arg(long, default_value_t = 5_000)]
     timeout_ms: u64,
@@ -383,7 +382,14 @@ const CORPUS: &[&str] = &[
 ];
 
 const SEARCH_TERMS: &[&str] = &[
-    "vector", "search", "rust", "index", "embedding", "retrieval", "HNSW", "BM25",
+    "vector",
+    "search",
+    "rust",
+    "index",
+    "embedding",
+    "retrieval",
+    "HNSW",
+    "BM25",
 ];
 
 async fn insert_hybrid_phase(
@@ -416,11 +422,13 @@ async fn insert_hybrid_phase(
                 let id = (base + i) as u64;
                 let vec = make_vec(id, dim);
                 let text = CORPUS[id as usize % CORPUS.len()];
-                let req = c.post(format!("{h}/collections/{col}/vectors")).json(&json!({
-                    "id": id,
-                    "vector": vec,
-                    "payload": {"body": text, "seq": id},
-                }));
+                let req = c
+                    .post(format!("{h}/collections/{col}/vectors"))
+                    .json(&json!({
+                        "id": id,
+                        "vector": vec,
+                        "payload": {"body": text, "seq": id},
+                    }));
                 match send_timed(req, timeout_ms).await {
                     Outcome::Success(us) => lats.push(us),
                     Outcome::HttpError(_) | Outcome::NetworkError => errors += 1,
@@ -819,10 +827,7 @@ async fn chaos_phase(
                     _ => {
                         // Fetch a vector ID that was never inserted (expect 404).
                         send_timed(
-                            c.get(format!(
-                                "{h}/collections/{col}/vectors/{}",
-                                id + 9_000_000
-                            )),
+                            c.get(format!("{h}/collections/{col}/vectors/{}", id + 9_000_000)),
                             timeout_ms,
                         )
                         .await
@@ -913,26 +918,14 @@ fn slo_mark(passes: bool) -> &'static str {
 // ─── Summary ──────────────────────────────────────────────────────────────────
 
 fn print_baseline_summary(results: &[(&str, PhaseResult, PhaseResult)], args: &Args) {
-    println!(
-        "  ══════════════════════════════════════════════════════════════════════════════"
-    );
+    println!("  ══════════════════════════════════════════════════════════════════════════════");
     println!(
         "  BASELINE SUMMARY  dim={}  vectors={}  queries={}  concurrency={}",
         args.dim, args.vectors, args.queries, args.concurrency
     );
     println!(
         "  {:<10}  {:>9}  {:>8}  {:>8}  {:>8}  {:>5}    {:>9}  {:>8}  {:>8}  {:>8}  {:>5}",
-        "index",
-        "ins/s",
-        "p50",
-        "p95",
-        "p99",
-        "err%",
-        "qry/s",
-        "p50",
-        "p95",
-        "p99",
-        "err%"
+        "index", "ins/s", "p50", "p95", "p99", "err%", "qry/s", "p50", "p95", "p99", "err%"
     );
     println!("  {}", "─".repeat(78));
     for (tag, ins, qry) in results {
@@ -951,9 +944,7 @@ fn print_baseline_summary(results: &[(&str, PhaseResult, PhaseResult)], args: &A
             qry.error_rate(),
         );
     }
-    println!(
-        "  ══════════════════════════════════════════════════════════════════════════════"
-    );
+    println!("  ══════════════════════════════════════════════════════════════════════════════");
     println!();
 }
 
@@ -1149,9 +1140,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("FAILED: {e}");
-                    eprintln!(
-                        "  (Compiled without fts feature? Skipping hybrid sub-phase.)"
-                    );
+                    eprintln!("  (Compiled without fts feature? Skipping hybrid sub-phase.)");
                     println!();
                 }
             }
@@ -1164,8 +1153,7 @@ async fn main() {
     // A flat collection pre-seeded with `vectors` entries is shared across
     // ramp, spike, soak, and chaos phases so each phase begins with a warm index.
 
-    let any_stress =
-        !args.skip_ramp || !args.skip_spike || !args.skip_soak || !args.skip_chaos;
+    let any_stress = !args.skip_ramp || !args.skip_spike || !args.skip_soak || !args.skip_chaos;
 
     let stress_col = "stress_main".to_string();
 
@@ -1301,15 +1289,18 @@ async fn main() {
         let spike_p99 = sr.spike.percentile(99);
         let recovery_p99 = sr.recovery.percentile(99);
         let degradation = spike_p99 as f64 / warmup_p99 as f64;
-        let recovered =
-            recovery_p99 <= (warmup_p99 as f64 * 1.5) as u64; // within 1.5× warm-up is "recovered"
+        let recovered = recovery_p99 <= (warmup_p99 as f64 * 1.5) as u64; // within 1.5× warm-up is "recovered"
 
         println!(
             "  {:<12}  {:>9}  {:>8}  {:>8}  {:>8}  {:>5.1}%",
             "phase", "tput", "p50", "p95", "p99", "err%"
         );
         println!("  {}", "─".repeat(60));
-        for (label, r) in [("warm-up", &sr.warmup), ("spike", &sr.spike), ("recovery", &sr.recovery)] {
+        for (label, r) in [
+            ("warm-up", &sr.warmup),
+            ("spike", &sr.spike),
+            ("recovery", &sr.recovery),
+        ] {
             println!(
                 "  {:<12}  {:>9}  {:>8}  {:>8}  {:>8}  {:>5.1}%",
                 label,
@@ -1324,7 +1315,11 @@ async fn main() {
         println!(
             "  p99 degradation during spike: {:.1}×   recovery: {}",
             degradation,
-            if recovered { "✓ clean" } else { "✗ still elevated" }
+            if recovered {
+                "✓ clean"
+            } else {
+                "✗ still elevated"
+            }
         );
         println!();
     }
@@ -1370,7 +1365,11 @@ async fn main() {
         }
 
         if windows.len() >= 2 {
-            let first_p95 = windows.first().map(|w| w.percentile(95)).unwrap_or(0).max(1);
+            let first_p95 = windows
+                .first()
+                .map(|w| w.percentile(95))
+                .unwrap_or(0)
+                .max(1);
             let last_p95 = windows.last().map(|w| w.percentile(95)).unwrap_or(0);
             let drift_pct = (last_p95 as f64 - first_p95 as f64) / first_p95 as f64 * 100.0;
             println!();
@@ -1413,7 +1412,10 @@ async fn main() {
 
         println!("  Results  ({} total ops):", cr.total);
         println!("    valid successes  : {}", cr.valid_successes);
-        println!("    expected errors  : {} (correct 4xx from invalid ops)", cr.expected_errors);
+        println!(
+            "    expected errors  : {} (correct 4xx from invalid ops)",
+            cr.expected_errors
+        );
         println!("    timeouts         : {}", cr.timeouts);
         println!(
             "    unexpected errors: {}  {}",
@@ -1426,15 +1428,17 @@ async fn main() {
         );
         println!(
             "    server health    : {}",
-            if cr.server_healthy { "OK ✓" } else { "FAILED ✗" }
+            if cr.server_healthy {
+                "OK ✓"
+            } else {
+                "FAILED ✗"
+            }
         );
         println!();
     }
 
     // ── Final SLO verdict ─────────────────────────────────────────────────────
-    println!(
-        "  ══════════════════════════════════════════════════════════════════════════════"
-    );
+    println!("  ══════════════════════════════════════════════════════════════════════════════");
     println!("  SLO VERDICT  (p99 threshold = {}ms)", args.p99_slo_ms);
     println!("  {}", "─".repeat(78));
 
@@ -1449,9 +1453,7 @@ async fn main() {
         }
     }
 
-    println!(
-        "  ══════════════════════════════════════════════════════════════════════════════"
-    );
+    println!("  ══════════════════════════════════════════════════════════════════════════════");
     println!();
 
     finalize(&args, &all_collections, &client).await;
@@ -1465,9 +1467,7 @@ async fn finalize(args: &Args, all_collections: &[String], client: &Client) {
         }
         println!("done");
     } else {
-        println!(
-            "  Collections retained (--no-cleanup). Inspect via GET /collections."
-        );
+        println!("  Collections retained (--no-cleanup). Inspect via GET /collections.");
     }
     println!();
 }
