@@ -33,6 +33,9 @@ cargo test -p likhadb-fts
 # Run benchmarks
 cargo bench -p likhadb-bench
 
+# Stress test (requires a running server — see §Stress test below)
+cargo run -p likhadb-stress
+
 # Lint (zero warnings enforced)
 cargo clippy --workspace -- -D warnings
 cargo clippy -p likhadb-store --features fts -- -D warnings
@@ -295,6 +298,72 @@ Export serialises the collection to Parquet in memory then uploads with a single
   MINIO_ACCESS_KEY=minioadmin MINIO_SECRET_KEY=minioadmin \
   cargo test --features minio -p likhadb-lakehouse -- minio_real --ignored --nocapture
   ```
+
+---
+
+## Stress test
+
+`likhadb-stress` is a breaking-point stress tester that pushes the server beyond normal operational limits to find where it breaks, validate error handling under pressure, and verify SLO compliance. It runs five sequential phases:
+
+| Phase | What it does |
+|---|---|
+| **1. Baseline** | Inserts and queries across flat, IVF, and HNSW indexes plus a hybrid BM25+vector collection — establishes normal-load throughput and latency percentiles |
+| **2. Ramp** | Doubles concurrency from 1 → 2 → 4 → … → `--max-concurrency`, stopping when error rate exceeds `--error-threshold` or p99 breaches `--p99-slo-ms` — reports the breaking point |
+| **3. Spike** | Warm-up at base concurrency → sudden burst to `--spike-factor×` concurrency → recovery; reports p99 degradation ratio and whether the system recovers cleanly |
+| **4. Soak** | Sustained load for `--soak-secs` split into 5 equal windows; compares first vs. last window p95 to detect latency drift from memory leaks or lock contention |
+| **5. Chaos** | Fires a 1:1:1:1:1 mix of valid queries, valid inserts, ghost-collection queries, wrong-dimension inserts, and nonexistent-vector GETs; counts unexpected 5xx separately from expected 4xx; confirms server health after the barrage |
+
+Every HTTP call goes through `send_timed()` which enforces `--timeout-ms` per request. All five phases report error rates, not just latency.
+
+**Quick start** — with a running server (`./dev.sh`):
+
+```sh
+# Full run (all five phases, default settings)
+cargo run -p likhadb-stress
+
+# Stress phases only, shorter duration
+cargo run -p likhadb-stress -- \
+  --skip-baseline \
+  --soak-secs 15 \
+  --chaos-ops 500
+
+# Force-detect a breaking point at low concurrency (useful for CI)
+cargo run -p likhadb-stress -- \
+  --skip-baseline \
+  --max-concurrency 16 \
+  --error-threshold 1.0 \
+  --p99-slo-ms 200
+```
+
+**Key flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--timeout-ms` | 5000 | Per-request timeout in milliseconds (0 = disabled) |
+| `--max-concurrency` | 64 | Concurrency ceiling for the ramp phase |
+| `--error-threshold` | 5.0 | Error rate % that declares a breaking point |
+| `--p99-slo-ms` | 500 | p99 latency SLO in milliseconds |
+| `--spike-factor` | 4 | Concurrency multiplier for the spike phase |
+| `--soak-secs` | 30 | Duration of the soak phase |
+| `--chaos-ops` | 1000 | Number of random operations in the chaos phase |
+| `--skip-{baseline,ramp,spike,soak,chaos}` | — | Individually disable any phase |
+| `--no-cleanup` | — | Retain test collections for post-run inspection |
+
+**Example ramp output:**
+
+```
+  ── PHASE 2: RAMP  (concurrency doubles until breaking point)
+  ────────────────────────────────────────────────────────────────────────────
+  concurrency       tput      p50      p95      p99    err%  p99 SLO
+  1              1.2k/s    0.82ms   1.41ms   2.34ms    0.0%  PASS
+  2              2.3k/s    0.85ms   1.52ms   3.10ms    0.0%  PASS
+  4              4.1k/s    0.96ms   1.83ms   5.92ms    0.0%  PASS
+  8              6.8k/s    1.14ms   3.22ms  19.46ms    0.3%  PASS
+  16             9.0k/s    1.73ms  14.51ms 142.30ms    2.1%  PASS
+  32             9.4k/s    4.20ms  89.12ms 631.00ms    7.6%  ✗ BREAK ← err
+
+  ⚠ Breaking point at concurrency=32  (err>5% or p99>500ms)
+```
 
 ---
 
