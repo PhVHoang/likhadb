@@ -253,17 +253,23 @@ fn merge_workers(collected: Vec<WorkerStats>) -> (Vec<u64>, u64, u64) {
     (lats, errs, tos)
 }
 
-// ─── Baseline insert / query ──────────────────────────────────────────────────
+// ─── Query context ────────────────────────────────────────────────────────────
+//
+// Bundles the five per-call parameters that every phase function needs, keeping
+// individual argument counts below Clippy's too_many_arguments threshold.
 
-async fn insert_phase(
+#[derive(Clone)]
+struct QueryCtx {
     client: Client,
     host: String,
     collection: String,
     dim: usize,
-    n: usize,
-    concurrency: usize,
     timeout_ms: u64,
-) -> PhaseResult {
+}
+
+// ─── Baseline insert / query ──────────────────────────────────────────────────
+
+async fn insert_phase(ctx: QueryCtx, n: usize, concurrency: usize) -> PhaseResult {
     let per = n.div_ceil(concurrency);
     let wall = Instant::now();
     let mut set: JoinSet<WorkerStats> = JoinSet::new();
@@ -274,9 +280,11 @@ async fn insert_phase(
         if count == 0 {
             break;
         }
-        let c = client.clone();
-        let h = host.clone();
-        let col = collection.clone();
+        let c = ctx.client.clone();
+        let h = ctx.host.clone();
+        let col = ctx.collection.clone();
+        let dim = ctx.dim;
+        let timeout_ms = ctx.timeout_ms;
         set.spawn(async move {
             let mut lats = Vec::with_capacity(count);
             let mut errors = 0u64;
@@ -305,16 +313,7 @@ async fn insert_phase(
     PhaseResult::new(lats, errs, tos, wall.elapsed())
 }
 
-async fn query_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
-    q: usize,
-    k: usize,
-    concurrency: usize,
-    timeout_ms: u64,
-) -> PhaseResult {
+async fn query_phase(ctx: QueryCtx, q: usize, k: usize, concurrency: usize) -> PhaseResult {
     let per = q.div_ceil(concurrency);
     let wall = Instant::now();
     let mut set: JoinSet<WorkerStats> = JoinSet::new();
@@ -325,9 +324,11 @@ async fn query_phase(
         if count == 0 {
             break;
         }
-        let c = client.clone();
-        let h = host.clone();
-        let col = collection.clone();
+        let c = ctx.client.clone();
+        let h = ctx.host.clone();
+        let col = ctx.collection.clone();
+        let dim = ctx.dim;
+        let timeout_ms = ctx.timeout_ms;
         set.spawn(async move {
             let mut lats = Vec::with_capacity(count);
             let mut errors = 0u64;
@@ -392,15 +393,7 @@ const SEARCH_TERMS: &[&str] = &[
     "BM25",
 ];
 
-async fn insert_hybrid_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
-    n: usize,
-    concurrency: usize,
-    timeout_ms: u64,
-) -> PhaseResult {
+async fn insert_hybrid_phase(ctx: QueryCtx, n: usize, concurrency: usize) -> PhaseResult {
     let per = n.div_ceil(concurrency);
     let wall = Instant::now();
     let mut set: JoinSet<WorkerStats> = JoinSet::new();
@@ -411,9 +404,11 @@ async fn insert_hybrid_phase(
         if count == 0 {
             break;
         }
-        let c = client.clone();
-        let h = host.clone();
-        let col = collection.clone();
+        let c = ctx.client.clone();
+        let h = ctx.host.clone();
+        let col = ctx.collection.clone();
+        let dim = ctx.dim;
+        let timeout_ms = ctx.timeout_ms;
         set.spawn(async move {
             let mut lats = Vec::with_capacity(count);
             let mut errors = 0u64;
@@ -448,14 +443,10 @@ async fn insert_hybrid_phase(
 }
 
 async fn hybrid_query_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
+    ctx: QueryCtx,
     q: usize,
     k: usize,
     concurrency: usize,
-    timeout_ms: u64,
 ) -> PhaseResult {
     let per = q.div_ceil(concurrency);
     let wall = Instant::now();
@@ -467,9 +458,11 @@ async fn hybrid_query_phase(
         if count == 0 {
             break;
         }
-        let c = client.clone();
-        let h = host.clone();
-        let col = collection.clone();
+        let c = ctx.client.clone();
+        let h = ctx.host.clone();
+        let col = ctx.collection.clone();
+        let dim = ctx.dim;
+        let timeout_ms = ctx.timeout_ms;
         set.spawn(async move {
             let mut lats = Vec::with_capacity(count);
             let mut errors = 0u64;
@@ -511,16 +504,12 @@ struct RampStep {
 }
 
 async fn ramp_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
+    ctx: QueryCtx,
     k: usize,
     queries_per_step: usize,
     max_concurrency: usize,
     error_threshold: f64,
     p99_slo_ms: u64,
-    timeout_ms: u64,
 ) -> Vec<RampStep> {
     // Build doubling ramp: 1, 2, 4, … up to max_concurrency.
     let mut levels = Vec::new();
@@ -535,17 +524,7 @@ async fn ramp_phase(
 
     let mut steps = Vec::new();
     for &concurrency in &levels {
-        let result = query_phase(
-            client.clone(),
-            host.clone(),
-            collection.clone(),
-            dim,
-            queries_per_step,
-            k,
-            concurrency,
-            timeout_ms,
-        )
-        .await;
+        let result = query_phase(ctx.clone(), queries_per_step, k, concurrency).await;
 
         let is_breaking_point =
             result.error_rate() > error_threshold || !result.meets_p99_slo(p99_slo_ms);
@@ -576,54 +555,18 @@ struct SpikeResult {
 }
 
 async fn spike_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
+    ctx: QueryCtx,
     k: usize,
     base_concurrency: usize,
     spike_factor: usize,
     queries: usize,
-    timeout_ms: u64,
 ) -> SpikeResult {
     let spike_concurrency = (base_concurrency * spike_factor).max(base_concurrency + 1);
     let spike_queries = queries * spike_factor;
 
-    let warmup = query_phase(
-        client.clone(),
-        host.clone(),
-        collection.clone(),
-        dim,
-        queries,
-        k,
-        base_concurrency,
-        timeout_ms,
-    )
-    .await;
-
-    let spike = query_phase(
-        client.clone(),
-        host.clone(),
-        collection.clone(),
-        dim,
-        spike_queries,
-        k,
-        spike_concurrency,
-        timeout_ms,
-    )
-    .await;
-
-    let recovery = query_phase(
-        client.clone(),
-        host.clone(),
-        collection.clone(),
-        dim,
-        queries,
-        k,
-        base_concurrency,
-        timeout_ms,
-    )
-    .await;
+    let warmup = query_phase(ctx.clone(), queries, k, base_concurrency).await;
+    let spike = query_phase(ctx.clone(), spike_queries, k, spike_concurrency).await;
+    let recovery = query_phase(ctx.clone(), queries, k, base_concurrency).await;
 
     SpikeResult {
         warmup,
@@ -639,24 +582,22 @@ async fn spike_phase(
 // Within each window, workers loop continuously until the window deadline.
 
 async fn soak_window(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
+    ctx: QueryCtx,
     k: usize,
     concurrency: usize,
     window_dur: Duration,
     seed_base: u64,
-    timeout_ms: u64,
 ) -> PhaseResult {
     let deadline = Instant::now() + window_dur;
     let wall = Instant::now();
     let mut set: JoinSet<WorkerStats> = JoinSet::new();
 
     for w in 0..concurrency {
-        let c = client.clone();
-        let h = host.clone();
-        let col = collection.clone();
+        let c = ctx.client.clone();
+        let h = ctx.host.clone();
+        let col = ctx.collection.clone();
+        let dim = ctx.dim;
+        let timeout_ms = ctx.timeout_ms;
         // Spread seeds across workers so they don't repeat the same query vectors.
         let mut seed = seed_base + w as u64 * 100_000;
         set.spawn(async move {
@@ -691,32 +632,17 @@ async fn soak_window(
 }
 
 async fn soak_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
+    ctx: QueryCtx,
     k: usize,
     concurrency: usize,
     total_duration: Duration,
     n_windows: usize,
-    timeout_ms: u64,
 ) -> Vec<PhaseResult> {
     let window_dur = total_duration / n_windows as u32;
     let mut results = Vec::with_capacity(n_windows);
     for w in 0..n_windows {
         let seed_base = w as u64 * 10_000_000;
-        let r = soak_window(
-            client.clone(),
-            host.clone(),
-            collection.clone(),
-            dim,
-            k,
-            concurrency,
-            window_dur,
-            seed_base,
-            timeout_ms,
-        )
-        .await;
+        let r = soak_window(ctx.clone(), k, concurrency, window_dur, seed_base).await;
         results.push(r);
     }
     results
@@ -744,15 +670,7 @@ struct ChaosResult {
     server_healthy: bool,
 }
 
-async fn chaos_phase(
-    client: Client,
-    host: String,
-    collection: String,
-    dim: usize,
-    n_ops: usize,
-    concurrency: usize,
-    timeout_ms: u64,
-) -> ChaosResult {
+async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosResult {
     struct WorkerResult {
         valid_ok: u64,
         expected_err: u64,
@@ -769,9 +687,11 @@ async fn chaos_phase(
         if count == 0 {
             break;
         }
-        let c = client.clone();
-        let h = host.clone();
-        let col = collection.clone();
+        let c = ctx.client.clone();
+        let h = ctx.host.clone();
+        let col = ctx.collection.clone();
+        let dim = ctx.dim;
+        let timeout_ms = ctx.timeout_ms;
         set.spawn(async move {
             let mut wr = WorkerResult {
                 valid_ok: 0,
@@ -838,7 +758,7 @@ async fn chaos_phase(
                     // Valid ops succeeded as expected.
                     (0 | 1, Outcome::Success(_)) => wr.valid_ok += 1,
                     // Invalid ops got the expected 4xx rejection.
-                    (2 | 3 | 4, Outcome::HttpError(s)) if s >= 400 && s < 500 => {
+                    (2..=4, Outcome::HttpError(s)) if (400..500).contains(&s) => {
                         wr.expected_err += 1
                     }
                     // Timeouts — server may be overloaded but not crashed.
@@ -862,7 +782,7 @@ async fn chaos_phase(
         timeouts += wr.timeouts;
     }
 
-    let server_healthy = health_check(&client, &host).await.is_ok();
+    let server_healthy = health_check(&ctx.client, &ctx.host).await.is_ok();
 
     ChaosResult {
         total: n_ops as u64,
@@ -1048,16 +968,14 @@ async fn main() {
                 "  Inserting {} vectors ({} workers)... ",
                 args.vectors, args.concurrency
             );
-            let ins = insert_phase(
-                client.clone(),
-                args.host.clone(),
-                name.clone(),
-                args.dim,
-                args.vectors,
-                args.concurrency,
-                args.timeout_ms,
-            )
-            .await;
+            let ctx = QueryCtx {
+                client: client.clone(),
+                host: args.host.clone(),
+                collection: name.clone(),
+                dim: args.dim,
+                timeout_ms: args.timeout_ms,
+            };
+            let ins = insert_phase(ctx.clone(), args.vectors, args.concurrency).await;
             println!("done ({:.2?})", ins.elapsed);
             print_baseline_row("Insert", cfg.tag, &ins);
 
@@ -1065,17 +983,7 @@ async fn main() {
                 "\n  Querying (k={}, {} queries, {} workers)... ",
                 args.k, args.queries, args.concurrency
             );
-            let qry = query_phase(
-                client.clone(),
-                args.host.clone(),
-                name.clone(),
-                args.dim,
-                args.queries,
-                args.k,
-                args.concurrency,
-                args.timeout_ms,
-            )
-            .await;
+            let qry = query_phase(ctx, args.queries, args.k, args.concurrency).await;
             println!("done ({:.2?})", qry.elapsed);
             print_baseline_row("Query", cfg.tag, &qry);
             println!();
@@ -1104,16 +1012,15 @@ async fn main() {
                         "  Inserting {} vectors with text payloads ({} workers)... ",
                         n_hybrid, args.concurrency
                     );
-                    let ins = insert_hybrid_phase(
-                        client.clone(),
-                        args.host.clone(),
-                        name.to_string(),
-                        args.dim,
-                        n_hybrid,
-                        args.concurrency,
-                        args.timeout_ms,
-                    )
-                    .await;
+                    let hctx = QueryCtx {
+                        client: client.clone(),
+                        host: args.host.clone(),
+                        collection: name.to_string(),
+                        dim: args.dim,
+                        timeout_ms: args.timeout_ms,
+                    };
+                    let ins =
+                        insert_hybrid_phase(hctx.clone(), n_hybrid, args.concurrency).await;
                     println!("done ({:.2?})", ins.elapsed);
                     print_baseline_row("Insert", "hybrid", &ins);
 
@@ -1121,17 +1028,8 @@ async fn main() {
                         "\n  Hybrid queries (k={}, {} queries, {} workers)... ",
                         args.k, q_hybrid, args.concurrency
                     );
-                    let qry = hybrid_query_phase(
-                        client.clone(),
-                        args.host.clone(),
-                        name.to_string(),
-                        args.dim,
-                        q_hybrid,
-                        args.k,
-                        args.concurrency,
-                        args.timeout_ms,
-                    )
-                    .await;
+                    let qry =
+                        hybrid_query_phase(hctx, q_hybrid, args.k, args.concurrency).await;
                     println!("done ({:.2?})", qry.elapsed);
                     print_baseline_row("Hybrid", "hybrid", &qry);
                     println!();
@@ -1177,16 +1075,14 @@ async fn main() {
             "  Seeding {} vectors ({} workers)... ",
             args.vectors, args.concurrency
         );
-        let seed_result = insert_phase(
-            client.clone(),
-            args.host.clone(),
-            stress_col.clone(),
-            args.dim,
-            args.vectors,
-            args.concurrency,
-            args.timeout_ms,
-        )
-        .await;
+        let stress_ctx = QueryCtx {
+            client: client.clone(),
+            host: args.host.clone(),
+            collection: stress_col.clone(),
+            dim: args.dim,
+            timeout_ms: args.timeout_ms,
+        };
+        let seed_result = insert_phase(stress_ctx, args.vectors, args.concurrency).await;
         println!(
             "done ({:.2?})  err={:.1}%",
             seed_result.elapsed,
@@ -1206,17 +1102,20 @@ async fn main() {
         println!("  {}", "─".repeat(68));
 
         let queries_per_step = args.queries.max(100);
+        let rctx = QueryCtx {
+            client: client.clone(),
+            host: args.host.clone(),
+            collection: stress_col.clone(),
+            dim: args.dim,
+            timeout_ms: args.timeout_ms,
+        };
         let steps = ramp_phase(
-            client.clone(),
-            args.host.clone(),
-            stress_col.clone(),
-            args.dim,
+            rctx,
             args.k,
             queries_per_step,
             args.max_concurrency,
             args.error_threshold,
             args.p99_slo_ms,
-            args.timeout_ms,
         )
         .await;
 
@@ -1272,18 +1171,15 @@ async fn main() {
         );
         separator();
 
-        let sr = spike_phase(
-            client.clone(),
-            args.host.clone(),
-            stress_col.clone(),
-            args.dim,
-            args.k,
-            args.concurrency,
-            args.spike_factor,
-            args.queries,
-            args.timeout_ms,
-        )
-        .await;
+        let sctx = QueryCtx {
+            client: client.clone(),
+            host: args.host.clone(),
+            collection: stress_col.clone(),
+            dim: args.dim,
+            timeout_ms: args.timeout_ms,
+        };
+        let sr = spike_phase(sctx, args.k, args.concurrency, args.spike_factor, args.queries)
+            .await;
 
         let warmup_p99 = sr.warmup.percentile(99).max(1);
         let spike_p99 = sr.spike.percentile(99);
@@ -1333,16 +1229,19 @@ async fn main() {
         );
         separator();
 
+        let soakctx = QueryCtx {
+            client: client.clone(),
+            host: args.host.clone(),
+            collection: stress_col.clone(),
+            dim: args.dim,
+            timeout_ms: args.timeout_ms,
+        };
         let windows = soak_phase(
-            client.clone(),
-            args.host.clone(),
-            stress_col.clone(),
-            args.dim,
+            soakctx,
             args.k,
             args.concurrency,
             Duration::from_secs(args.soak_secs),
             N_WINDOWS,
-            args.timeout_ms,
         )
         .await;
 
@@ -1399,16 +1298,14 @@ async fn main() {
         println!("          wrong-dimension (20%) · nonexistent-vector (20%)");
         println!();
 
-        let cr = chaos_phase(
-            client.clone(),
-            args.host.clone(),
-            stress_col.clone(),
-            args.dim,
-            args.chaos_ops,
-            chaos_concurrency,
-            args.timeout_ms,
-        )
-        .await;
+        let cctx = QueryCtx {
+            client: client.clone(),
+            host: args.host.clone(),
+            collection: stress_col.clone(),
+            dim: args.dim,
+            timeout_ms: args.timeout_ms,
+        };
+        let cr = chaos_phase(cctx, args.chaos_ops, chaos_concurrency).await;
 
         println!("  Results  ({} total ops):", cr.total);
         println!("    valid successes  : {}", cr.valid_successes);
