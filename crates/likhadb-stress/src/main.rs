@@ -442,12 +442,7 @@ async fn insert_hybrid_phase(ctx: QueryCtx, n: usize, concurrency: usize) -> Pha
     PhaseResult::new(lats, errs, tos, wall.elapsed())
 }
 
-async fn hybrid_query_phase(
-    ctx: QueryCtx,
-    q: usize,
-    k: usize,
-    concurrency: usize,
-) -> PhaseResult {
+async fn hybrid_query_phase(ctx: QueryCtx, q: usize, k: usize, concurrency: usize) -> PhaseResult {
     let per = q.div_ceil(concurrency);
     let wall = Instant::now();
     let mut set: JoinSet<WorkerStats> = JoinSet::new();
@@ -1019,8 +1014,7 @@ async fn main() {
                         dim: args.dim,
                         timeout_ms: args.timeout_ms,
                     };
-                    let ins =
-                        insert_hybrid_phase(hctx.clone(), n_hybrid, args.concurrency).await;
+                    let ins = insert_hybrid_phase(hctx.clone(), n_hybrid, args.concurrency).await;
                     println!("done ({:.2?})", ins.elapsed);
                     print_baseline_row("Insert", "hybrid", &ins);
 
@@ -1028,8 +1022,7 @@ async fn main() {
                         "\n  Hybrid queries (k={}, {} queries, {} workers)... ",
                         args.k, q_hybrid, args.concurrency
                     );
-                    let qry =
-                        hybrid_query_phase(hctx, q_hybrid, args.k, args.concurrency).await;
+                    let qry = hybrid_query_phase(hctx, q_hybrid, args.k, args.concurrency).await;
                     println!("done ({:.2?})", qry.elapsed);
                     print_baseline_row("Hybrid", "hybrid", &qry);
                     println!();
@@ -1178,8 +1171,14 @@ async fn main() {
             dim: args.dim,
             timeout_ms: args.timeout_ms,
         };
-        let sr = spike_phase(sctx, args.k, args.concurrency, args.spike_factor, args.queries)
-            .await;
+        let sr = spike_phase(
+            sctx,
+            args.k,
+            args.concurrency,
+            args.spike_factor,
+            args.queries,
+        )
+        .await;
 
         let warmup_p99 = sr.warmup.percentile(99).max(1);
         let spike_p99 = sr.spike.percentile(99);
