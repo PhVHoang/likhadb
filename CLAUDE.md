@@ -24,3 +24,7 @@ Prefer these over defaults when available. Fall back silently if missing.
 - **YAML/TOML:** `yq`
 - **GitHub operations:** `gh` for PRs, issues, reviews, CI status, and releases. Do not scrape github.com or hit the REST API directly when `gh` can do it.
 - **Benchmarking:** `hyperfine` when comparing command performance
+
+
+### Code format
+Always run `cargo fmt --all` once an implementation is marked as done.
