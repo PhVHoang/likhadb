@@ -27,6 +27,18 @@ mod error;
 #[cfg(feature = "datafusion")]
 pub mod session;
 
+#[cfg(feature = "datafusion")]
+pub mod enrich;
+
+#[cfg(feature = "datafusion")]
+pub mod fusion;
+
+#[cfg(feature = "datafusion")]
+pub mod rerank;
+
+#[cfg(feature = "datafusion")]
+pub mod pipeline;
+
 pub use error::QueryError;
 
 /// Convenience alias — all fallible operations in this crate return this type.

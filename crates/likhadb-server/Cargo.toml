@@ -3,7 +3,12 @@ name    = "likhadb-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enables Tier Q: DataFusion enrichment, score fusion, and model-based reranking.
+tier-q = ["dep:likhadb-query"]
+
 [dependencies]
+likhadb-query = { path = "../likhadb-query", features = ["datafusion"], optional = true }
 likhadb-core                 = { path = "../likhadb-core" }
 likhadb-store                = { path = "../likhadb-store", features = ["fts"] }
 likhadb-persist              = { path = "../likhadb-persist", features = ["fts"] }

@@ -32,8 +32,15 @@ pub struct QueryConfig {
     pub scoring: ScoringConfig,
 
     /// Number of candidates emitted by Stage 4a (score fusion).
-    /// Must be ≤ `ann.top_n`. Passed to Stage 4b (bi-encoder) when implemented.
+    /// Must be ≤ `ann.top_n`. Input cardinality for Stage 4b (bi-encoder).
     pub top_m: usize,
+
+    /// Bi-encoder reranking configuration (Stage 4b). `None` skips reranking.
+    pub bi_encoder: Option<BiEncoderConfig>,
+
+    /// Cross-encoder reranking configuration (Stage 4c). `None` skips reranking.
+    /// Requires `bi_encoder` to also be set.
+    pub cross_encoder: Option<CrossEncoderConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +239,89 @@ impl RecencyConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Reranking configs
+// ---------------------------------------------------------------------------
+
+/// Bi-encoder reranking configuration (Stage 4b).
+///
+/// The bi-encoder receives the top-M candidates from Stage 4a and produces
+/// top-P candidates via a single batched HTTP call. Combined score:
+/// `α × bi_score + (1 - α) × fusion_score`.
+#[derive(Debug, Clone)]
+pub struct BiEncoderConfig {
+    /// HTTP endpoint for the bi-encoder model service.
+    pub endpoint: String,
+
+    /// Interpolation weight between bi-encoder score and fusion score.
+    /// Must be in the open interval `(0.0, 1.0)`.
+    pub alpha: f32,
+
+    /// Number of candidates to retain after bi-encoder reranking (top-P).
+    /// Must be ≥ 1.
+    pub top_p: usize,
+}
+
+impl BiEncoderConfig {
+    /// Construct and validate bi-encoder configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Config`] if:
+    /// - `alpha` is not strictly in `(0.0, 1.0)`.
+    /// - `top_p` is zero.
+    pub fn new(endpoint: impl Into<String>, alpha: f32, top_p: usize) -> Result<Self> {
+        if alpha <= 0.0 || alpha >= 1.0 {
+            return Err(QueryError::Config(format!(
+                "bi_encoder.alpha must be in (0.0, 1.0), got {alpha}"
+            )));
+        }
+        if top_p == 0 {
+            return Err(QueryError::Config(
+                "bi_encoder.top_p must be ≥ 1".to_string(),
+            ));
+        }
+        Ok(Self {
+            endpoint: endpoint.into(),
+            alpha,
+            top_p,
+        })
+    }
+}
+
+/// Cross-encoder reranking configuration (Stage 4c).
+///
+/// The cross-encoder receives the top-P candidates from Stage 4b and produces
+/// the final top-K results via a single batched HTTP call.
+#[derive(Debug, Clone)]
+pub struct CrossEncoderConfig {
+    /// HTTP endpoint for the cross-encoder model service.
+    pub endpoint: String,
+
+    /// Number of final results to return (top-K).
+    /// Must be ≥ 1.
+    pub top_k: usize,
+}
+
+impl CrossEncoderConfig {
+    /// Construct and validate cross-encoder configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError::Config`] if `top_k` is zero.
+    pub fn new(endpoint: impl Into<String>, top_k: usize) -> Result<Self> {
+        if top_k == 0 {
+            return Err(QueryError::Config(
+                "cross_encoder.top_k must be ≥ 1".to_string(),
+            ));
+        }
+        Ok(Self {
+            endpoint: endpoint.into(),
+            top_k,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -355,5 +445,47 @@ mod tests {
     #[test]
     fn ann_config_default_top_n() {
         assert_eq!(AnnConfig::default().top_n, 500);
+    }
+
+    // --- BiEncoderConfig ---
+
+    #[test]
+    fn bi_encoder_valid() {
+        let cfg = BiEncoderConfig::new("http://localhost:8000", 0.5, 20).unwrap();
+        assert_eq!(cfg.alpha, 0.5);
+        assert_eq!(cfg.top_p, 20);
+    }
+
+    #[test]
+    fn bi_encoder_alpha_zero_errors() {
+        let err = BiEncoderConfig::new("http://localhost:8000", 0.0, 20).unwrap_err();
+        assert!(err.to_string().contains("alpha"));
+        assert!(err.to_string().contains("(0.0, 1.0)"));
+    }
+
+    #[test]
+    fn bi_encoder_alpha_one_errors() {
+        let err = BiEncoderConfig::new("http://localhost:8000", 1.0, 20).unwrap_err();
+        assert!(err.to_string().contains("alpha"));
+    }
+
+    #[test]
+    fn bi_encoder_top_p_zero_errors() {
+        let err = BiEncoderConfig::new("http://localhost:8000", 0.5, 0).unwrap_err();
+        assert!(err.to_string().contains("top_p"));
+    }
+
+    // --- CrossEncoderConfig ---
+
+    #[test]
+    fn cross_encoder_valid() {
+        let cfg = CrossEncoderConfig::new("http://localhost:8001", 5).unwrap();
+        assert_eq!(cfg.top_k, 5);
+    }
+
+    #[test]
+    fn cross_encoder_top_k_zero_errors() {
+        let err = CrossEncoderConfig::new("http://localhost:8001", 0).unwrap_err();
+        assert!(err.to_string().contains("top_k"));
     }
 }

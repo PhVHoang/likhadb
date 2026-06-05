@@ -22,13 +22,24 @@ use tokio::task::JoinHandle;
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<RwLock<WalManager>>,
+    #[cfg(feature = "tier-q")]
+    pub pipeline: Option<Arc<likhadb_query::pipeline::Pipeline>>,
 }
 
 impl AppState {
     pub fn new(wal: WalManager) -> Self {
         Self {
             inner: Arc::new(RwLock::new(wal)),
+            #[cfg(feature = "tier-q")]
+            pipeline: None,
         }
+    }
+
+    /// Attach a Tier Q pipeline. Only available when the `tier-q` feature is enabled.
+    #[cfg(feature = "tier-q")]
+    pub fn with_pipeline(mut self, pipeline: Arc<likhadb_query::pipeline::Pipeline>) -> Self {
+        self.pipeline = Some(pipeline);
+        self
     }
 
     pub async fn read(&self) -> RwLockReadGuard<'_, WalManager> {
