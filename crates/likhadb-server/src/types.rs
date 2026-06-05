@@ -72,6 +72,14 @@ pub struct QueryRequest {
     pub filter: Option<Value>,
     #[serde(default)]
     pub include_payload: bool,
+    /// Team identifiers for Tier Q ACL enforcement.
+    #[cfg(feature = "tier-q")]
+    #[serde(default)]
+    pub allowed_teams: Vec<String>,
+    /// Query text for Tier Q bi-encoder / cross-encoder reranking.
+    #[cfg(feature = "tier-q")]
+    #[serde(default)]
+    pub query_text: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -91,6 +99,10 @@ pub struct HybridQueryRequest {
     pub filter: Option<Value>,
     #[serde(default)]
     pub include_payload: bool,
+    /// Team identifiers for Tier Q ACL enforcement.
+    #[cfg(feature = "tier-q")]
+    #[serde(default)]
+    pub allowed_teams: Vec<String>,
 }
 
 fn default_rrf_k() -> u32 {
@@ -100,6 +112,14 @@ fn default_rrf_k() -> u32 {
 #[derive(Serialize)]
 pub struct HybridQueryResponse {
     pub results: Vec<ScoredResult>,
+}
+
+// ── Tier Q ranked response ────────────────────────────────────────────────────
+
+#[cfg(feature = "tier-q")]
+#[derive(Serialize)]
+pub struct RankedQueryResponse {
+    pub results: Vec<likhadb_query::pipeline::PipelineResult>,
 }
 
 // ── Lakehouse I/O ─────────────────────────────────────────────────────────────

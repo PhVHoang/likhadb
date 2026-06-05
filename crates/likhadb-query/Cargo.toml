@@ -12,6 +12,10 @@ datafusion = [
     "dep:futures-util",
     "dep:tokio",
 ]
+# Enables bi-encoder and cross-encoder reranking clients (Q4b/Q4c).
+rerank = [
+    "dep:reqwest",
+]
 
 [dependencies]
 thiserror    = { workspace = true }
@@ -19,6 +23,9 @@ datafusion   = { version = "43", optional = true }
 iceberg      = { version = "0.4", optional = true }
 futures-util = { version = "0.3", optional = true }
 tokio        = { version = "1", features = ["rt"], optional = true }
+reqwest      = { version = "0.12", features = ["json"], optional = true }
+async-trait  = { version = "0.1" }
+serde        = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

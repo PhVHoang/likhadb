@@ -22,4 +22,11 @@ pub enum QueryError {
     #[cfg(feature = "datafusion")]
     #[error("schema error: {0}")]
     Schema(String),
+
+    #[error("rerank error: {0}")]
+    Rerank(String),
+
+    #[cfg(feature = "rerank")]
+    #[error("http error: {0}")]
+    Http(#[from] reqwest::Error),
 }

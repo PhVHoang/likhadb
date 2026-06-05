@@ -205,6 +205,8 @@ mod tests {
                 recency: RecencyConfig::new(30, 0.01).unwrap(),
             },
             top_m: 20,
+            bi_encoder: None,
+            cross_encoder: None,
         }
     }
 

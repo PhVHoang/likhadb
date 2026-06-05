@@ -12,6 +12,8 @@ use serde_json::json;
 
 use likhadb_lakehouse::LakehouseExt;
 
+#[cfg(feature = "tier-q")]
+use crate::types::RankedQueryResponse;
 use crate::{
     error::ApiError,
     state::AppState,
@@ -21,6 +23,8 @@ use crate::{
         IndexConfig, InsertRequest, QueryRequest, QueryResponse, VectorResponse,
     },
 };
+#[cfg(feature = "tier-q")]
+use likhadb_query::pipeline::{Candidate, PipelineRequest};
 
 pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
     Router::new()
@@ -213,7 +217,31 @@ async fn query_vectors(
         "index_type" => index_type
     )
     .record(start.elapsed().as_secs_f64());
-    Ok(Json(QueryResponse { results }))
+
+    #[cfg(feature = "tier-q")]
+    if let Some(pipeline) = &state.pipeline {
+        let candidates: Vec<Candidate> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| Candidate {
+                id: r.id,
+                ann_distance: r.score,
+                ann_rank: i as u64 + 1,
+            })
+            .collect();
+        let ranked = pipeline
+            .execute(PipelineRequest {
+                candidates,
+                query_text: req.query_text.unwrap_or_default(),
+                allowed_teams: req.allowed_teams,
+                top_k: req.k,
+            })
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        return Ok(Json(RankedQueryResponse { results: ranked }).into_response());
+    }
+
+    Ok(Json(QueryResponse { results }).into_response())
 }
 
 #[tracing::instrument(skip(state, req), fields(collection = %name, k = req.k))]
@@ -243,7 +271,31 @@ async fn hybrid_query_vectors(
         "index_type" => index_type
     )
     .record(start.elapsed().as_secs_f64());
-    Ok(Json(HybridQueryResponse { results }))
+
+    #[cfg(feature = "tier-q")]
+    if let Some(pipeline) = &state.pipeline {
+        let candidates: Vec<Candidate> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| Candidate {
+                id: r.id,
+                ann_distance: r.score,
+                ann_rank: i as u64 + 1,
+            })
+            .collect();
+        let ranked = pipeline
+            .execute(PipelineRequest {
+                candidates,
+                query_text: req.text.clone(),
+                allowed_teams: req.allowed_teams,
+                top_k: req.k,
+            })
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        return Ok(Json(RankedQueryResponse { results: ranked }).into_response());
+    }
+
+    Ok(Json(HybridQueryResponse { results }).into_response())
 }
 
 async fn import_parquet(
