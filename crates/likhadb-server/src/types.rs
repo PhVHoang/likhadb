@@ -73,11 +73,11 @@ pub struct QueryRequest {
     #[serde(default)]
     pub include_payload: bool,
     /// Team identifiers for Tier Q ACL enforcement.
-    #[cfg(feature = "tier-q")]
+    #[cfg(feature = "enriched-search")]
     #[serde(default)]
     pub allowed_teams: Vec<String>,
     /// Query text for Tier Q bi-encoder / cross-encoder reranking.
-    #[cfg(feature = "tier-q")]
+    #[cfg(feature = "enriched-search")]
     #[serde(default)]
     pub query_text: Option<String>,
 }
@@ -100,7 +100,7 @@ pub struct HybridQueryRequest {
     #[serde(default)]
     pub include_payload: bool,
     /// Team identifiers for Tier Q ACL enforcement.
-    #[cfg(feature = "tier-q")]
+    #[cfg(feature = "enriched-search")]
     #[serde(default)]
     pub allowed_teams: Vec<String>,
 }
@@ -116,7 +116,7 @@ pub struct HybridQueryResponse {
 
 // ── Tier Q ranked response ────────────────────────────────────────────────────
 
-#[cfg(feature = "tier-q")]
+#[cfg(feature = "enriched-search")]
 #[derive(Serialize)]
 pub struct RankedQueryResponse {
     pub results: Vec<likhadb_query::pipeline::PipelineResult>,

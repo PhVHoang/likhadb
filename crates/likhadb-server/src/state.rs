@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<RwLock<WalManager>>,
-    #[cfg(feature = "tier-q")]
+    #[cfg(feature = "enriched-search")]
     pub pipeline: Option<Arc<likhadb_query::pipeline::Pipeline>>,
 }
 
@@ -30,13 +30,13 @@ impl AppState {
     pub fn new(wal: WalManager) -> Self {
         Self {
             inner: Arc::new(RwLock::new(wal)),
-            #[cfg(feature = "tier-q")]
+            #[cfg(feature = "enriched-search")]
             pipeline: None,
         }
     }
 
-    /// Attach a Tier Q pipeline. Only available when the `tier-q` feature is enabled.
-    #[cfg(feature = "tier-q")]
+    /// Attach a Tier Q pipeline. Only available when the `enriched-search` feature is enabled.
+    #[cfg(feature = "enriched-search")]
     pub fn with_pipeline(mut self, pipeline: Arc<likhadb_query::pipeline::Pipeline>) -> Self {
         self.pipeline = Some(pipeline);
         self
