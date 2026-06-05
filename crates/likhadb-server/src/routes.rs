@@ -12,7 +12,7 @@ use serde_json::json;
 
 use likhadb_lakehouse::LakehouseExt;
 
-#[cfg(feature = "tier-q")]
+#[cfg(feature = "enriched-search")]
 use crate::types::RankedQueryResponse;
 use crate::{
     error::ApiError,
@@ -23,7 +23,7 @@ use crate::{
         IndexConfig, InsertRequest, QueryRequest, QueryResponse, VectorResponse,
     },
 };
-#[cfg(feature = "tier-q")]
+#[cfg(feature = "enriched-search")]
 use likhadb_query::pipeline::{Candidate, PipelineRequest};
 
 pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
@@ -218,7 +218,7 @@ async fn query_vectors(
     )
     .record(start.elapsed().as_secs_f64());
 
-    #[cfg(feature = "tier-q")]
+    #[cfg(feature = "enriched-search")]
     if let Some(pipeline) = &state.pipeline {
         let candidates: Vec<Candidate> = results
             .iter()
@@ -272,7 +272,7 @@ async fn hybrid_query_vectors(
     )
     .record(start.elapsed().as_secs_f64());
 
-    #[cfg(feature = "tier-q")]
+    #[cfg(feature = "enriched-search")]
     if let Some(pipeline) = &state.pipeline {
         let candidates: Vec<Candidate> = results
             .iter()

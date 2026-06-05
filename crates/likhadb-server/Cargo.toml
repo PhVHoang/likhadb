@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 # Enables Tier Q: DataFusion enrichment, score fusion, and model-based reranking.
-tier-q = ["dep:likhadb-query"]
+enriched-search = ["dep:likhadb-query"]
 
 [dependencies]
 likhadb-query = { path = "../likhadb-query", features = ["datafusion"], optional = true }
