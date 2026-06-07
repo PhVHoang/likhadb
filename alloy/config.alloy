@@ -1,0 +1,61 @@
+// ── Docker container discovery ───────────────────────────────────────────────
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+// ── Relabelling: extract container name and compose service ──────────────────
+discovery.relabel "docker_containers" {
+  targets = discovery.docker.containers.targets
+
+  // Strip the leading "/" from container names (/likhadb → likhadb).
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // Carry the compose service label through so LogQL can filter by service.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+// ── Read logs from each discovered container ─────────────────────────────────
+loki.source.docker "docker_logs" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.docker_containers.output
+  forward_to       = [loki.process.parse_json.receiver]
+  refresh_interval = "5s"
+}
+
+// ── Pipeline: parse the JSON lines emitted by tracing-subscriber ─────────────
+//
+// tracing-subscriber's .json() layer produces structured JSON log lines.
+// We extract `level` and `target` as Loki labels so they can be used in
+// LogQL filter expressions: {container="likhadb"} | level="error"
+loki.process "parse_json" {
+  forward_to = [loki.write.local.receiver]
+
+  stage.json {
+    expressions = {
+      level  = "level",
+      target = "target",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level  = "",
+      target = "",
+    }
+  }
+}
+
+// ── Push to Loki ─────────────────────────────────────────────────────────────
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

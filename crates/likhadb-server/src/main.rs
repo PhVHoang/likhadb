@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with(tracing_subscriber::fmt::layer().json())
         .init();
 
     let prometheus = likhadb_server::install_prometheus();
@@ -57,6 +59,7 @@ async fn main() {
     let grpc_state = state.clone();
     let grpc_handle = tokio::spawn(async move {
         tonic::transport::Server::builder()
+            .layer(likhadb_server::GrpcMetricsLayer)
             .add_service(likhadb_server::LikhaDbServer::new(
                 likhadb_server::LikhaDbGrpc::new(grpc_state),
             ))

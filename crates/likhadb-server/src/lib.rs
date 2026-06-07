@@ -5,7 +5,7 @@ mod routes;
 mod state;
 mod types;
 
-pub use grpc::{LikhaDbGrpc, LikhaDbServer};
+pub use grpc::{GrpcMetricsLayer, LikhaDbGrpc, LikhaDbServer};
 pub use metrics::{install as install_prometheus, seed_collection_gauges};
 pub use metrics_exporter_prometheus::PrometheusHandle;
 pub use routes::router;

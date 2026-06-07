@@ -23,6 +23,38 @@ services:
       - likhadb
     restart: unless-stopped
 
+  loki:
+    image: grafana/loki:3.0.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./alloy/config.alloy:/etc/alloy/config.alloy
+    command: run --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
   minio:
     image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
@@ -58,3 +90,4 @@ services:
 volumes:
   likhadb-data:
   minio-data:
+  grafana-data:

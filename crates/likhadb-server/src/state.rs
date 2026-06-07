@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use likhadb_persist::WalManager;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -63,8 +63,14 @@ pub fn spawn_checkpoint_task(state: AppState, interval: Duration) -> JoinHandle<
         loop {
             ticker.tick().await;
             let mut guard = state.write().await;
-            if let Err(e) = guard.checkpoint() {
-                tracing::error!(error = %e, "checkpoint failed");
+            let t = Instant::now();
+            match guard.checkpoint() {
+                Ok(()) => metrics::histogram!("likhadb_checkpoint_duration_seconds")
+                    .record(t.elapsed().as_secs_f64()),
+                Err(e) => {
+                    metrics::counter!("likhadb_checkpoint_errors_total").increment(1);
+                    tracing::error!(error = %e, "checkpoint failed");
+                }
             }
         }
     })
