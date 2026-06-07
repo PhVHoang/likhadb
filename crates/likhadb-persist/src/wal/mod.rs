@@ -40,6 +40,7 @@ impl WalWriter {
         write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
         self.file.flush().map_err(PersistError::Io)?;
         metrics::counter!("likhadb_wal_bytes_written_total").increment(frame_bytes);
+        metrics::counter!("likhadb_wal_appends_total").increment(1);
         Ok(())
     }
 
