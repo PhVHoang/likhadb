@@ -77,6 +77,14 @@ pub struct WalManager {
     wal: WalWriter,
     next_lsn: u64,
     dir: PathBuf,
+    /// Highest LSN confirmed durably committed to Iceberg staging.  Zero means
+    /// none.  Only meaningful when the `iceberg-recovery` feature is active.
+    #[cfg(feature = "iceberg-recovery")]
+    iceberg_watermark: u64,
+    /// In-memory buffer of entries written above `iceberg_watermark`.
+    /// Stored as `(lsn, serialized_payload)` to avoid cloning large vectors.
+    #[cfg(feature = "iceberg-recovery")]
+    unflushed: Vec<(u64, Vec<u8>)>,
 }
 
 impl WalManager {
@@ -114,6 +122,43 @@ impl WalManager {
             wal,
             next_lsn,
             dir: dir.to_path_buf(),
+            #[cfg(feature = "iceberg-recovery")]
+            iceberg_watermark: 0,
+            #[cfg(feature = "iceberg-recovery")]
+            unflushed: Vec::new(),
+        })
+    }
+
+    // ── open_from_iceberg_state ─────────────────────────────────────────────
+
+    /// Construct a `WalManager` from a pre-built `CollectionManager` and a
+    /// known watermark, then replay any WAL entries above `replay_above_lsn`.
+    ///
+    /// Used by the `iceberg-recovery` path: Iceberg provides the bulk state;
+    /// the WAL covers only the narrow in-flight gap above the watermark.
+    #[cfg(feature = "iceberg-recovery")]
+    pub fn open_from_iceberg_state(
+        dir: &Path,
+        inner: CollectionManager,
+        iceberg_watermark: u64,
+    ) -> Result<Self, PersistError> {
+        std::fs::create_dir_all(dir).map_err(PersistError::Io)?;
+        let wal_path = dir.join(Self::WAL_FILE);
+
+        let mut inner = inner;
+        let mut next_lsn = iceberg_watermark + 1;
+        if wal_path.exists() {
+            next_lsn = Self::replay_wal(&wal_path, &mut inner, iceberg_watermark)?;
+        }
+
+        let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        Ok(Self {
+            inner,
+            wal,
+            next_lsn,
+            dir: dir.to_path_buf(),
+            iceberg_watermark,
+            unflushed: Vec::new(),
         })
     }
 
@@ -184,8 +229,91 @@ impl WalManager {
             op,
         };
         self.wal.append(&entry)?;
+        #[cfg(feature = "iceberg-recovery")]
+        if let Ok(payload) = bincode_opts().serialize(&entry) {
+            self.unflushed.push((entry.lsn, payload));
+        }
         self.next_lsn += 1;
         f(&mut self.inner).map_err(PersistError::Apply)
+    }
+
+    // ── Iceberg recovery helpers ────────────────────────────────────────────
+
+    #[cfg(feature = "iceberg-recovery")]
+    pub fn iceberg_watermark(&self) -> u64 {
+        self.iceberg_watermark
+    }
+
+    #[cfg(feature = "iceberg-recovery")]
+    pub fn set_iceberg_watermark(&mut self, lsn: u64) {
+        if lsn > self.iceberg_watermark {
+            self.iceberg_watermark = lsn;
+            self.unflushed.retain(|(entry_lsn, _)| *entry_lsn > lsn);
+        }
+    }
+
+    /// Return WAL entries with `lsn > iceberg_watermark` that have not yet
+    /// been flushed to Iceberg staging.  Returns `(lsn, entry)` pairs.
+    #[cfg(feature = "iceberg-recovery")]
+    pub fn collect_unflushed(&self) -> Vec<WalEntry> {
+        let watermark = self.iceberg_watermark;
+        self.unflushed
+            .iter()
+            .filter(|(lsn, _)| *lsn > watermark)
+            .filter_map(|(_, payload)| bincode_opts().deserialize::<WalEntry>(payload).ok())
+            .collect()
+    }
+
+    /// Rewrite `wal.log` keeping only frames with `lsn > watermark`.
+    ///
+    /// Uses write-to-tmp + atomic rename for crash safety, then reopens the
+    /// WAL writer for new appends.
+    #[cfg(feature = "iceberg-recovery")]
+    pub fn truncate_wal_up_to(&mut self, watermark: u64) -> Result<(), PersistError> {
+        let wal_path = self.dir.join(Self::WAL_FILE);
+        let tmp_path = self.dir.join("wal.log.tmp");
+
+        // Collect all frames above the watermark.
+        let entries_to_keep: Vec<WalEntry> = if wal_path.exists() {
+            let file = File::open(&wal_path).map_err(PersistError::Io)?;
+            let reader = BufReader::new(file);
+            let mut iter = frame::FrameIter::new(reader);
+            let mut kept = Vec::new();
+            for item in &mut iter {
+                let (payload, stored_crc) = item.map_err(PersistError::Io)?;
+                if frame::checksum(&payload) != stored_crc {
+                    break; // Treat corrupt tail as end of log.
+                }
+                let entry: WalEntry = bincode_opts()
+                    .deserialize(&payload)
+                    .map_err(PersistError::Decode)?;
+                if entry.lsn > watermark {
+                    kept.push(entry);
+                }
+            }
+            kept
+        } else {
+            Vec::new()
+        };
+
+        // Write kept entries to tmp file.
+        {
+            let file = File::create(&tmp_path).map_err(PersistError::Io)?;
+            let mut writer = BufWriter::new(file);
+            for entry in &entries_to_keep {
+                let payload = bincode_opts()
+                    .serialize(entry)
+                    .map_err(PersistError::Encode)?;
+                frame::write_frame(&mut writer, &payload).map_err(PersistError::Io)?;
+            }
+            writer.flush().map_err(PersistError::Io)?;
+        }
+
+        // Atomic rename then reopen.
+        std::fs::rename(&tmp_path, &wal_path).map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+
+        Ok(())
     }
 
     // ── Collection DDL ─────────────────────────────────────────────────────
@@ -311,6 +439,10 @@ impl WalManager {
             },
         };
         self.wal.append(&entry)?;
+        #[cfg(feature = "iceberg-recovery")]
+        if let Ok(payload) = bincode_opts().serialize(&entry) {
+            self.unflushed.push((entry.lsn, payload));
+        }
         self.next_lsn += 1;
         self.inner
             .get_mut(&col)?

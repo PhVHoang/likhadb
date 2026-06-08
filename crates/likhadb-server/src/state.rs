@@ -42,6 +42,13 @@ impl AppState {
         self
     }
 
+    /// Return a clone of the inner `Arc<RwLock<WalManager>>` for sharing
+    /// with the Iceberg background flusher.
+    #[cfg(feature = "iceberg-recovery")]
+    pub fn wal_arc(&self) -> Arc<RwLock<WalManager>> {
+        self.inner.clone()
+    }
+
     pub async fn read(&self) -> RwLockReadGuard<'_, WalManager> {
         self.inner.read().await
     }

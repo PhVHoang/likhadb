@@ -20,6 +20,45 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("data"));
 
+    // ── WAL / Iceberg startup ──────────────────────────────────────────────
+    #[cfg(feature = "iceberg-recovery")]
+    let (wal, iceberg_flusher_args) = {
+        if let Ok(catalog_uri) = std::env::var("ICEBERG_CATALOG_URI") {
+            use likhadb_server::{IcebergConfig, NamespaceIdent};
+            use std::collections::HashMap;
+
+            let config = IcebergConfig {
+                catalog_uri,
+                s3_endpoint: std::env::var("S3_ENDPOINT").unwrap_or_default(),
+                access_key: std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default(),
+                secret_key: std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default(),
+                region: std::env::var("AWS_DEFAULT_REGION")
+                    .unwrap_or_else(|_| "us-east-1".to_string()),
+                warehouse: std::env::var("ICEBERG_WAREHOUSE").unwrap_or_default(),
+                extra_properties: HashMap::new(),
+            };
+            let namespace = NamespaceIdent::new(
+                std::env::var("ICEBERG_NAMESPACE").unwrap_or_else(|_| "likhadb".to_string()),
+            );
+
+            let wal = likhadb_server::open_with_iceberg(&data_dir, &config, namespace.clone())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "iceberg recovery failed");
+                    std::process::exit(1);
+                });
+
+            (wal, Some((config, namespace)))
+        } else {
+            let wal = likhadb_persist::WalManager::open(&data_dir).unwrap_or_else(|e| {
+                tracing::error!(dir = %data_dir.display(), error = %e, "failed to open data directory");
+                std::process::exit(1);
+            });
+            (wal, None)
+        }
+    };
+
+    #[cfg(not(feature = "iceberg-recovery"))]
     let wal = likhadb_persist::WalManager::open(&data_dir).unwrap_or_else(|e| {
         tracing::error!(dir = %data_dir.display(), error = %e, "failed to open data directory");
         std::process::exit(1);
@@ -28,6 +67,14 @@ async fn main() {
     likhadb_server::seed_collection_gauges(&wal);
 
     let state = likhadb_server::AppState::new(wal);
+
+    // Spawn Iceberg background flusher when catalog is configured.
+    #[cfg(feature = "iceberg-recovery")]
+    if let Some((config, namespace)) = iceberg_flusher_args {
+        use likhadb_server::IcebergFlusher;
+        let _flusher = IcebergFlusher::new(state.wal_arc(), config, namespace).spawn();
+        tracing::info!("iceberg background flusher started");
+    }
 
     let _checkpoint =
         likhadb_server::spawn_checkpoint_task(state.clone(), Duration::from_secs(300));

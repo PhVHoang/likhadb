@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-fts = ["likhadb-store/fts"]
+fts              = ["likhadb-store/fts"]
+iceberg-recovery = []
 
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
