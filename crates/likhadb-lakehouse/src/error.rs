@@ -40,4 +40,16 @@ pub enum LakehouseError {
     #[cfg(feature = "iceberg")]
     #[error("iceberg error: {0}")]
     Iceberg(iceberg::Error),
+
+    #[cfg(feature = "iceberg-recovery")]
+    #[error("index snapshot encode/decode error: {0}")]
+    IndexBlob(String),
+
+    #[cfg(feature = "iceberg-recovery")]
+    #[error("staging table not found for collection '{0}'")]
+    StagingTableNotFound(String),
+
+    #[cfg(feature = "iceberg-recovery")]
+    #[error("table property not found: '{0}'")]
+    TablePropertyNotFound(String),
 }

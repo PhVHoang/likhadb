@@ -5,7 +5,9 @@ edition = "2021"
 
 [features]
 # Enables Tier Q: DataFusion enrichment, score fusion, and model-based reranking.
-enriched-search = ["dep:likhadb-query"]
+enriched-search  = ["dep:likhadb-query"]
+# Enables Iceberg-backed recovery: staging tier, LSN watermark, open_with_iceberg startup.
+iceberg-recovery = ["likhadb-persist/iceberg-recovery", "likhadb-lakehouse/iceberg-recovery"]
 
 [dependencies]
 likhadb-query = { path = "../likhadb-query", features = ["datafusion"], optional = true }
