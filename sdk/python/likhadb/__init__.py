@@ -16,6 +16,7 @@ from .models import (
     HnswIndex,
     IvfIndex,
     IvfSq8Index,
+    PipelineResult,
     ScoredResult,
     VectorRecord,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "AsyncCollection",
     # Response models
     "CollectionInfo",
+    "PipelineResult",
     "ScoredResult",
     "VectorRecord",
     # Index config models

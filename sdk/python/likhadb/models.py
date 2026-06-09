@@ -65,6 +65,8 @@ class QueryRequest(BaseModel):
     k: int
     filter: Optional[Any] = None
     include_payload: bool = False
+    allowed_teams: list[str] = Field(default_factory=list)
+    query_text: Optional[str] = None
 
 
 class HybridQueryRequest(BaseModel):
@@ -74,6 +76,7 @@ class HybridQueryRequest(BaseModel):
     rrf_k: int = 60
     filter: Optional[Any] = None
     include_payload: bool = False
+    allowed_teams: list[str] = Field(default_factory=list)
 
 
 class ImportParquetRequest(BaseModel):
@@ -96,6 +99,16 @@ class ScoredResult(BaseModel):
     id: VecId
     score: float
     payload: Optional[Payload] = None
+
+
+class PipelineResult(BaseModel):
+    """Returned by the enriched-search pipeline (server compiled with enriched-search feature)."""
+
+    id: str
+    fusion_score: float
+    bi_score: Optional[float] = None
+    cross_score: Optional[float] = None
+    chunk_text: Optional[str] = None
 
 
 class VectorRecord(BaseModel):
