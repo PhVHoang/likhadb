@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Union
 
 from ._http import AsyncHttpClient, HttpClient
 from .models import (
@@ -17,7 +17,7 @@ from .models import (
     VectorRecord,
 )
 
-SearchResult = ScoredResult | PipelineResult
+SearchResult = Union[ScoredResult, PipelineResult]
 
 
 def _parse_search_results(items: list) -> list[SearchResult]:
