@@ -11,10 +11,19 @@ from .models import (
     HybridQueryRequest,
     ImportParquetRequest,
     InsertRequest,
+    PipelineResult,
     QueryRequest,
     ScoredResult,
     VectorRecord,
 )
+
+SearchResult = ScoredResult | PipelineResult
+
+
+def _parse_search_results(items: list) -> list[SearchResult]:
+    if items and "fusion_score" in items[0]:
+        return [PipelineResult.model_validate(item) for item in items]
+    return [ScoredResult.model_validate(item) for item in items]
 
 
 class Collection:
@@ -61,14 +70,27 @@ class Collection:
         k: int,
         filter: Any | None = None,
         include_payload: bool = False,
-    ) -> list[ScoredResult]:
-        """k-nearest-neighbour search with optional metadata filter."""
-        req = QueryRequest(vector=vector, k=k, filter=filter, include_payload=include_payload)
+        allowed_teams: list[str] | None = None,
+        query_text: str | None = None,
+    ) -> list[SearchResult]:
+        """k-nearest-neighbour search with optional metadata filter.
+
+        When the server runs with the enriched-search pipeline, returns
+        ``list[PipelineResult]``; otherwise returns ``list[ScoredResult]``.
+        """
+        req = QueryRequest(
+            vector=vector,
+            k=k,
+            filter=filter,
+            include_payload=include_payload,
+            allowed_teams=allowed_teams or [],
+            query_text=query_text,
+        )
         r = self._http.post(
             f"/collections/{self._name}/query",
             json=req.model_dump(exclude_none=True),
         )
-        return [ScoredResult.model_validate(item) for item in r.json()["results"]]
+        return _parse_search_results(r.json()["results"])
 
     def hybrid_search(
         self,
@@ -78,7 +100,8 @@ class Collection:
         rrf_k: int = 60,
         filter: Any | None = None,
         include_payload: bool = False,
-    ) -> list[ScoredResult]:
+        allowed_teams: list[str] | None = None,
+    ) -> list[SearchResult]:
         """Hybrid vector + BM25 search fused via Reciprocal Rank Fusion."""
         req = HybridQueryRequest(
             vector=vector,
@@ -87,12 +110,13 @@ class Collection:
             rrf_k=rrf_k,
             filter=filter,
             include_payload=include_payload,
+            allowed_teams=allowed_teams or [],
         )
         r = self._http.post(
             f"/collections/{self._name}/hybrid-query",
             json=req.model_dump(exclude_none=True),
         )
-        return [ScoredResult.model_validate(item) for item in r.json()["results"]]
+        return _parse_search_results(r.json()["results"])
 
     def import_parquet(
         self,
@@ -163,13 +187,22 @@ class AsyncCollection:
         k: int,
         filter: Any | None = None,
         include_payload: bool = False,
-    ) -> list[ScoredResult]:
-        req = QueryRequest(vector=vector, k=k, filter=filter, include_payload=include_payload)
+        allowed_teams: list[str] | None = None,
+        query_text: str | None = None,
+    ) -> list[SearchResult]:
+        req = QueryRequest(
+            vector=vector,
+            k=k,
+            filter=filter,
+            include_payload=include_payload,
+            allowed_teams=allowed_teams or [],
+            query_text=query_text,
+        )
         r = await self._http.post(
             f"/collections/{self._name}/query",
             json=req.model_dump(exclude_none=True),
         )
-        return [ScoredResult.model_validate(item) for item in r.json()["results"]]
+        return _parse_search_results(r.json()["results"])
 
     async def hybrid_search(
         self,
@@ -179,7 +212,8 @@ class AsyncCollection:
         rrf_k: int = 60,
         filter: Any | None = None,
         include_payload: bool = False,
-    ) -> list[ScoredResult]:
+        allowed_teams: list[str] | None = None,
+    ) -> list[SearchResult]:
         req = HybridQueryRequest(
             vector=vector,
             text=text,
@@ -187,12 +221,13 @@ class AsyncCollection:
             rrf_k=rrf_k,
             filter=filter,
             include_payload=include_payload,
+            allowed_teams=allowed_teams or [],
         )
         r = await self._http.post(
             f"/collections/{self._name}/hybrid-query",
             json=req.model_dump(exclude_none=True),
         )
-        return [ScoredResult.model_validate(item) for item in r.json()["results"]]
+        return _parse_search_results(r.json()["results"])
 
     async def import_parquet(
         self,
