@@ -2,6 +2,7 @@
 name    = "likhadb-query"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [features]
 # Enables the DataFusion post-ANN query pipeline (Q1+).

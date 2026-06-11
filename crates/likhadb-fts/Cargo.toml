@@ -2,6 +2,7 @@
 name    = "likhadb-fts"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 likhadb-core = { path = "../likhadb-core" }
