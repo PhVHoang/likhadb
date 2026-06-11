@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -76,8 +76,11 @@ async fn main() {
         tracing::info!("iceberg background flusher started");
     }
 
-    let _checkpoint =
+    let checkpoint_task =
         likhadb_server::spawn_checkpoint_task(state.clone(), Duration::from_secs(300));
+
+    // Shutdown channel: receivers become ready once true is sent.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // gRPC server on port 50051.
     let grpc_addr = std::env::var("GRPC_ADDR")
@@ -103,24 +106,100 @@ async fn main() {
     );
     tracing::info!(addr = %grpc_addr, "likhadb gRPC listening");
 
+    // Keep a clone of state alive for the final checkpoint after servers drain.
+    let checkpoint_state = state.clone();
+
     let grpc_state = state.clone();
-    let grpc_handle = tokio::spawn(async move {
+    let grpc_shutdown_rx = shutdown_rx.clone();
+    let mut grpc_handle = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .layer(likhadb_server::GrpcMetricsLayer)
             .add_service(likhadb_server::LikhaDbServer::new(
                 likhadb_server::LikhaDbGrpc::new(grpc_state),
             ))
-            .serve(grpc_addr)
+            .serve_with_shutdown(grpc_addr, async move {
+                let mut rx = grpc_shutdown_rx;
+                rx.changed().await.ok();
+            })
             .await
     });
 
-    let rest_handle = tokio::spawn(async move {
-        axum::serve(listener, likhadb_server::router(state, prometheus)).await
+    let rest_shutdown_rx = shutdown_rx;
+    let mut rest_handle = tokio::spawn(async move {
+        axum::serve(listener, likhadb_server::router(state, prometheus))
+            .with_graceful_shutdown(async move {
+                let mut rx = rest_shutdown_rx;
+                rx.changed().await.ok();
+            })
+            .await
     });
 
-    tokio::select! {
-        res = grpc_handle => tracing::error!(?res, "gRPC server exited"),
-        res = rest_handle => tracing::error!(?res, "REST server exited"),
+    // Block until a server crashes unexpectedly or a shutdown signal arrives.
+    let graceful = tokio::select! {
+        res = &mut grpc_handle => {
+            tracing::error!(?res, "gRPC server exited unexpectedly");
+            false
+        }
+        res = &mut rest_handle => {
+            tracing::error!(?res, "REST server exited unexpectedly");
+            false
+        }
+        _ = shutdown_signal() => {
+            tracing::info!("shutdown signal received — draining in-flight requests");
+            true
+        }
+    };
+
+    if !graceful {
+        std::process::exit(1);
     }
-    std::process::exit(1);
+
+    // Cancel the periodic checkpoint to avoid racing with the final one.
+    checkpoint_task.abort();
+
+    // Tell both servers to stop accepting connections.
+    let _ = shutdown_tx.send(true);
+
+    // Wait for in-flight requests to complete (30 s hard limit per server).
+    let drain = Duration::from_secs(30);
+    if tokio::time::timeout(drain, grpc_handle).await.is_err() {
+        tracing::warn!("gRPC drain timed out after {drain:?}");
+    }
+    if tokio::time::timeout(drain, rest_handle).await.is_err() {
+        tracing::warn!("REST drain timed out after {drain:?}");
+    }
+
+    // Write snapshot and truncate WAL so the next startup has nothing to replay.
+    let t = Instant::now();
+    match checkpoint_state.write().await.checkpoint() {
+        Ok(()) => tracing::info!(elapsed = ?t.elapsed(), "final checkpoint complete"),
+        Err(e) => tracing::error!(error = %e, "final checkpoint failed"),
+    }
+
+    tracing::info!("shutdown complete");
+}
+
+/// Resolves on SIGTERM (Unix) or Ctrl+C (all platforms).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
