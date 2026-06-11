@@ -5,7 +5,7 @@ pub use error::PersistError;
 pub use wal::WalManager;
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use bincode::Options;
@@ -38,10 +38,13 @@ impl PersistExt for CollectionManager {
     fn save(&self, path: &Path) -> Result<(), PersistError> {
         let snap: ManagerSnapshot = self.to_snapshot();
         let file = File::create(path).map_err(PersistError::Io)?;
-        let writer = BufWriter::new(file);
+        let mut writer = BufWriter::new(file);
         bincode_opts()
-            .serialize_into(writer, &snap)
-            .map_err(PersistError::Encode)
+            .serialize_into(&mut writer, &snap)
+            .map_err(PersistError::Encode)?;
+        writer.flush().map_err(PersistError::Io)?;
+        writer.get_mut().sync_all().map_err(PersistError::Io)?;
+        Ok(())
     }
 
     fn load(path: &Path) -> Result<Self, PersistError> {
