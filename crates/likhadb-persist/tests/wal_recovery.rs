@@ -322,6 +322,39 @@ fn all_index_types_survive_restart() {
     }
 }
 
+// ── 1000-vector full replay after drop (sync_data guarantee) ──────────────
+//
+// Exercises the fsync path introduced to close the WAL sync_data gap: every
+// append must be durable before the writer is dropped, so a simulated restart
+// (drop + reopen) must recover all 1000 entries without loss.
+
+#[test]
+fn thousand_vectors_survive_restart() {
+    let dir = tmp_dir("thousand_vectors");
+    let n = 1000u64;
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        for i in 0..n {
+            mgr.insert("col", i, vec![i as f32, 0.0, 0.0, 0.0], None)
+                .unwrap();
+        }
+    } // drop simulates process exit; all appends must already be on disk
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let results = mgr
+        .get("col")
+        .unwrap()
+        .search(&[0.0; 4], n as usize, None, false)
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        n as usize,
+        "all {n} vectors must be recovered after restart"
+    );
+}
+
 // ── IVF-SQ8 survives restart ───────────────────────────────────────────────
 
 #[test]

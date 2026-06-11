@@ -39,6 +39,7 @@ impl WalWriter {
         let frame_bytes = 8u64 + payload.len() as u64;
         write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
         self.file.flush().map_err(PersistError::Io)?;
+        self.file.get_mut().sync_data().map_err(PersistError::Io)?;
         metrics::counter!("likhadb_wal_bytes_written_total").increment(frame_bytes);
         metrics::counter!("likhadb_wal_appends_total").increment(1);
         Ok(())
@@ -307,6 +308,7 @@ impl WalManager {
                 frame::write_frame(&mut writer, &payload).map_err(PersistError::Io)?;
             }
             writer.flush().map_err(PersistError::Io)?;
+            writer.get_mut().sync_all().map_err(PersistError::Io)?;
         }
 
         // Atomic rename then reopen.
@@ -489,10 +491,12 @@ impl WalManager {
             use likhadb_store::ManagerSnapshot;
             let snap: ManagerSnapshot = self.inner.to_snapshot_with_lsn(last_lsn);
             let file = File::create(&tmp_path).map_err(PersistError::Io)?;
-            let writer = BufWriter::new(file);
+            let mut writer = BufWriter::new(file);
             bincode_opts()
-                .serialize_into(writer, &snap)
+                .serialize_into(&mut writer, &snap)
                 .map_err(PersistError::Encode)?;
+            writer.flush().map_err(PersistError::Io)?;
+            writer.get_mut().sync_all().map_err(PersistError::Io)?;
         }
         std::fs::rename(&tmp_path, &snapshot_path).map_err(PersistError::Io)?;
 
