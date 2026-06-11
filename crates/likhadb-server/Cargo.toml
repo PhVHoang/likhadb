@@ -2,6 +2,7 @@
 name    = "likhadb-server"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [features]
 # Enables Tier Q: DataFusion enrichment, score fusion, and model-based reranking.
