@@ -1,22 +1,19 @@
 # likhadb
 
+<p align="center">
+  <img src="images/likhadb_logo.svg" alt="LikhaDB" width="720" />
+</p>
+
 **The hybrid vector database built for the data lakehouse.**
 Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Iceberg — no ETL pipeline required.
 
-<p align="center">
-  <img src="images/likhadb_logo_adaptive.svg" alt="LikhaDB" width="720" />
-</p>
-
-likhadb stores float vectors alongside arbitrary JSON payloads, searches them with
-k-nearest-neighbour queries, and filters candidates using a simple JSON predicate language.
+likhadb stores float vectors alongside arbitrary JSON payloads, searches them with k-nearest-neighbour queries, and filters candidates using a simple JSON predicate language.
 Collections can optionally enable a Tantivy-backed full-text index over payload string fields.
 The internal design is a clean stack of crates with two extension seams — the `VectorIndex`
 and `FtsIndex` traits — so implementations slot in without changing the store or API layers.
 
 For a deep dive into crate structure, index algorithms, query flows, and persistence
 design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
----
 
 ## Getting started
 
@@ -41,8 +38,6 @@ cargo clippy --workspace -- -D warnings
 cargo clippy -p likhadb-store --features fts -- -D warnings
 ```
 
----
-
 ## Index types
 
 | Index | Type | When to use |
@@ -51,8 +46,6 @@ cargo clippy -p likhadb-store --features fts -- -D warnings
 | `IvfIndex` | Approximate (IVF k-means) | Large datasets, latency-sensitive workloads |
 | `IvfIndex` + SQ8 | Approximate + quantized | Memory-constrained deployments (4× smaller) |
 | `HnswIndex` | Approximate (graph) | Sub-millisecond recall on large datasets |
-
----
 
 ## Query flow
 
@@ -118,8 +111,6 @@ For a deeper walkthrough of each stage see [`rfc/rfc_datafusion_integration.md`]
 
 See [`docs/quick-usages.md`](docs/quick-usages.md) for Rust API and REST usage examples.
 
----
-
 ## Python SDK
 
 A typed Python client ships under `sdk/python/`. It supports both sync and async usage and covers the full REST API surface.
@@ -157,8 +148,6 @@ async with AsyncLikhaDB("http://localhost:8080") as db:
 
 Index types (`flat`, `ivf`, `ivf_sq8`, `hnsw`), hybrid search, Parquet import/export, and per-request payload filters are all supported. See [`sdk/python/`](sdk/python/) for the full API.
 
----
-
 ## Distance metrics
 
 | Metric | Formula | Best for |
@@ -166,8 +155,6 @@ Index types (`flat`, `ivf`, `ivf_sq8`, `hnsw`), hybrid search, Parquet import/ex
 | `Metric::L2` | `sqrt(Σ(aᵢ − bᵢ)²)` | General-purpose, unnormalised embeddings |
 | `Metric::Cosine` | `1 − dot(a,b) / (‖a‖·‖b‖)` | Semantic similarity, text embeddings |
 | `Metric::Dot` | `−Σ(aᵢ·bᵢ)` (negated so lower = better) | Pre-normalised vectors, recommendation |
-
----
 
 ## Benchmark results
 
@@ -223,8 +210,6 @@ Rayon uses the default thread pool (all available cores).
 - At 1 k vectors, Rayon dispatch overhead exceeds the parallelism benefit — SIMD alone is faster.
 - HNSW at `ef_search=50` on 100 k vectors achieves **16.9× speedup** vs exact SIMD+rayon with sub-200 µs latency.
 
----
-
 ### Apple M4 Mac Mini (16 GB RAM)
 
 Measured on Apple M4 Mac Mini, 16 GB RAM (aarch64). SIMD kernels via [`simsimd`](https://github.com/ashvardanian/SimSIMD) (NEON).
@@ -278,8 +263,6 @@ Rayon uses the default thread pool (all available cores).
 - HNSW at `ef_search=50` on 100 k vectors achieves **11.0× speedup** vs exact SIMD+rayon with sub-130 µs latency.
 - IVF training is ~40% faster than M2 (13.5 ms vs 21.6 ms at 10 k vectors), HNSW build is ~33% faster (3.07 s vs 4.57 s at 10 k vectors).
 
----
-
 ### Lakehouse I/O — MinIO (local)
 
 Measured against a local MinIO instance running via OrbStack on the same host (loopback only, no network hop).
@@ -298,8 +281,6 @@ Export serialises the collection to Parquet in memory then uploads with a single
   MINIO_ACCESS_KEY=minioadmin MINIO_SECRET_KEY=minioadmin \
   cargo test --features minio -p likhadb-lakehouse -- minio_real --ignored --nocapture
   ```
-
----
 
 ## Stress test
 
@@ -349,24 +330,6 @@ cargo run -p likhadb-stress -- \
 | `--skip-{baseline,ramp,spike,soak,chaos}` | — | Individually disable any phase |
 | `--no-cleanup` | — | Retain test collections for post-run inspection |
 
-**Example ramp output:**
-
-```
-  ── PHASE 2: RAMP  (concurrency doubles until breaking point)
-  ────────────────────────────────────────────────────────────────────────────
-  concurrency       tput      p50      p95      p99    err%  p99 SLO
-  1              1.2k/s    0.82ms   1.41ms   2.34ms    0.0%  PASS
-  2              2.3k/s    0.85ms   1.52ms   3.10ms    0.0%  PASS
-  4              4.1k/s    0.96ms   1.83ms   5.92ms    0.0%  PASS
-  8              6.8k/s    1.14ms   3.22ms  19.46ms    0.3%  PASS
-  16             9.0k/s    1.73ms  14.51ms 142.30ms    2.1%  PASS
-  32             9.4k/s    4.20ms  89.12ms 631.00ms    7.6%  ✗ BREAK ← err
-
-  ⚠ Breaking point at concurrency=32  (err>5% or p99>500ms)
-```
-
----
-
 ## Roadmap
 
 | Item | Status | Description |
@@ -382,9 +345,3 @@ cargo run -p likhadb-stress -- \
 | **L — Lakehouse I/O** | In Progress | Parquet import/export to MinIO/S3-compatible object stores (`minio` feature); GCS and Iceberg planned |
 | **Q — DataFusion pipeline** | In Progress | Post-ANN enrichment, ACL enforcement, multi-signal score fusion, reranking (`likhadb-query` crate) |
 | **T — Vector transforms** | Planned | Insert-time L2 normalisation, scalar scaling |
-
----
-
-## License
-
-MIT
