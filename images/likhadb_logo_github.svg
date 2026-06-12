@@ -1,0 +1,84 @@
+<svg width="100%" viewBox="0 0 680 320" role="img" xmlns="http://www.w3.org/2000/svg" style="">
+  <title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">LikhaDB — Hybrid Vector Database for the Lakehouse</title>
+  <defs>
+    
+    <filter id="halo" x="-8%" y="-20%" width="116%" height="140%">
+      <feMorphology in="SourceAlpha" operator="dilate" radius="2" result="expanded"/>
+      <feFlood flood-color="#ffffff" flood-opacity="0.55" result="white"/>
+      <feComposite in="white" in2="expanded" operator="in" result="whiteHalo"/>
+      <feMerge>
+        <feMergeNode in="whiteHalo"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="halo-db" x="-8%" y="-20%" width="116%" height="140%">
+      <feMorphology in="SourceAlpha" operator="dilate" radius="2" result="expanded"/>
+      <feFlood flood-color="#ffffff" flood-opacity="0.40" result="white"/>
+      <feComposite in="white" in2="expanded" operator="in" result="whiteHalo"/>
+      <feMerge>
+        <feMergeNode in="whiteHalo"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  
+  <polygon points="90,187 150,167 210,187 150,207" fill="#3a80b0" opacity="0.38" style="fill:rgb(58, 128, 176);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.38;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <polygon points="90,203 150,183 210,203 150,223" fill="#3a80b0" opacity="0.20" style="fill:rgb(58, 128, 176);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.2;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  
+  <rect x="110" y="150" width="14" height="38" rx="2" fill="#c47a2a" style="fill:rgb(196, 122, 42);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="129" y="140" width="14" height="48" rx="2" fill="#e08c30" style="fill:rgb(224, 140, 48);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="148" y="145" width="14" height="43" rx="2" fill="#c47a2a" style="fill:rgb(196, 122, 42);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="167" y="135" width="14" height="53" rx="2" fill="#e08c30" style="fill:rgb(224, 140, 48);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="186" y="150" width="14" height="38" rx="2" fill="#c47a2a" style="fill:rgb(196, 122, 42);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  
+  <polygon points="150,97 173,110 173,136 150,149 127,136 127,110" fill="#c0501a" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="150" cy="123" r="4" fill="#fff" opacity="0.95" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.95;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="140" cy="115" r="2.5" fill="#fff" opacity="0.75" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.75;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="160" cy="115" r="2.5" fill="#fff" opacity="0.75" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.75;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="143" cy="132" r="2.5" fill="#fff" opacity="0.75" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.75;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="157" cy="132" r="2.5" fill="#fff" opacity="0.75" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.75;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="150" y1="123" x2="140" y2="115" stroke="#fff" stroke-width="1" opacity="0.65" style="fill:rgb(0, 0, 0);stroke:rgb(255, 255, 255);color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.65;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="150" y1="123" x2="160" y2="115" stroke="#fff" stroke-width="1" opacity="0.65" style="fill:rgb(0, 0, 0);stroke:rgb(255, 255, 255);color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.65;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="150" y1="123" x2="143" y2="132" stroke="#fff" stroke-width="1" opacity="0.65" style="fill:rgb(0, 0, 0);stroke:rgb(255, 255, 255);color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.65;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="150" y1="123" x2="157" y2="132" stroke="#fff" stroke-width="1" opacity="0.65" style="fill:rgb(0, 0, 0);stroke:rgb(255, 255, 255);color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.65;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="140" y1="115" x2="143" y2="132" stroke="#fff" stroke-width="0.75" opacity="0.40" style="fill:rgb(0, 0, 0);stroke:rgb(255, 255, 255);color:rgb(0, 0, 0);stroke-width:0.75px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.4;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="160" y1="115" x2="157" y2="132" stroke="#fff" stroke-width="0.75" opacity="0.40" style="fill:rgb(0, 0, 0);stroke:rgb(255, 255, 255);color:rgb(0, 0, 0);stroke-width:0.75px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.4;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <line x1="150" y1="149" x2="150" y2="135" stroke="#c0501a" stroke-width="1.5" opacity="0.45" stroke-dasharray="3,2" style="fill:rgb(0, 0, 0);stroke:rgb(192, 80, 26);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-dasharray:3px, 2px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.45;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  
+  <text x="240" y="147" font-family="'SF Mono','Fira Code','Cascadia Code',monospace" font-size="58" font-weight="700" letter-spacing="-1" fill="#2c2420" filter="url(#halo)" style="fill:rgb(44, 36, 32);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, &quot;Fira Code&quot;, &quot;Cascadia Code&quot;, monospace;font-size:58px;font-weight:700;text-anchor:start;dominant-baseline:auto">likha</text>
+
+  
+  <text x="436" y="147" font-family="'SF Mono','Fira Code','Cascadia Code',monospace" font-size="58" font-weight="700" letter-spacing="-1" fill="#c0501a" filter="url(#halo-db)" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, &quot;Fira Code&quot;, &quot;Cascadia Code&quot;, monospace;font-size:58px;font-weight:700;text-anchor:start;dominant-baseline:auto">db</text>
+
+  
+  <text x="240" y="174" font-family="'SF Mono','Fira Code','Cascadia Code',monospace" font-size="12.5" font-weight="400" letter-spacing="1.8" fill="#7a6e68" style="fill:rgb(122, 110, 104);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, &quot;Fira Code&quot;, &quot;Cascadia Code&quot;, monospace;font-size:12.5px;font-weight:400;text-anchor:start;dominant-baseline:auto">HYBRID VECTOR DATABASE FOR THE LAKEHOUSE</text>
+
+  
+  <line x1="90" y1="225" x2="210" y2="225" stroke="#c0501a" stroke-width="1.5" opacity="0.45" style="fill:rgb(0, 0, 0);stroke:rgb(192, 80, 26);color:rgb(0, 0, 0);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.45;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  
+  <rect x="240" y="197" width="58" height="20" rx="10" fill="#c0501a" opacity="0.15" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="269" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#c0501a" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">HNSW</text>
+
+  <rect x="305" y="197" width="42" height="20" rx="10" fill="#c0501a" opacity="0.15" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="326" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#c0501a" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">IVF</text>
+
+  <rect x="354" y="197" width="50" height="20" rx="10" fill="#c0501a" opacity="0.15" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="379" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#c0501a" style="fill:rgb(192, 80, 26);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">BM25</text>
+
+  <rect x="411" y="197" width="60" height="20" rx="10" fill="#3a80b0" opacity="0.15" style="fill:rgb(58, 128, 176);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="441" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#3a80b0" style="fill:rgb(58, 128, 176);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">Iceberg</text>
+
+  <rect x="478" y="197" width="58" height="20" rx="10" fill="#3a80b0" opacity="0.15" style="fill:rgb(58, 128, 176);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="507" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#3a80b0" style="fill:rgb(58, 128, 176);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">Parquet</text>
+
+  <rect x="543" y="197" width="36" height="20" rx="10" fill="#c47a2a" opacity="0.15" style="fill:rgb(196, 122, 42);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="561" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#a06018" style="fill:rgb(160, 96, 24);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">S3</text>
+
+  <rect x="586" y="197" width="40" height="20" rx="10" fill="#c47a2a" opacity="0.15" style="fill:rgb(196, 122, 42);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.15;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="606" y="211" text-anchor="middle" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#a06018" style="fill:rgb(160, 96, 24);stroke:none;color:rgb(0, 0, 0);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;SF Mono&quot;, monospace;font-size:11px;font-weight:600;text-anchor:middle;dominant-baseline:auto">GCS</text>
+</svg>
