@@ -1,7 +1,7 @@
 # likhadb
 
 <p align="center">
-  <img src="images/likhadb_logo.svg" alt="LikhaDB" width="720" />
+  <img src="images/likhadb_logo_github.svg" alt="LikhaDB" width="720" />
 </p>
 
 **The hybrid vector database built for the data lakehouse.**
