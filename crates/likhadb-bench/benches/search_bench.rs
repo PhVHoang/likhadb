@@ -81,7 +81,8 @@ fn bench_simd(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usize) {
         .unwrap();
     let col = mgr.get_mut("bench_simd").unwrap();
     for i in 0..n as u64 {
-        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+        col.insert(i, random_vec(&mut rng, dim), None, u64::MAX)
+            .unwrap();
     }
     let query = random_vec(&mut rng, dim);
 
@@ -110,7 +111,8 @@ fn bench_simd_rayon(c: &mut Criterion, label: &str, n: usize, dim: usize, k: usi
         .unwrap();
     let col = mgr.get_mut("bench_rayon").unwrap();
     for i in 0..n as u64 {
-        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+        col.insert(i, random_vec(&mut rng, dim), None, u64::MAX)
+            .unwrap();
     }
     let query = random_vec(&mut rng, dim);
 
@@ -172,7 +174,8 @@ fn bench_ivf_sq8_search(
         .unwrap();
     let col = mgr.get_mut(&col_name).unwrap();
     for i in 0..n as u64 {
-        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+        col.insert(i, random_vec(&mut rng, dim), None, u64::MAX)
+            .unwrap();
     }
     let query = random_vec(&mut rng, dim);
 
@@ -204,7 +207,8 @@ fn bench_ivf_search(
         .unwrap();
     let col = mgr.get_mut(&col_name).unwrap();
     for i in 0..n as u64 {
-        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+        col.insert(i, random_vec(&mut rng, dim), None, u64::MAX)
+            .unwrap();
     }
     let query = random_vec(&mut rng, dim);
 
@@ -264,7 +268,8 @@ fn bench_hnsw_search(
         .unwrap();
     let col = mgr.get_mut(&col_name).unwrap();
     for i in 0..n as u64 {
-        col.insert(i, random_vec(&mut rng, dim), None).unwrap();
+        col.insert(i, random_vec(&mut rng, dim), None, u64::MAX)
+            .unwrap();
     }
     let query = random_vec(&mut rng, dim);
 

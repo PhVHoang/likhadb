@@ -258,7 +258,6 @@ pub fn index_snapshot_table_ident(namespace: &NamespaceIdent) -> TableIdent {
 #[cfg(test)]
 mod tests {
     use likhadb_core::Metric;
-    use likhadb_index::IndexSnapshot;
     use likhadb_store::{CollectionManager, ManagerSnapshot};
 
     use super::*;
@@ -268,7 +267,8 @@ mod tests {
         mgr.create_collection(name, dim, Metric::L2).unwrap();
         let col = mgr.get_mut(name).unwrap();
         for i in 0..10u64 {
-            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None, u64::MAX)
+                .unwrap();
         }
         let snap = mgr.to_snapshot_with_lsn(0);
         snap.collections.into_iter().next().unwrap()
@@ -280,7 +280,8 @@ mod tests {
             .unwrap();
         let col = mgr.get_mut("hnsw").unwrap();
         for i in 0..20u64 {
-            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None, u64::MAX)
+                .unwrap();
         }
         let snap = mgr.to_snapshot_with_lsn(0);
         snap.collections.into_iter().next().unwrap()
@@ -292,10 +293,13 @@ mod tests {
         let blob = bincode::serialize(&snap).unwrap();
         let recovered: CollectionSnapshot = bincode::deserialize(&blob).unwrap();
 
-        let mgr = CollectionManager::from_snapshot(ManagerSnapshot {
-            collections: vec![recovered],
-            last_lsn: 0,
-        });
+        let mgr = CollectionManager::from_snapshot(
+            ManagerSnapshot {
+                collections: vec![recovered],
+                last_lsn: 0,
+            },
+            None,
+        );
         let result = mgr
             .get("flat")
             .unwrap()
@@ -310,10 +314,13 @@ mod tests {
         let blob = bincode::serialize(&snap).unwrap();
         let recovered: CollectionSnapshot = bincode::deserialize(&blob).unwrap();
 
-        let mgr = CollectionManager::from_snapshot(ManagerSnapshot {
-            collections: vec![recovered],
-            last_lsn: 0,
-        });
+        let mgr = CollectionManager::from_snapshot(
+            ManagerSnapshot {
+                collections: vec![recovered],
+                last_lsn: 0,
+            },
+            None,
+        );
         let result = mgr
             .get("hnsw")
             .unwrap()

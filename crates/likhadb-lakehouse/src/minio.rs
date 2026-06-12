@@ -302,7 +302,7 @@ fn parquet_bytes_into_collection(
             let end = start + collection_dim;
             let vec: Vec<f32> = float_values.values()[start..end].to_vec();
             let payload = build_payload(&batch, &payload_col_indices, row);
-            collection.insert(id, vec, payload)?;
+            collection.insert(id, vec, payload, u64::MAX)?;
         }
 
         total += num_rows;

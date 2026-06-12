@@ -25,7 +25,7 @@ async fn round_trip_in_memory_store() {
         let col = src.get_mut("src").unwrap();
         for i in 0u64..100 {
             let vec = vec![i as f32, (i + 1) as f32, (i + 2) as f32, (i + 3) as f32];
-            col.insert(i, vec, Some(serde_json::json!({"idx": i})))
+            col.insert(i, vec, Some(serde_json::json!({"idx": i})), u64::MAX)
                 .unwrap();
         }
     }
@@ -77,7 +77,7 @@ async fn dim_mismatch_returns_error() {
     let mut src = make_manager("src", 4);
     src.get_mut("src")
         .unwrap()
-        .insert(1, vec![1.0, 2.0, 3.0, 4.0], None)
+        .insert(1, vec![1.0, 2.0, 3.0, 4.0], None, u64::MAX)
         .unwrap();
     src.export_parquet_to_store("src", &store, &path)
         .await
@@ -143,7 +143,7 @@ async fn minio_real_round_trip() {
             let vec: Vec<f32> = (0..dim)
                 .map(|d| (i * dim as u64 + d as u64) as f32 / 1000.0)
                 .collect();
-            col.insert(i, vec, Some(serde_json::json!({"i": i})))
+            col.insert(i, vec, Some(serde_json::json!({"i": i})), u64::MAX)
                 .unwrap();
         }
     }

@@ -59,7 +59,7 @@ pub async fn open_with_iceberg(
         collections: snapshots,
         last_lsn: 0, // WAL replay from 0 covers full history; staging watermark guards progress.
     };
-    let mut manager = CollectionManager::from_snapshot(manager_snap);
+    let mut manager = CollectionManager::from_snapshot(manager_snap, None);
 
     // 2. Apply pending staging rows for each collection.
     let mut max_watermark: u64 = 0;
@@ -92,9 +92,9 @@ pub async fn open_with_iceberg(
         // order is correct even when the same vector ID appears in both.
         for entry in entries {
             if entry.is_delete {
-                let _ = col.delete(entry.id);
+                let _ = col.delete(entry.id, u64::MAX);
             } else {
-                let _ = col.insert(entry.id, entry.vector, entry.payload);
+                let _ = col.insert(entry.id, entry.vector, entry.payload, u64::MAX);
             }
         }
     }
