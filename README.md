@@ -7,11 +7,6 @@
 **The hybrid vector database built for the data lakehouse.**
 Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Iceberg — no ETL pipeline required.
 
-likhadb stores float vectors alongside arbitrary JSON payloads, searches them with k-nearest-neighbour queries, and filters candidates using a simple JSON predicate language.
-Collections can optionally enable a Tantivy-backed full-text index over payload string fields.
-The internal design is a clean stack of crates with two extension seams — the `VectorIndex`
-and `FtsIndex` traits — so implementations slot in without changing the store or API layers.
-
 For a deep dive into crate structure, index algorithms, query flows, and persistence
 design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -21,7 +16,7 @@ design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   <img src="images/platform-diagram.svg" alt="LikhaDB platform diagram" width="900" />
 </p>
 
-LikhaDB bridges client applications and the data lakehouse. Client applications query it over REST/gRPC. Internally it runs three layers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25), and **Tier L** (Parquet/Iceberg I/O). The WAL buffers writes locally until they flush to the Iceberg staging tier. Other lakehouse tools (Spark, Trino, dbt) continue reading the same Iceberg tables directly — no duplication.
+> LikhaDB bridges client applications and the data lakehouse. Client applications query it over REST/gRPC. Internally it runs three layers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25), and **Tier L** (Parquet/Iceberg I/O). The WAL buffers writes locally until they flush to the Iceberg staging tier. Other lakehouse tools (Spark, Trino, dbt) continue reading the same Iceberg tables directly — no duplication.
 
 ## Getting started
 
