@@ -15,6 +15,14 @@ and `FtsIndex` traits — so implementations slot in without changing the store 
 For a deep dive into crate structure, index algorithms, query flows, and persistence
 design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Platform placement
+
+<p align="center">
+  <img src="images/platform-diagram.svg" alt="LikhaDB platform diagram" width="900" />
+</p>
+
+LikhaDB bridges client applications and the data lakehouse. Client applications query it over REST/gRPC. Internally it runs three layers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25), and **Tier L** (Parquet/Iceberg I/O). The WAL buffers writes locally until they flush to the Iceberg staging tier. Other lakehouse tools (Spark, Trino, dbt) continue reading the same Iceberg tables directly — no duplication.
+
 ## Getting started
 
 **Prerequisites:** Rust stable toolchain.
