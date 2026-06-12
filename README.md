@@ -15,6 +15,14 @@ and `FtsIndex` traits — so implementations slot in without changing the store 
 For a deep dive into crate structure, index algorithms, query flows, and persistence
 design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Platform placement
+
+<p align="center">
+  <img src="images/platform-diagram.svg" alt="LikhaDB platform diagram" width="900" />
+</p>
+
+LikhaDB bridges client applications and the data lakehouse. Client applications query it over REST/gRPC. Internally it runs three layers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25), and **Tier L** (Parquet/Iceberg I/O). The WAL buffers writes locally until they flush to the Iceberg staging tier. Other lakehouse tools (Spark, Trino, dbt) continue reading the same Iceberg tables directly — no duplication.
+
 ## Getting started
 
 **Prerequisites:** Rust stable toolchain.
@@ -46,70 +54,6 @@ cargo clippy -p likhadb-store --features fts -- -D warnings
 | `IvfIndex` | Approximate (IVF k-means) | Large datasets, latency-sensitive workloads |
 | `IvfIndex` + SQ8 | Approximate + quantized | Memory-constrained deployments (4× smaller) |
 | `HnswIndex` | Approximate (graph) | Sub-millisecond recall on large datasets |
-
-## Query flow
-
-End-to-end path from client request to ranked response, covering both the current ANN+RRF path and the planned DataFusion enrichment tier (Tier Q):
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client
-    participant Server as likhadb-server<br/>(axum / tonic)
-    participant WAL as WalManager<br/>(likhadb-persist)
-    participant Store as Collection<br/>(likhadb-store)
-    participant ANN as VectorIndex<br/>(HNSW / IVF / Flat)
-    participant FTS as FtsIndex<br/>(Tantivy / BM25)
-    participant Pipeline as QueryPipeline<br/>(likhadb-query · Tier Q)
-    participant DF as DataFusion<br/>SessionContext
-    participant Parquet as Parquet tables<br/>(documents · authors · acl)
-
-    Client->>Server: POST /collections/:name/query<br/>{ vector, text?, k, filter? }
-    Server->>WAL: acquire read lock
-
-    alt vector-only query
-        WAL->>Store: search(vector, top_n, filter)
-        Store->>ANN: knn(vector, top_n)
-        ANN-->>Store: [(id, distance, rank)]
-        Store-->>WAL: Vec<ScoredResult>
-    else hybrid query (vector + text)
-        WAL->>Store: hybrid_search(vector, text, 2k)
-        Store->>ANN: knn(vector, 2k)
-        ANN-->>Store: [(id, distance, rank_vec)]
-        Store->>FTS: fts_search(text, 2k)
-        FTS-->>Store: [(id, bm25_score, rank_fts)]
-        Store->>Store: RRF fusion<br/>score = 1/(60+rank_vec) + 1/(60+rank_fts)
-        Store-->>WAL: Vec<ScoredResult> top-k
-    end
-
-    WAL-->>Server: candidates (id, distance, rank)
-    Server->>Server: drop read lock
-
-    rect rgb(230, 245, 255)
-        note over Pipeline,Parquet: Tier Q — DataFusion enrichment (planned, likhadb-query)
-        Server->>Pipeline: run(candidates, k)
-        Pipeline->>DF: register candidates MemTable<br/>(id, ann_distance, ann_rank)
-        Pipeline->>DF: Stage 3 — enrichment SQL<br/>JOIN documents, authors<br/>WHERE acl allows + sensitivity != restricted
-        DF->>Parquet: predicate-pushdown reads
-        Parquet-->>DF: filtered row groups
-        DF-->>Pipeline: enriched RecordBatch
-
-        Pipeline->>DF: Stage 4a — score fusion SQL<br/>fusion = w_vec×norm(ann_dist) + w_rec×recency_decay
-        DF-->>Pipeline: top-M ranked by fusion_score
-
-        Pipeline->>Pipeline: Stage 4b — bi-encoder<br/>materialize top-M → batched model call → zip bi_scores
-        Pipeline->>Pipeline: Stage 4c — cross-encoder<br/>materialize top-P → batched model call → zip scores
-        Pipeline-->>Server: Vec<ScoredResult> top-K
-    end
-
-    Server-->>Client: { results: [{ id, score, payload }] }
-```
-
-> **Tier Q note:** stages inside the blue box are implemented by the `likhadb-query` crate (currently in progress — Q0 config/error done; Q1–Q4 planned). Without Tier Q the server returns the ANN/RRF result directly.
-
-For a deeper walkthrough of each stage see [`rfc/rfc_datafusion_integration.md`](rfc/rfc_datafusion_integration.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
-See [`docs/quick-usages.md`](docs/quick-usages.md) for Rust API and REST usage examples.
 
 ## Python SDK
 
