@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use likhadb_core::{Metric, Result, ScoredResult, VecId, Vector};
 use likhadb_index::{FlatIndex, VectorIndex};
 use serde_json::Value;
@@ -78,8 +80,12 @@ impl Collection {
     }
 
     #[cfg(feature = "fts")]
-    pub fn enable_fts(&mut self) -> Result<()> {
-        self.fts_index = Some(Box::new(likhadb_fts::TantivyFtsIndex::new()?));
+    pub fn enable_fts(&mut self, fts_dir: Option<&Path>) -> Result<()> {
+        let idx: Box<dyn likhadb_fts::FtsIndex> = match fts_dir {
+            Some(dir) => Box::new(likhadb_fts::TantivyFtsIndex::open_or_create(dir)?),
+            None => Box::new(likhadb_fts::TantivyFtsIndex::new()?),
+        };
+        self.fts_index = Some(idx);
         Ok(())
     }
 
@@ -150,14 +156,23 @@ impl Collection {
         Ok(results)
     }
 
-    pub fn insert(&mut self, id: VecId, vec: Vector, payload: Option<Value>) -> Result<()> {
+    pub fn insert(
+        &mut self,
+        id: VecId,
+        vec: Vector,
+        payload: Option<Value>,
+        lsn: u64,
+    ) -> Result<()> {
         self.index.insert(id, vec)?;
         if let Some(p) = payload {
             #[cfg(feature = "fts")]
             if let Some(fts) = &mut self.fts_index {
-                let text = extract_text_fields(&p);
-                if !text.is_empty() {
-                    fts.index_document(id, &text)?;
+                if lsn > fts.last_lsn() {
+                    let text = extract_text_fields(&p);
+                    if !text.is_empty() {
+                        fts.index_document(id, &text)?;
+                        fts.set_lsn(lsn)?;
+                    }
                 }
             }
             self.meta.set(id, p);
@@ -165,12 +180,15 @@ impl Collection {
         Ok(())
     }
 
-    pub fn delete(&mut self, id: VecId) -> Result<bool> {
+    pub fn delete(&mut self, id: VecId, lsn: u64) -> Result<bool> {
         let existed = self.index.delete(id);
         self.meta.remove(id);
         #[cfg(feature = "fts")]
         if let Some(fts) = &mut self.fts_index {
-            fts.delete_document(id)?;
+            if lsn > fts.last_lsn() {
+                fts.delete_document(id)?;
+                fts.set_lsn(lsn)?;
+            }
         }
         Ok(existed)
     }
@@ -233,7 +251,7 @@ mod tests {
     #[test]
     fn get_returns_vector_and_payload() {
         let mut c = make_collection();
-        c.insert(1, vec![1.0, 2.0, 3.0], Some(json!({"tag": "a"})))
+        c.insert(1, vec![1.0, 2.0, 3.0], Some(json!({"tag": "a"})), u64::MAX)
             .unwrap();
         let (vec, payload) = c.get(1).unwrap().unwrap();
         assert_eq!(vec, vec![1.0, 2.0, 3.0]);
@@ -249,15 +267,15 @@ mod tests {
     #[test]
     fn get_returns_none_after_delete() {
         let mut c = make_collection();
-        c.insert(2, vec![0.0, 1.0, 0.0], None).unwrap();
-        c.delete(2).unwrap();
+        c.insert(2, vec![0.0, 1.0, 0.0], None, u64::MAX).unwrap();
+        c.delete(2, u64::MAX).unwrap();
         assert!(c.get(2).unwrap().is_none());
     }
 
     #[test]
     fn get_payload_is_none_when_not_set() {
         let mut c = make_collection();
-        c.insert(3, vec![1.0, 0.0, 0.0], None).unwrap();
+        c.insert(3, vec![1.0, 0.0, 0.0], None, u64::MAX).unwrap();
         let (_, payload) = c.get(3).unwrap().unwrap();
         assert!(payload.is_none());
     }
@@ -265,9 +283,9 @@ mod tests {
     #[test]
     fn get_batch_returns_mixed_some_and_none() {
         let mut c = make_collection();
-        c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"x": 1})))
+        c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"x": 1})), u64::MAX)
             .unwrap();
-        c.insert(3, vec![3.0, 0.0, 0.0], None).unwrap();
+        c.insert(3, vec![3.0, 0.0, 0.0], None, u64::MAX).unwrap();
         let results = c.get_batch(&[1, 2, 3]).unwrap();
         assert!(results[0].is_some());
         assert!(results[1].is_none());
@@ -280,7 +298,7 @@ mod tests {
 
         fn make_fts_collection() -> Collection {
             let mut c = Collection::new("fts_test".into(), 3, Metric::L2);
-            c.enable_fts().unwrap();
+            c.enable_fts(None).unwrap();
             c
         }
 
@@ -291,12 +309,14 @@ mod tests {
                 1,
                 vec![1.0, 0.0, 0.0],
                 Some(json!({"body": "the quick brown fox"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 2,
                 vec![0.0, 1.0, 0.0],
                 Some(json!({"body": "lazy dog sleeps"})),
+                u64::MAX,
             )
             .unwrap();
             let results = c.fts_search("fox", 5).unwrap();
@@ -307,8 +327,13 @@ mod tests {
         #[test]
         fn fts_search_empty_query_returns_empty() {
             let mut c = make_fts_collection();
-            c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"body": "hello world"})))
-                .unwrap();
+            c.insert(
+                1,
+                vec![1.0, 0.0, 0.0],
+                Some(json!({"body": "hello world"})),
+                u64::MAX,
+            )
+            .unwrap();
             let results = c.fts_search("", 5).unwrap();
             assert!(results.is_empty());
         }
@@ -316,8 +341,13 @@ mod tests {
         #[test]
         fn fts_search_no_fts_enabled_returns_empty() {
             let mut c = Collection::new("no_fts".into(), 3, Metric::L2);
-            c.insert(1, vec![1.0, 0.0, 0.0], Some(json!({"body": "hello world"})))
-                .unwrap();
+            c.insert(
+                1,
+                vec![1.0, 0.0, 0.0],
+                Some(json!({"body": "hello world"})),
+                u64::MAX,
+            )
+            .unwrap();
             let results = c.fts_search("hello", 5).unwrap();
             assert!(results.is_empty());
         }
@@ -329,12 +359,14 @@ mod tests {
                 1,
                 vec![1.0, 0.0, 0.0],
                 Some(json!({"body": "tantivy full text search"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 2,
                 vec![0.0, 1.0, 0.0],
                 Some(json!({"body": "vector similarity search"})),
+                u64::MAX,
             )
             .unwrap();
 
@@ -342,7 +374,7 @@ mod tests {
             let before = c.fts_search("search", 5).unwrap();
             assert_eq!(before.len(), 2);
 
-            c.delete(1).unwrap();
+            c.delete(1, u64::MAX).unwrap();
             let after = c.fts_search("tantivy", 5).unwrap();
             assert!(after.is_empty(), "deleted doc should not appear");
         }
@@ -355,6 +387,7 @@ mod tests {
                     i,
                     vec![i as f32, 0.0, 0.0],
                     Some(json!({"body": "rust programming language"})),
+                    u64::MAX,
                 )
                 .unwrap();
             }
@@ -369,6 +402,7 @@ mod tests {
                 1,
                 vec![1.0, 0.0, 0.0],
                 Some(json!({"title": "hello world", "desc": "a test document"})),
+                u64::MAX,
             )
             .unwrap();
             let results = c.fts_search("hello", 5).unwrap();
@@ -387,6 +421,7 @@ mod tests {
                 Some(
                     json!({"metadata": {"title": "deep nested text", "tags": ["rust", "search"]}}),
                 ),
+                u64::MAX,
             )
             .unwrap();
             let results = c.fts_search("nested", 5).unwrap();
@@ -397,7 +432,7 @@ mod tests {
         #[test]
         fn fts_insert_without_payload_does_not_index() {
             let mut c = make_fts_collection();
-            c.insert(1, vec![1.0, 0.0, 0.0], None).unwrap();
+            c.insert(1, vec![1.0, 0.0, 0.0], None, u64::MAX).unwrap();
             let results = c.fts_search("anything", 5).unwrap();
             assert!(results.is_empty());
         }
@@ -411,8 +446,13 @@ mod tests {
                 } else {
                     format!("document number {i} with generic content")
                 };
-                c.insert(i, vec![i as f32, 0.0, 0.0], Some(json!({"body": body})))
-                    .unwrap();
+                c.insert(
+                    i,
+                    vec![i as f32, 0.0, 0.0],
+                    Some(json!({"body": body})),
+                    u64::MAX,
+                )
+                .unwrap();
             }
             let results = c.fts_search("xylophone", 5).unwrap();
             assert!(!results.is_empty(), "should find the unique doc");
@@ -429,6 +469,7 @@ mod tests {
                     i,
                     vec![i as f32, 0.0, 0.0],
                     Some(json!({"body": format!("doc {i} content")})),
+                    u64::MAX,
                 )
                 .unwrap();
             }
@@ -455,12 +496,14 @@ mod tests {
                 1,
                 vec![1.0, 0.0, 0.0],
                 Some(json!({"body": "hello world", "tag": "a"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 2,
                 vec![2.0, 0.0, 0.0],
                 Some(json!({"body": "foo bar", "tag": "b"})),
+                u64::MAX,
             )
             .unwrap();
 
@@ -501,36 +544,42 @@ mod tests {
                 0,
                 vec![0.001, 0.0, 0.0],
                 Some(json!({"body": "animals birds completely unrelated"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 99,
                 vec![0.1, 0.0, 0.0],
                 Some(json!({"body": "special word"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 3,
                 vec![1.0, 0.0, 0.0],
                 Some(json!({"body": "generic noise text"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 4,
                 vec![5.0, 0.0, 0.0],
                 Some(json!({"body": "generic noise content"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 1,
                 vec![100.0, 0.0, 0.0],
                 Some(json!({"body": "special special special highlight"})),
+                u64::MAX,
             )
             .unwrap();
             c.insert(
                 2,
                 vec![101.0, 0.0, 0.0],
                 Some(json!({"body": "special special mention"})),
+                u64::MAX,
             )
             .unwrap();
 

@@ -53,6 +53,6 @@ impl PersistExt for CollectionManager {
         let snap: ManagerSnapshot = bincode_opts()
             .deserialize_from(reader)
             .map_err(PersistError::Decode)?;
-        Ok(CollectionManager::from_snapshot(snap))
+        Ok(CollectionManager::from_snapshot(snap, None))
     }
 }

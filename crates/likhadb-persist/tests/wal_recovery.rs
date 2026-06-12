@@ -380,3 +380,50 @@ fn ivf_sq8_survives_restart() {
         .unwrap();
     assert_eq!(results.len(), 5);
 }
+
+// ── FTS survives restart without re-indexing ──────────────────────────────
+
+#[cfg(feature = "fts")]
+#[test]
+fn fts_index_survives_restart() {
+    let dir = tmp_dir("fts_restart");
+
+    // Phase 1: insert docs with FTS enabled, then checkpoint.
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("docs", 4, Metric::L2).unwrap();
+        mgr.enable_fts("docs").unwrap();
+        for i in 0..50u64 {
+            let text = if i == 7 {
+                "exclusive canary term zephyr".to_string()
+            } else {
+                format!("generic document number {i}")
+            };
+            mgr.insert(
+                "docs",
+                i,
+                vec![i as f32, 0.0, 0.0, 0.0],
+                Some(json!({"body": text})),
+            )
+            .unwrap();
+        }
+        mgr.checkpoint().unwrap();
+    }
+
+    // Phase 2: reopen — FTS index must be loaded from disk, not rebuilt.
+    let mgr = WalManager::open(&dir).unwrap();
+    let results = mgr.get("docs").unwrap().fts_search("zephyr", 5).unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "FTS must find the canary doc after restart"
+    );
+    assert_eq!(results[0].id, 7, "canary doc id must be 7");
+
+    // Confirm FTS still works for normal queries after restart.
+    let generic = mgr.get("docs").unwrap().fts_search("generic", 10).unwrap();
+    assert!(
+        !generic.is_empty(),
+        "generic docs must be searchable after restart"
+    );
+}
