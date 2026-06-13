@@ -147,7 +147,7 @@ impl FtsIndex for TantivyFtsIndex {
             .parse_query(query)
             .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
         let top_docs = searcher
-            .search(&parsed, &TopDocs::with_limit(k))
+            .search(&parsed, &TopDocs::with_limit(k).order_by_score())
             .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
 
         let mut results = Vec::with_capacity(top_docs.len());
