@@ -1,8 +1,10 @@
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use likhadb_core::{LikhaDbError, Result, VecId};
 use tantivy::{
     collector::TopDocs,
+    directory::MmapDirectory,
     query::QueryParser,
     schema::{Field, Schema, Value, INDEXED, STORED, TEXT},
     Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term,
@@ -16,6 +18,8 @@ pub struct TantivyFtsIndex {
     reader: IndexReader,
     id_field: Field,
     text_field: Field,
+    lsn_path: Option<PathBuf>,
+    watermark: u64,
 }
 
 impl TantivyFtsIndex {
@@ -41,15 +45,72 @@ impl TantivyFtsIndex {
             reader,
             id_field,
             text_field,
+            lsn_path: None,
+            watermark: 0,
+        })
+    }
+
+    pub fn open_or_create(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir).map_err(|e| LikhaDbError::Fts(e.to_string()))?;
+
+        let mut schema_builder = Schema::builder();
+        let id_field = schema_builder.add_u64_field("id", INDEXED | STORED);
+        let text_field = schema_builder.add_text_field("text", TEXT);
+        let schema = schema_builder.build();
+
+        let mmap = MmapDirectory::open(dir).map_err(|e| LikhaDbError::Fts(e.to_string()))?;
+        let index =
+            Index::open_or_create(mmap, schema).map_err(|e| LikhaDbError::Fts(e.to_string()))?;
+
+        let writer = index
+            .writer(15_000_000)
+            .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
+
+        let lsn_path = dir.join("fts_lsn");
+        let watermark = std::fs::read_to_string(&lsn_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(Self {
+            index,
+            writer: Mutex::new(writer),
+            reader,
+            id_field,
+            text_field,
+            lsn_path: Some(lsn_path),
+            watermark,
         })
     }
 }
 
 impl FtsIndex for TantivyFtsIndex {
+    fn last_lsn(&self) -> u64 {
+        self.watermark
+    }
+
+    fn set_lsn(&mut self, lsn: u64) -> Result<()> {
+        if let Some(ref path) = self.lsn_path {
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, lsn.to_string())
+                .and_then(|_| std::fs::rename(&tmp, path))
+                .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
+            self.watermark = lsn;
+        }
+        Ok(())
+    }
+
     fn index_document(&mut self, id: VecId, text: &str) -> Result<()> {
+        let term = Term::from_field_u64(self.id_field, id);
         let doc = tantivy::doc!(self.id_field => id, self.text_field => text);
         {
             let mut writer = self.writer.lock().unwrap();
+            writer.delete_term(term);
             writer
                 .add_document(doc)
                 .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
@@ -86,7 +147,7 @@ impl FtsIndex for TantivyFtsIndex {
             .parse_query(query)
             .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
         let top_docs = searcher
-            .search(&parsed, &TopDocs::with_limit(k))
+            .search(&parsed, &TopDocs::with_limit(k).order_by_score())
             .map_err(|e| LikhaDbError::Fts(e.to_string()))?;
 
         let mut results = Vec::with_capacity(top_docs.len());

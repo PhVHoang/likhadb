@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use likhadb_core::LikhaDbError;
 use likhadb_store::CollectionManager;
 
@@ -9,7 +11,12 @@ use super::entry::{IndexKind, WalOp};
 ///
 /// `CreateCollection` is idempotent: if the collection already exists (e.g.
 /// replaying after a partial checkpoint), the op is silently skipped.
-pub fn apply_op(mgr: &mut CollectionManager, op: WalOp) -> Result<(), PersistError> {
+pub fn apply_op(
+    mgr: &mut CollectionManager,
+    op: WalOp,
+    lsn: u64,
+    data_dir: Option<&Path>,
+) -> Result<(), PersistError> {
     match op {
         WalOp::CreateCollection {
             name,
@@ -49,20 +56,25 @@ pub fn apply_op(mgr: &mut CollectionManager, op: WalOp) -> Result<(), PersistErr
             payload,
         } => mgr
             .get_mut(&collection)
-            .and_then(|col| col.insert(id, vector, payload))
+            .and_then(|col| col.insert(id, vector, payload, lsn))
             .map_err(PersistError::Apply),
         WalOp::Delete { collection, id } => mgr
             .get_mut(&collection)
-            .and_then(|col| col.delete(id).map(|_| ()))
+            .and_then(|col| col.delete(id, lsn).map(|_| ()))
             .map_err(PersistError::Apply),
         WalOp::EnableFts { collection } => {
             #[cfg(feature = "fts")]
-            match mgr.enable_fts(&collection) {
-                Ok(()) | Err(LikhaDbError::CollectionNotFound(_)) => {}
-                Err(e) => return Err(PersistError::Apply(e)),
+            {
+                let fts_dir = data_dir.map(|d| d.join("fts").join(&collection));
+                match mgr.enable_fts(&collection, fts_dir.as_deref()) {
+                    Ok(()) | Err(LikhaDbError::CollectionNotFound(_)) => {}
+                    Err(e) => return Err(PersistError::Apply(e)),
+                }
             }
             #[cfg(not(feature = "fts"))]
-            let _ = collection;
+            {
+                let _ = (collection, data_dir);
+            }
             Ok(())
         }
     }

@@ -221,7 +221,7 @@ impl LakehouseExt for CollectionManager {
                 let end = start + collection_dim;
                 let vec: Vec<f32> = float_values.values()[start..end].to_vec();
                 let payload = build_payload(&batch, &payload_col_indices, row);
-                collection.insert(id, vec, payload)?;
+                collection.insert(id, vec, payload, u64::MAX)?;
             }
 
             total += num_rows;
@@ -327,9 +327,11 @@ mod tests {
             1,
             vec![1.0, 2.0, 3.0, 4.0],
             Some(serde_json::json!({"tag": "a"})),
+            u64::MAX,
         )
         .unwrap();
-        col.insert(2, vec![5.0, 6.0, 7.0, 8.0], None).unwrap();
+        col.insert(2, vec![5.0, 6.0, 7.0, 8.0], None, u64::MAX)
+            .unwrap();
 
         m.export_parquet("c", &path).unwrap();
         assert!(path.exists());
@@ -360,9 +362,14 @@ mod tests {
 
         let mut m = make_manager_with_collection("c", 2);
         let col = m.get_mut("c").unwrap();
-        col.insert(1, vec![1.0, 2.0], None).unwrap();
-        col.insert(2, vec![3.0, 4.0], Some(serde_json::json!({"x": 1})))
-            .unwrap();
+        col.insert(1, vec![1.0, 2.0], None, u64::MAX).unwrap();
+        col.insert(
+            2,
+            vec![3.0, 4.0],
+            Some(serde_json::json!({"x": 1})),
+            u64::MAX,
+        )
+        .unwrap();
 
         m.export_parquet("c", &path).unwrap();
 

@@ -16,7 +16,7 @@ fn parquet_round_trip_10k_vectors() {
         for i in 0u64..10_000 {
             let vec: Vec<f32> = (0..16).map(|d| (i * 16 + d) as f32 / 1000.0).collect();
             let payload = Some(serde_json::json!({"idx": i, "label": format!("item_{i}")}));
-            col.insert(i, vec, payload).unwrap();
+            col.insert(i, vec, payload, u64::MAX).unwrap();
         }
     }
 

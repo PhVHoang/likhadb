@@ -26,7 +26,7 @@ fn flat_round_trip() {
     mgr.create_collection("flat", dim, Metric::L2).unwrap();
     let col = mgr.get_mut("flat").unwrap();
     for (i, v) in vecs.iter().enumerate() {
-        col.insert(i as u64, v.clone(), Some(json!({"i": i})))
+        col.insert(i as u64, v.clone(), Some(json!({"i": i})), u64::MAX)
             .unwrap();
     }
 
@@ -68,7 +68,7 @@ fn ivf_round_trip() {
         .unwrap();
     let col = mgr.get_mut("ivf").unwrap();
     for (i, v) in vecs.iter().enumerate() {
-        col.insert(i as u64, v.clone(), None).unwrap();
+        col.insert(i as u64, v.clone(), None, u64::MAX).unwrap();
     }
 
     let query: Vec<f32> = vecs[0].clone();
@@ -109,7 +109,7 @@ fn ivf_sq8_round_trip() {
         .unwrap();
     let col = mgr.get_mut("sq8").unwrap();
     for (i, v) in vecs.iter().enumerate() {
-        col.insert(i as u64, v.clone(), None).unwrap();
+        col.insert(i as u64, v.clone(), None, u64::MAX).unwrap();
     }
 
     let query: Vec<f32> = vecs[0].clone();
@@ -152,7 +152,7 @@ fn hnsw_round_trip() {
         .unwrap();
     let col = mgr.get_mut("hnsw").unwrap();
     for (i, v) in vecs.iter().enumerate() {
-        col.insert(i as u64, v.clone(), None).unwrap();
+        col.insert(i as u64, v.clone(), None, u64::MAX).unwrap();
     }
 
     let query: Vec<f32> = vecs[0].clone();
@@ -196,7 +196,7 @@ fn multi_collection_round_trip() {
     for name in ["flat", "ivf", "hnsw"] {
         let col = mgr.get_mut(name).unwrap();
         for (i, v) in vecs.iter().enumerate() {
-            col.insert(i as u64, v.clone(), None).unwrap();
+            col.insert(i as u64, v.clone(), None, u64::MAX).unwrap();
         }
     }
 

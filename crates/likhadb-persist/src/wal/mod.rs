@@ -13,7 +13,7 @@ use likhadb_core::{Metric, VecId, Vector};
 use likhadb_store::{Collection, CollectionManager};
 use serde_json::Value;
 
-use crate::{bincode_opts, PersistError, PersistExt};
+use crate::{bincode_opts, PersistError};
 use frame::{checksum, write_frame, FrameIter};
 use recovery::apply_op;
 
@@ -100,10 +100,16 @@ impl WalManager {
         let snapshot_path = dir.join(Self::SNAPSHOT_FILE);
         let wal_path = dir.join(Self::WAL_FILE);
 
-        // 1. Load snapshot (if present).
+        // 1. Load snapshot (if present), opening on-disk FTS indexes.
         let (mut inner, snapshot_lsn) = if snapshot_path.exists() {
-            let lsn = Self::read_snapshot_lsn(&snapshot_path)?;
-            let mgr = CollectionManager::load(&snapshot_path)?;
+            use likhadb_store::ManagerSnapshot;
+            let file = File::open(&snapshot_path).map_err(PersistError::Io)?;
+            let reader = BufReader::new(file);
+            let snap: ManagerSnapshot = bincode_opts()
+                .deserialize_from(reader)
+                .map_err(PersistError::Decode)?;
+            let lsn = snap.last_lsn;
+            let mgr = CollectionManager::from_snapshot(snap, Some(dir));
             (mgr, lsn)
         } else {
             (CollectionManager::new(), 0)
@@ -112,7 +118,7 @@ impl WalManager {
         // 2. Replay WAL entries newer than the snapshot.
         let mut next_lsn = snapshot_lsn + 1;
         if wal_path.exists() {
-            next_lsn = Self::replay_wal(&wal_path, &mut inner, snapshot_lsn)?;
+            next_lsn = Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
         }
 
         // 3. Open WAL for appending.
@@ -149,7 +155,7 @@ impl WalManager {
         let mut inner = inner;
         let mut next_lsn = iceberg_watermark + 1;
         if wal_path.exists() {
-            next_lsn = Self::replay_wal(&wal_path, &mut inner, iceberg_watermark)?;
+            next_lsn = Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
         }
 
         let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
@@ -163,22 +169,13 @@ impl WalManager {
         })
     }
 
-    fn read_snapshot_lsn(path: &Path) -> Result<u64, PersistError> {
-        use likhadb_store::ManagerSnapshot;
-        let file = File::open(path).map_err(PersistError::Io)?;
-        let reader = BufReader::new(file);
-        let snap: ManagerSnapshot = bincode_opts()
-            .deserialize_from(reader)
-            .map_err(PersistError::Decode)?;
-        Ok(snap.last_lsn)
-    }
-
     /// Replay WAL entries with LSN > `snapshot_lsn`.  Returns the `next_lsn`
     /// to use for new writes.
     fn replay_wal(
         path: &Path,
         mgr: &mut CollectionManager,
         snapshot_lsn: u64,
+        data_dir: &Path,
     ) -> Result<u64, PersistError> {
         let file = File::open(path).map_err(PersistError::Io)?;
         let reader = BufReader::new(file);
@@ -212,7 +209,7 @@ impl WalManager {
                 continue;
             }
 
-            apply_op(mgr, entry.op)?;
+            apply_op(mgr, entry.op, entry.lsn, Some(data_dir))?;
             last_lsn = entry.lsn;
         }
 
@@ -420,21 +417,34 @@ impl WalManager {
         payload: Option<Value>,
     ) -> Result<(), PersistError> {
         let col = collection.to_owned();
-        self.log_and_apply(
-            WalOp::Insert {
+        let lsn = self.next_lsn;
+        let _span = tracing::debug_span!("wal_append", lsn = lsn).entered();
+        let entry = WalEntry {
+            lsn,
+            op: WalOp::Insert {
                 collection: col.clone(),
                 id,
                 vector: vector.clone(),
                 payload: payload.clone(),
             },
-            |mgr| mgr.get_mut(&col)?.insert(id, vector, payload),
-        )
+        };
+        self.wal.append(&entry)?;
+        #[cfg(feature = "iceberg-recovery")]
+        if let Ok(payload_bytes) = bincode_opts().serialize(&entry) {
+            self.unflushed.push((lsn, payload_bytes));
+        }
+        self.next_lsn += 1;
+        self.inner
+            .get_mut(&col)?
+            .insert(id, vector, payload, lsn)
+            .map_err(PersistError::Apply)
     }
 
     pub fn delete(&mut self, collection: &str, id: VecId) -> Result<bool, PersistError> {
         let col = collection.to_owned();
+        let lsn = self.next_lsn;
         let entry = WalEntry {
-            lsn: self.next_lsn,
+            lsn,
             op: WalOp::Delete {
                 collection: col.clone(),
                 id,
@@ -443,12 +453,12 @@ impl WalManager {
         self.wal.append(&entry)?;
         #[cfg(feature = "iceberg-recovery")]
         if let Ok(payload) = bincode_opts().serialize(&entry) {
-            self.unflushed.push((entry.lsn, payload));
+            self.unflushed.push((lsn, payload));
         }
         self.next_lsn += 1;
         self.inner
             .get_mut(&col)?
-            .delete(id)
+            .delete(id, lsn)
             .map_err(PersistError::Apply)
     }
 
@@ -457,11 +467,12 @@ impl WalManager {
     #[cfg(feature = "fts")]
     pub fn enable_fts(&mut self, name: &str) -> Result<(), PersistError> {
         let col = name.to_owned();
+        let fts_dir = self.dir.join("fts").join(&col);
         self.log_and_apply(
             WalOp::EnableFts {
                 collection: col.clone(),
             },
-            |mgr| mgr.enable_fts(&col),
+            |mgr| mgr.enable_fts(&col, Some(&fts_dir)),
         )
     }
 

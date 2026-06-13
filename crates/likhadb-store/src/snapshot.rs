@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use likhadb_core::Metric;
 use likhadb_index::IndexSnapshot;
 
@@ -46,14 +48,15 @@ impl Collection {
         }
     }
 
-    pub fn from_snapshot(snap: CollectionSnapshot) -> Self {
+    pub fn from_snapshot(snap: CollectionSnapshot, data_dir: Option<&Path>) -> Self {
         let col = Self::with_index(snap.name, snap.dim, snap.metric, snap.index.into_box())
             .with_meta(snap.meta);
         #[cfg(feature = "fts")]
         let col = {
             let mut c = col;
             if snap.fts_enabled {
-                let _ = c.enable_fts();
+                let fts_dir = data_dir.map(|d| d.join("fts").join(&c.name));
+                let _ = c.enable_fts(fts_dir.as_deref());
             }
             c
         };
@@ -73,10 +76,10 @@ impl CollectionManager {
         }
     }
 
-    pub fn from_snapshot(snap: ManagerSnapshot) -> Self {
+    pub fn from_snapshot(snap: ManagerSnapshot, data_dir: Option<&Path>) -> Self {
         let mut mgr = CollectionManager::new();
         for col_snap in snap.collections {
-            mgr.insert_collection(Collection::from_snapshot(col_snap));
+            mgr.insert_collection(Collection::from_snapshot(col_snap, data_dir));
         }
         mgr
     }

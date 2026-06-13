@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use likhadb_core::{LikhaDbError, Metric, Result};
 use likhadb_index::{HnswIndex, IvfIndex};
@@ -134,8 +135,8 @@ impl CollectionManager {
     }
 
     #[cfg(feature = "fts")]
-    pub fn enable_fts(&mut self, name: &str) -> likhadb_core::Result<()> {
-        self.get_mut(name)?.enable_fts()
+    pub fn enable_fts(&mut self, name: &str, fts_dir: Option<&Path>) -> likhadb_core::Result<()> {
+        self.get_mut(name)?.enable_fts(fts_dir)
     }
 
     #[cfg(feature = "persist")]
@@ -167,7 +168,8 @@ mod tests {
         let col = mgr.get_mut("test").unwrap();
         for i in 0..n as u64 {
             let vec = vec![i as f32, 0.0, 0.0, 0.0];
-            col.insert(i, vec, Some(json!({"id_tag": i}))).unwrap();
+            col.insert(i, vec, Some(json!({"id_tag": i})), u64::MAX)
+                .unwrap();
         }
         mgr
     }
@@ -237,8 +239,8 @@ mod tests {
 
         // delete ids 0 and 1
         let col = mgr.get_mut("test").unwrap();
-        assert!(col.delete(0).unwrap());
-        assert!(col.delete(1).unwrap());
+        assert!(col.delete(0, u64::MAX).unwrap());
+        assert!(col.delete(1, u64::MAX).unwrap());
 
         // re-search
         let results2 = mgr
@@ -264,6 +266,7 @@ mod tests {
                 i,
                 vec![i as f32, 0.0, 0.0, 0.0],
                 Some(json!({"parity": tag})),
+                u64::MAX,
             )
             .unwrap();
         }
@@ -306,7 +309,8 @@ mod tests {
         let col = mgr.get_mut("ivf").unwrap();
 
         for i in 0..(nlist + 50) as u64 {
-            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None, u64::MAX)
+                .unwrap();
         }
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
@@ -322,7 +326,10 @@ mod tests {
 
         // Delete the nearest vector and verify it disappears.
         let nearest_id = results[0].id;
-        mgr.get_mut("ivf").unwrap().delete(nearest_id).unwrap();
+        mgr.get_mut("ivf")
+            .unwrap()
+            .delete(nearest_id, u64::MAX)
+            .unwrap();
         let results2 = mgr
             .get("ivf")
             .unwrap()
@@ -340,7 +347,8 @@ mod tests {
         let col = mgr.get_mut("ivf_sq8").unwrap();
 
         for i in 0..(nlist + 50) as u64 {
-            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None, u64::MAX)
+                .unwrap();
         }
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
@@ -356,7 +364,10 @@ mod tests {
 
         // Delete the nearest vector and verify it disappears.
         let nearest_id = results[0].id;
-        mgr.get_mut("ivf_sq8").unwrap().delete(nearest_id).unwrap();
+        mgr.get_mut("ivf_sq8")
+            .unwrap()
+            .delete(nearest_id, u64::MAX)
+            .unwrap();
         let results2 = mgr
             .get("ivf_sq8")
             .unwrap()
@@ -412,7 +423,8 @@ mod tests {
         let col = mgr.get_mut("hnsw").unwrap();
 
         for i in 0..50u64 {
-            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None).unwrap();
+            col.insert(i, vec![i as f32, 0.0, 0.0, 0.0], None, u64::MAX)
+                .unwrap();
         }
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
@@ -428,7 +440,10 @@ mod tests {
 
         // Delete the nearest vector and verify it disappears.
         let nearest_id = results[0].id;
-        mgr.get_mut("hnsw").unwrap().delete(nearest_id).unwrap();
+        mgr.get_mut("hnsw")
+            .unwrap()
+            .delete(nearest_id, u64::MAX)
+            .unwrap();
         let results2 = mgr
             .get("hnsw")
             .unwrap()
@@ -442,7 +457,7 @@ mod tests {
         let mut mgr = CollectionManager::new();
         mgr.create_collection("p", 4, Metric::L2).unwrap();
         let col = mgr.get_mut("p").unwrap();
-        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"})))
+        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"})), u64::MAX)
             .unwrap();
 
         let results = mgr
@@ -459,11 +474,17 @@ mod tests {
         let mut mgr = CollectionManager::new();
         mgr.create_collection("p", 4, Metric::L2).unwrap();
         let col = mgr.get_mut("p").unwrap();
-        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"})))
+        col.insert(0, vec![0.0; 4], Some(json!({"tag": "a"})), u64::MAX)
             .unwrap();
-        col.insert(1, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"tag": "b"})))
+        col.insert(
+            1,
+            vec![1.0, 0.0, 0.0, 0.0],
+            Some(json!({"tag": "b"})),
+            u64::MAX,
+        )
+        .unwrap();
+        col.insert(2, vec![2.0, 0.0, 0.0, 0.0], None, u64::MAX)
             .unwrap();
-        col.insert(2, vec![2.0, 0.0, 0.0, 0.0], None).unwrap();
 
         let results = mgr
             .get("p")
@@ -493,6 +514,7 @@ mod tests {
                 i,
                 vec![i as f32, 0.0, 0.0, 0.0],
                 Some(json!({"parity": tag})),
+                u64::MAX,
             )
             .unwrap();
         }
