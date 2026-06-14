@@ -27,3 +27,7 @@ simsimd       = "6"
 rayon         = "1"
 bincode       = "1"
 tantivy       = "0.26"
+# Pin alloc-stdlib to 0.2.2: the 0.2.3 patch bumped its alloc-no-stdlib dep from
+# ~2 to ^3, which conflicts with brotli v7's direct alloc-no-stdlib ~2 dep and
+# causes E0277 on a fresh dependency resolution. Remove once brotli >= 8 is used.
+alloc-stdlib  = "=0.2.2"

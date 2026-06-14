@@ -16,6 +16,7 @@ likhadb-store   = { path = "../likhadb-store" }
 likhadb-persist = { path = "../likhadb-persist", optional = true, features = ["fts"] }
 arrow           = "53"
 parquet         = { version = "53", features = ["arrow"] }
+alloc-stdlib    = { workspace = true }
 serde_json      = { workspace = true }
 thiserror       = { workspace = true }
 object_store    = { version = "0.11", features = ["aws"], optional = true }
