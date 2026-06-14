@@ -215,15 +215,14 @@ fn candidates_to_batch(candidates: &[Candidate]) -> Result<RecordBatch> {
         Field::new("ann_rank", DataType::UInt64, false),
     ]));
     let ids: Vec<String> = candidates.iter().map(|c| c.id.to_string()).collect();
+    let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
     let distances: Vec<f32> = candidates.iter().map(|c| c.ann_distance).collect();
     let ranks: Vec<u64> = candidates.iter().map(|c| c.ann_rank).collect();
 
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(StringArray::from_iter_values(
-                ids.iter().map(|s| s.as_str()),
-            )),
+            Arc::new(StringArray::from(id_strs)),
             Arc::new(Float32Array::from(distances)),
             Arc::new(UInt64Array::from(ranks)),
         ],

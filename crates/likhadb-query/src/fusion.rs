@@ -137,6 +137,7 @@ mod tests {
         ]));
 
         let ids: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
+        let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
         let distances: Vec<f32> = (0..n).map(|i| i as f32 * 0.1).collect();
         let ranks: Vec<u64> = (0..n).map(|i| i as u64 + 1).collect();
         let texts: Vec<&str> = ids.iter().map(|_| "text").collect();
@@ -146,9 +147,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from_iter_values(
-                    ids.iter().map(|s| s.as_str()),
-                )),
+                Arc::new(StringArray::from(id_strs)),
                 Arc::new(Float32Array::from(distances)),
                 Arc::new(UInt64Array::from(ranks)),
                 Arc::new(StringArray::from(texts)),

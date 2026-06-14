@@ -335,21 +335,19 @@ mod tests {
             Field::new("fusion_score", DataType::Float64, false),
         ]));
         let ids: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
+        let id_strs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
         let ranks: Vec<u64> = (0..n).map(|i| i as u64 + 1).collect();
         let texts: Vec<String> = (0..n).map(|i| format!("text{i}")).collect();
+        let text_strs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         // Descending fusion scores: 0.9, 0.8, 0.7, ...
         let scores: Vec<f64> = (0..n).map(|i| 0.9 - i as f64 * 0.1).collect();
 
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from_iter_values(
-                    ids.iter().map(|s| s.as_str()),
-                )),
+                Arc::new(StringArray::from(id_strs)),
                 Arc::new(UInt64Array::from(ranks)),
-                Arc::new(StringArray::from_iter_values(
-                    texts.iter().map(|s| s.as_str()),
-                )),
+                Arc::new(StringArray::from(text_strs)),
                 Arc::new(Float64Array::from(scores)),
             ],
         )
