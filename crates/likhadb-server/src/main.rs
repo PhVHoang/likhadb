@@ -68,6 +68,19 @@ async fn main() {
 
     let state = likhadb_server::AppState::new(wal);
 
+    // Attach the Tier Q pipeline when both Iceberg and LIKHADB_ENRICH_NAMESPACE
+    // are configured. Failures inside the helper are logged; state.pipeline
+    // stays None and the server keeps serving non-enriched queries.
+    #[cfg(feature = "enriched-search")]
+    let state = if let Some((ref config, _)) = iceberg_flusher_args {
+        match likhadb_server::try_build_pipeline_from_env(config).await {
+            Some(pipeline) => state.with_pipeline(pipeline),
+            None => state,
+        }
+    } else {
+        state
+    };
+
     // Spawn Iceberg background flusher when catalog is configured.
     #[cfg(feature = "iceberg-recovery")]
     if let Some((config, namespace)) = iceberg_flusher_args {
