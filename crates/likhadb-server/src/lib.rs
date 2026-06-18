@@ -1,6 +1,8 @@
 mod error;
 mod grpc;
 mod metrics;
+#[cfg(feature = "enriched-search")]
+mod pipeline_setup;
 mod routes;
 mod state;
 mod types;
@@ -13,5 +15,7 @@ pub use likhadb_lakehouse::{
 };
 pub use metrics::{install as install_prometheus, seed_collection_gauges};
 pub use metrics_exporter_prometheus::PrometheusHandle;
+#[cfg(feature = "enriched-search")]
+pub use pipeline_setup::try_build_pipeline_from_env;
 pub use routes::router;
 pub use state::{spawn_checkpoint_task, AppState};

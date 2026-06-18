@@ -6,7 +6,10 @@ license.workspace = true
 
 [features]
 # Enables Tier Q: DataFusion enrichment, score fusion, and model-based reranking.
-enriched-search  = ["dep:likhadb-query"]
+# Iceberg-backed enrichment is the only wired source in v1; the dep on
+# iceberg-recovery is enforced here so callers get a clear build error rather
+# than a runtime "pipeline always None" surprise.
+enriched-search  = ["dep:likhadb-query", "iceberg-recovery"]
 # Enables Iceberg-backed recovery: staging tier, LSN watermark, open_with_iceberg startup.
 iceberg-recovery = ["likhadb-persist/iceberg-recovery", "likhadb-lakehouse/iceberg-recovery"]
 
