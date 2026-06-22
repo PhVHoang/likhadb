@@ -68,6 +68,11 @@ async fn main() {
 
     let state = likhadb_server::AppState::new(wal);
 
+    let api_token = likhadb_server::ApiToken::from_env();
+    if !api_token.is_enabled() {
+        tracing::warn!("LIKHADB_API_TOKEN unset — REST and gRPC are UNAUTHENTICATED (dev mode)");
+    }
+
     // Attach the Tier Q pipeline when both Iceberg and LIKHADB_ENRICH_NAMESPACE
     // are configured. Failures inside the helper are logged; state.pipeline
     // stays None and the server keeps serving non-enriched queries.
@@ -139,7 +144,10 @@ async fn main() {
 
     let rest_shutdown_rx = shutdown_rx;
     let mut rest_handle = tokio::spawn(async move {
-        axum::serve(listener, likhadb_server::router(state, prometheus))
+        axum::serve(
+            listener,
+            likhadb_server::router(state, prometheus, api_token),
+        )
             .with_graceful_shutdown(async move {
                 let mut rx = rest_shutdown_rx;
                 rx.changed().await.ok();

@@ -17,11 +17,14 @@ use tonic::Status;
 pub struct ApiToken(Arc<Option<String>>);
 
 impl ApiToken {
+    /// Construct directly. `None` disables auth. Prefer [`ApiToken::from_env`]
+    /// in production; this is handy for tests and explicit wiring.
+    pub fn new(token: Option<String>) -> Self {
+        Self(Arc::new(token.filter(|s| !s.is_empty())))
+    }
+
     pub fn from_env() -> Self {
-        let tok = std::env::var("LIKHADB_API_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty());
-        Self(Arc::new(tok))
+        Self::new(std::env::var("LIKHADB_API_TOKEN").ok())
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -113,14 +116,14 @@ mod tests {
 
     #[test]
     fn disabled_token_accepts_anything() {
-        let t = ApiToken(Arc::new(None));
+        let t = ApiToken::new(None);
         assert!(!t.is_enabled());
         assert!(t.verify("whatever"));
     }
 
     #[test]
     fn enabled_token_requires_exact_match() {
-        let t = ApiToken(Arc::new(Some("s3cr3t".to_string())));
+        let t = ApiToken::new(Some("s3cr3t".to_string()));
         assert!(t.is_enabled());
         assert!(t.verify("s3cr3t"));
         assert!(!t.verify("wrong"));

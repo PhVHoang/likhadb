@@ -15,6 +15,7 @@ use likhadb_lakehouse::LakehouseExt;
 #[cfg(feature = "enriched-search")]
 use crate::types::RankedQueryResponse;
 use crate::{
+    auth::ApiToken,
     error::ApiError,
     state::AppState,
     types::{
@@ -26,9 +27,9 @@ use crate::{
 #[cfg(feature = "enriched-search")]
 use likhadb_query::pipeline::{Candidate, PipelineRequest};
 
-pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
-    Router::new()
-        .route("/health", get(health))
+pub fn router(state: AppState, prometheus: PrometheusHandle, token: ApiToken) -> Router {
+    // /metrics is gated too: it leaks collection names and row counts.
+    let protected = Router::new()
         .route("/metrics", get(metrics_endpoint))
         .route(
             "/collections",
@@ -50,8 +51,15 @@ pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
         )
         .route("/collections/:name/import-parquet", post(import_parquet))
         .route("/collections/:name/export-parquet", post(export_parquet))
+        .route_layer(axum::middleware::from_fn_with_state(
+            token,
+            crate::require_bearer,
+        ))
         .layer(Extension(prometheus))
-        .with_state(state)
+        .with_state(state);
+
+    // /health stays public for liveness probes.
+    Router::new().route("/health", get(health)).merge(protected)
 }
 
 async fn health() -> impl IntoResponse {
