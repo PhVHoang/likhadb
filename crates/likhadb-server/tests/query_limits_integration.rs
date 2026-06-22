@@ -54,3 +54,18 @@ async fn k_is_clamped() {
     // A sane k succeeds (empty collection still returns 200 with no results).
     assert_eq!(query_status(&app, 5).await, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn oversized_body_is_rejected() {
+    let (app, _dir) = build_app();
+
+    // ~5 MiB payload — over the 4 MiB DefaultBodyLimit.
+    let big = "x".repeat(5 * 1024 * 1024);
+    let body = format!(r#"{{"name":"c","dim":3,"metric":"l2","junk":"{big}"}}"#);
+
+    let res = app
+        .oneshot(json_req("POST", "/collections", body))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}

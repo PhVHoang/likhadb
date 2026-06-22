@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -9,6 +9,12 @@ use axum::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
+use tower::limit::GlobalConcurrencyLimitLayer;
+
+/// Reject request bodies larger than this (caps a single oversized insert).
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+/// Cap concurrent in-flight requests across all connections (flood control).
+const MAX_INFLIGHT: usize = 256;
 
 use likhadb_lakehouse::LakehouseExt;
 
@@ -59,8 +65,13 @@ pub fn router(state: AppState, prometheus: PrometheusHandle, token: ApiToken) ->
         .layer(Extension(prometheus))
         .with_state(state);
 
-    // /health stays public for liveness probes.
-    Router::new().route("/health", get(health)).merge(protected)
+    // /health stays public for liveness probes. Body-size and global
+    // concurrency limits wrap everything as a blunt anti-flood / anti-OOM layer.
+    Router::new()
+        .route("/health", get(health))
+        .merge(protected)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(GlobalConcurrencyLimitLayer::new(MAX_INFLIGHT))
 }
 
 async fn health() -> impl IntoResponse {
