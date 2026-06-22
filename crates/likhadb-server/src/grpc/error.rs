@@ -28,6 +28,8 @@ pub fn api_err(e: ApiError) -> tonic::Status {
         ApiError::BadRequest(m) => tonic::Status::invalid_argument(m),
         ApiError::NotFound(m) => tonic::Status::not_found(m),
         ApiError::Conflict(m) => tonic::Status::already_exists(m),
+        ApiError::Unauthorized => tonic::Status::unauthenticated("unauthorized"),
+        ApiError::Forbidden(m) => tonic::Status::permission_denied(m),
         ApiError::Internal(m) => tonic::Status::internal(m),
     }
 }
