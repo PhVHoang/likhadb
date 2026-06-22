@@ -320,16 +320,48 @@ async fn hybrid_query_vectors(
     Ok(Json(HybridQueryResponse { results }).into_response())
 }
 
+/// Confine a client-supplied parquet path to `LIKHADB_PARQUET_ROOT`, defeating
+/// `../` traversal and absolute-path escapes. `must_exist` is true for import
+/// (the file must already exist) and false for export (only the parent must).
+fn resolve_under_root(requested: &str, must_exist: bool) -> Result<std::path::PathBuf, ApiError> {
+    let root = std::env::var("LIKHADB_PARQUET_ROOT").map_err(|_| {
+        ApiError::Forbidden("parquet I/O disabled: LIKHADB_PARQUET_ROOT unset".into())
+    })?;
+    let root = std::path::Path::new(&root)
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("bad LIKHADB_PARQUET_ROOT: {e}")))?;
+
+    let joined = root.join(requested);
+    let resolved = if must_exist {
+        joined.canonicalize()
+    } else {
+        // File may not exist yet — canonicalize the parent, re-attach the name.
+        let parent = joined
+            .parent()
+            .ok_or_else(|| ApiError::bad_request("invalid path"))?;
+        let name = joined
+            .file_name()
+            .ok_or_else(|| ApiError::bad_request("invalid path"))?;
+        parent.canonicalize().map(|p| p.join(name))
+    }
+    .map_err(|_| ApiError::Forbidden("path outside parquet root".into()))?;
+
+    if !resolved.starts_with(&root) {
+        return Err(ApiError::Forbidden("path outside parquet root".into()));
+    }
+    Ok(resolved)
+}
+
 async fn import_parquet(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<ImportParquetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = std::path::Path::new(&req.path);
+    let path = resolve_under_root(&req.path, true)?;
     let payload_cols: Vec<&str> = req.payload_cols.iter().map(String::as_str).collect();
     let imported = {
         let mut guard = state.write().await;
-        guard.import_parquet(&name, path, &req.id_col, &req.vector_col, &payload_cols)?
+        guard.import_parquet(&name, &path, &req.id_col, &req.vector_col, &payload_cols)?
     };
     Ok((StatusCode::OK, Json(ImportParquetResponse { imported })))
 }
@@ -339,10 +371,10 @@ async fn export_parquet(
     Path(name): Path<String>,
     Json(req): Json<ExportParquetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = std::path::Path::new(&req.path);
+    let path = resolve_under_root(&req.path, false)?;
     {
         let guard = state.read().await;
-        guard.export_parquet(&name, path)?;
+        guard.export_parquet(&name, &path)?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
