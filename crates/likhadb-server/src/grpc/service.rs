@@ -19,7 +19,7 @@ use tonic::{Request, Response, Status};
 use crate::{
     grpc::error::{api_err, core_err, persist_err},
     state::AppState,
-    types::{metric_str, parse_metric},
+    types::{metric_str, parse_metric, validate_k},
 };
 
 pub struct LikhaDbGrpc {
@@ -204,17 +204,13 @@ impl LikhaDb for LikhaDbGrpc {
         request: Request<proto::QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
         let req = request.into_inner();
+        let k = validate_k(req.k as usize).map_err(api_err)?;
         let filter = decode_filter(&req.filter_json)?;
         let results = {
             let guard = self.state.read().await;
             let col = guard.get(&req.collection).map_err(core_err)?;
-            col.search(
-                &req.vector,
-                req.k as usize,
-                filter.as_ref(),
-                req.include_payload,
-            )
-            .map_err(core_err)?
+            col.search(&req.vector, k, filter.as_ref(), req.include_payload)
+                .map_err(core_err)?
         };
         let results = encode_scored_results(results)?;
         Ok(Response::new(QueryResponse { results }))
@@ -225,6 +221,7 @@ impl LikhaDb for LikhaDbGrpc {
         request: Request<proto::HybridQueryRequest>,
     ) -> Result<Response<HybridQueryResponse>, Status> {
         let req = request.into_inner();
+        let k = validate_k(req.k as usize).map_err(api_err)?;
         let filter = decode_filter(&req.filter_json)?;
         let rrf_k = if req.rrf_k == 0 { 60 } else { req.rrf_k };
         let results = {
@@ -233,7 +230,7 @@ impl LikhaDb for LikhaDbGrpc {
             col.hybrid_search(
                 &req.vector,
                 &req.text,
-                req.k as usize,
+                k,
                 rrf_k,
                 filter.as_ref(),
                 req.include_payload,
@@ -251,17 +248,13 @@ impl LikhaDb for LikhaDbGrpc {
         request: Request<proto::QueryRequest>,
     ) -> Result<Response<Self::QueryStreamStream>, Status> {
         let req = request.into_inner();
+        let k = validate_k(req.k as usize).map_err(api_err)?;
         let filter = decode_filter(&req.filter_json)?;
         let results = {
             let guard = self.state.read().await;
             let col = guard.get(&req.collection).map_err(core_err)?;
-            col.search(
-                &req.vector,
-                req.k as usize,
-                filter.as_ref(),
-                req.include_payload,
-            )
-            .map_err(core_err)?
+            col.search(&req.vector, k, filter.as_ref(), req.include_payload)
+                .map_err(core_err)?
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel(32);

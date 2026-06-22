@@ -19,9 +19,10 @@ use crate::{
     error::ApiError,
     state::AppState,
     types::{
-        metric_str, parse_metric, CollectionInfo, CreateCollectionRequest, ExportParquetRequest,
-        HybridQueryRequest, HybridQueryResponse, ImportParquetRequest, ImportParquetResponse,
-        IndexConfig, InsertRequest, QueryRequest, QueryResponse, VectorResponse,
+        metric_str, parse_metric, validate_k, CollectionInfo, CreateCollectionRequest,
+        ExportParquetRequest, HybridQueryRequest, HybridQueryResponse, ImportParquetRequest,
+        ImportParquetResponse, IndexConfig, InsertRequest, QueryRequest, QueryResponse,
+        VectorResponse,
     },
 };
 #[cfg(feature = "enriched-search")]
@@ -211,12 +212,13 @@ async fn query_vectors(
     Path(name): Path<String>,
     Json(req): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let k = validate_k(req.k)?;
     let start = Instant::now();
     let (results, index_type) = {
         let guard = state.read().await;
         let col = guard.get(&name)?;
         let index_type = col.index_type().to_string();
-        let results = col.search(&req.vector, req.k, req.filter.as_ref(), req.include_payload)?;
+        let results = col.search(&req.vector, k, req.filter.as_ref(), req.include_payload)?;
         (results, index_type)
     };
     metrics::histogram!(
@@ -242,7 +244,7 @@ async fn query_vectors(
                 candidates,
                 query_text: req.query_text.unwrap_or_default(),
                 allowed_teams: req.allowed_teams,
-                top_k: req.k,
+                top_k: k,
             })
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -258,6 +260,7 @@ async fn hybrid_query_vectors(
     Path(name): Path<String>,
     Json(req): Json<HybridQueryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let k = validate_k(req.k)?;
     let start = Instant::now();
     let (results, index_type) = {
         let guard = state.read().await;
@@ -266,7 +269,7 @@ async fn hybrid_query_vectors(
         let results = col.hybrid_search(
             &req.vector,
             &req.text,
-            req.k,
+            k,
             req.rrf_k,
             req.filter.as_ref(),
             req.include_payload,
@@ -296,7 +299,7 @@ async fn hybrid_query_vectors(
                 candidates,
                 query_text: req.text.clone(),
                 allowed_teams: req.allowed_teams,
-                top_k: req.k,
+                top_k: k,
             })
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;

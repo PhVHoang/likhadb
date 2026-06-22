@@ -65,6 +65,18 @@ pub struct VectorResponse {
 
 // ── Query ─────────────────────────────────────────────────────────────────────
 
+/// Upper bound on `k` for any search. Caps result-set size so an open query
+/// endpoint can't be used to scan an entire collection in one request.
+pub const MAX_K: usize = 1024;
+
+pub fn validate_k(k: usize) -> Result<usize, ApiError> {
+    match k {
+        0 => Err(ApiError::bad_request("k must be >= 1")),
+        k if k > MAX_K => Err(ApiError::bad_request(format!("k={k} exceeds max {MAX_K}"))),
+        k => Ok(k),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct QueryRequest {
     pub vector: Vector,
