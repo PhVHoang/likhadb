@@ -74,6 +74,10 @@ pub async fn require_bearer(
 }
 
 /// gRPC interceptor. Gates every method on the service.
+//
+// tonic fixes the closure's return type as `Result<_, Status>`; Status is 176
+// bytes and cannot be boxed here, matching the allow in `grpc/service.rs`.
+#[allow(clippy::result_large_err)]
 pub fn grpc_interceptor(
     token: ApiToken,
 ) -> impl FnMut(tonic::Request<()>) -> Result<tonic::Request<()>, Status> + Clone {

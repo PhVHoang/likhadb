@@ -134,8 +134,9 @@ async fn main() {
     let grpc_token = api_token.clone();
     let grpc_shutdown_rx = shutdown_rx.clone();
     let mut grpc_handle = tokio::spawn(async move {
-        let service = likhadb_server::LikhaDbServer::new(likhadb_server::LikhaDbGrpc::new(grpc_state))
-            .max_decoding_message_size(MAX_GRPC_MSG);
+        let service =
+            likhadb_server::LikhaDbServer::new(likhadb_server::LikhaDbGrpc::new(grpc_state))
+                .max_decoding_message_size(MAX_GRPC_MSG);
         tonic::transport::Server::builder()
             .layer(likhadb_server::GrpcMetricsLayer)
             .add_service(tonic::service::interceptor::InterceptedService::new(
@@ -155,11 +156,11 @@ async fn main() {
             listener,
             likhadb_server::router(state, prometheus, api_token),
         )
-            .with_graceful_shutdown(async move {
-                let mut rx = rest_shutdown_rx;
-                rx.changed().await.ok();
-            })
-            .await
+        .with_graceful_shutdown(async move {
+            let mut rx = rest_shutdown_rx;
+            rx.changed().await.ok();
+        })
+        .await
     });
 
     // Block until a server crashes unexpectedly or a shutdown signal arrives.
