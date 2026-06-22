@@ -128,4 +128,31 @@ mod tests {
         assert!(t.verify("s3cr3t"));
         assert!(!t.verify("wrong"));
     }
+
+    fn grpc_req(auth: Option<&str>) -> tonic::Request<()> {
+        let mut req = tonic::Request::new(());
+        if let Some(t) = auth {
+            req.metadata_mut()
+                .insert("authorization", format!("Bearer {t}").parse().unwrap());
+        }
+        req
+    }
+
+    #[test]
+    fn grpc_interceptor_enforces_token() {
+        let mut intercept = grpc_interceptor(ApiToken::new(Some("tok".to_string())));
+        assert!(intercept(grpc_req(Some("tok"))).is_ok());
+
+        let err = intercept(grpc_req(Some("nope"))).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        let err = intercept(grpc_req(None)).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn grpc_interceptor_open_when_disabled() {
+        let mut intercept = grpc_interceptor(ApiToken::new(None));
+        assert!(intercept(grpc_req(None)).is_ok());
+    }
 }

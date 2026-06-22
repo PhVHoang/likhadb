@@ -127,13 +127,20 @@ async fn main() {
     // Keep a clone of state alive for the final checkpoint after servers drain.
     let checkpoint_state = state.clone();
 
+    // Cap inbound gRPC frames so a single oversized message can't exhaust memory.
+    const MAX_GRPC_MSG: usize = 4 * 1024 * 1024;
+
     let grpc_state = state.clone();
+    let grpc_token = api_token.clone();
     let grpc_shutdown_rx = shutdown_rx.clone();
     let mut grpc_handle = tokio::spawn(async move {
+        let service = likhadb_server::LikhaDbServer::new(likhadb_server::LikhaDbGrpc::new(grpc_state))
+            .max_decoding_message_size(MAX_GRPC_MSG);
         tonic::transport::Server::builder()
             .layer(likhadb_server::GrpcMetricsLayer)
-            .add_service(likhadb_server::LikhaDbServer::new(
-                likhadb_server::LikhaDbGrpc::new(grpc_state),
+            .add_service(tonic::service::interceptor::InterceptedService::new(
+                service,
+                likhadb_server::grpc_interceptor(grpc_token),
             ))
             .serve_with_shutdown(grpc_addr, async move {
                 let mut rx = grpc_shutdown_rx;
