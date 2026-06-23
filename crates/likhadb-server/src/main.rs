@@ -68,6 +68,11 @@ async fn main() {
 
     let state = likhadb_server::AppState::new(wal);
 
+    let api_token = likhadb_server::ApiToken::from_env();
+    if !api_token.is_enabled() {
+        tracing::warn!("LIKHADB_API_TOKEN unset — REST and gRPC are UNAUTHENTICATED (dev mode)");
+    }
+
     // Attach the Tier Q pipeline when both Iceberg and LIKHADB_ENRICH_NAMESPACE
     // are configured. Failures inside the helper are logged; state.pipeline
     // stays None and the server keeps serving non-enriched queries.
@@ -122,13 +127,21 @@ async fn main() {
     // Keep a clone of state alive for the final checkpoint after servers drain.
     let checkpoint_state = state.clone();
 
+    // Cap inbound gRPC frames so a single oversized message can't exhaust memory.
+    const MAX_GRPC_MSG: usize = 4 * 1024 * 1024;
+
     let grpc_state = state.clone();
+    let grpc_token = api_token.clone();
     let grpc_shutdown_rx = shutdown_rx.clone();
     let mut grpc_handle = tokio::spawn(async move {
+        let service =
+            likhadb_server::LikhaDbServer::new(likhadb_server::LikhaDbGrpc::new(grpc_state))
+                .max_decoding_message_size(MAX_GRPC_MSG);
         tonic::transport::Server::builder()
             .layer(likhadb_server::GrpcMetricsLayer)
-            .add_service(likhadb_server::LikhaDbServer::new(
-                likhadb_server::LikhaDbGrpc::new(grpc_state),
+            .add_service(tonic::service::interceptor::InterceptedService::new(
+                service,
+                likhadb_server::grpc_interceptor(grpc_token),
             ))
             .serve_with_shutdown(grpc_addr, async move {
                 let mut rx = grpc_shutdown_rx;
@@ -139,12 +152,15 @@ async fn main() {
 
     let rest_shutdown_rx = shutdown_rx;
     let mut rest_handle = tokio::spawn(async move {
-        axum::serve(listener, likhadb_server::router(state, prometheus))
-            .with_graceful_shutdown(async move {
-                let mut rx = rest_shutdown_rx;
-                rx.changed().await.ok();
-            })
-            .await
+        axum::serve(
+            listener,
+            likhadb_server::router(state, prometheus, api_token),
+        )
+        .with_graceful_shutdown(async move {
+            let mut rx = rest_shutdown_rx;
+            rx.changed().await.ok();
+        })
+        .await
     });
 
     // Block until a server crashes unexpectedly or a shutdown signal arrives.

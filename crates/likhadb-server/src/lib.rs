@@ -1,3 +1,4 @@
+mod auth;
 mod error;
 mod grpc;
 mod metrics;
@@ -7,6 +8,7 @@ mod routes;
 mod state;
 mod types;
 
+pub use auth::{grpc_interceptor, require_bearer, ApiToken};
 pub use grpc::{GrpcMetricsLayer, LikhaDbGrpc, LikhaDbServer};
 #[cfg(feature = "iceberg-recovery")]
 pub use likhadb_lakehouse::{

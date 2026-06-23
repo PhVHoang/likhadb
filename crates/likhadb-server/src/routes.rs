@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -9,26 +9,34 @@ use axum::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
+use tower::limit::GlobalConcurrencyLimitLayer;
+
+/// Reject request bodies larger than this (caps a single oversized insert).
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+/// Cap concurrent in-flight requests across all connections (flood control).
+const MAX_INFLIGHT: usize = 256;
 
 use likhadb_lakehouse::LakehouseExt;
 
 #[cfg(feature = "enriched-search")]
 use crate::types::RankedQueryResponse;
 use crate::{
+    auth::ApiToken,
     error::ApiError,
     state::AppState,
     types::{
-        metric_str, parse_metric, CollectionInfo, CreateCollectionRequest, ExportParquetRequest,
-        HybridQueryRequest, HybridQueryResponse, ImportParquetRequest, ImportParquetResponse,
-        IndexConfig, InsertRequest, QueryRequest, QueryResponse, VectorResponse,
+        metric_str, parse_metric, validate_k, CollectionInfo, CreateCollectionRequest,
+        ExportParquetRequest, HybridQueryRequest, HybridQueryResponse, ImportParquetRequest,
+        ImportParquetResponse, IndexConfig, InsertRequest, QueryRequest, QueryResponse,
+        VectorResponse,
     },
 };
 #[cfg(feature = "enriched-search")]
 use likhadb_query::pipeline::{Candidate, PipelineRequest};
 
-pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
-    Router::new()
-        .route("/health", get(health))
+pub fn router(state: AppState, prometheus: PrometheusHandle, token: ApiToken) -> Router {
+    // /metrics is gated too: it leaks collection names and row counts.
+    let protected = Router::new()
         .route("/metrics", get(metrics_endpoint))
         .route(
             "/collections",
@@ -50,8 +58,20 @@ pub fn router(state: AppState, prometheus: PrometheusHandle) -> Router {
         )
         .route("/collections/:name/import-parquet", post(import_parquet))
         .route("/collections/:name/export-parquet", post(export_parquet))
+        .route_layer(axum::middleware::from_fn_with_state(
+            token,
+            crate::require_bearer,
+        ))
         .layer(Extension(prometheus))
-        .with_state(state)
+        .with_state(state);
+
+    // /health stays public for liveness probes. Body-size and global
+    // concurrency limits wrap everything as a blunt anti-flood / anti-OOM layer.
+    Router::new()
+        .route("/health", get(health))
+        .merge(protected)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(GlobalConcurrencyLimitLayer::new(MAX_INFLIGHT))
 }
 
 async fn health() -> impl IntoResponse {
@@ -203,12 +223,13 @@ async fn query_vectors(
     Path(name): Path<String>,
     Json(req): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let k = validate_k(req.k)?;
     let start = Instant::now();
     let (results, index_type) = {
         let guard = state.read().await;
         let col = guard.get(&name)?;
         let index_type = col.index_type().to_string();
-        let results = col.search(&req.vector, req.k, req.filter.as_ref(), req.include_payload)?;
+        let results = col.search(&req.vector, k, req.filter.as_ref(), req.include_payload)?;
         (results, index_type)
     };
     metrics::histogram!(
@@ -234,7 +255,7 @@ async fn query_vectors(
                 candidates,
                 query_text: req.query_text.unwrap_or_default(),
                 allowed_teams: req.allowed_teams,
-                top_k: req.k,
+                top_k: k,
             })
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -250,6 +271,7 @@ async fn hybrid_query_vectors(
     Path(name): Path<String>,
     Json(req): Json<HybridQueryRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let k = validate_k(req.k)?;
     let start = Instant::now();
     let (results, index_type) = {
         let guard = state.read().await;
@@ -258,7 +280,7 @@ async fn hybrid_query_vectors(
         let results = col.hybrid_search(
             &req.vector,
             &req.text,
-            req.k,
+            k,
             req.rrf_k,
             req.filter.as_ref(),
             req.include_payload,
@@ -288,7 +310,7 @@ async fn hybrid_query_vectors(
                 candidates,
                 query_text: req.text.clone(),
                 allowed_teams: req.allowed_teams,
-                top_k: req.k,
+                top_k: k,
             })
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -298,16 +320,48 @@ async fn hybrid_query_vectors(
     Ok(Json(HybridQueryResponse { results }).into_response())
 }
 
+/// Confine a client-supplied parquet path to `LIKHADB_PARQUET_ROOT`, defeating
+/// `../` traversal and absolute-path escapes. `must_exist` is true for import
+/// (the file must already exist) and false for export (only the parent must).
+fn resolve_under_root(requested: &str, must_exist: bool) -> Result<std::path::PathBuf, ApiError> {
+    let root = std::env::var("LIKHADB_PARQUET_ROOT").map_err(|_| {
+        ApiError::Forbidden("parquet I/O disabled: LIKHADB_PARQUET_ROOT unset".into())
+    })?;
+    let root = std::path::Path::new(&root)
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("bad LIKHADB_PARQUET_ROOT: {e}")))?;
+
+    let joined = root.join(requested);
+    let resolved = if must_exist {
+        joined.canonicalize()
+    } else {
+        // File may not exist yet — canonicalize the parent, re-attach the name.
+        let parent = joined
+            .parent()
+            .ok_or_else(|| ApiError::bad_request("invalid path"))?;
+        let name = joined
+            .file_name()
+            .ok_or_else(|| ApiError::bad_request("invalid path"))?;
+        parent.canonicalize().map(|p| p.join(name))
+    }
+    .map_err(|_| ApiError::Forbidden("path outside parquet root".into()))?;
+
+    if !resolved.starts_with(&root) {
+        return Err(ApiError::Forbidden("path outside parquet root".into()));
+    }
+    Ok(resolved)
+}
+
 async fn import_parquet(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<ImportParquetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = std::path::Path::new(&req.path);
+    let path = resolve_under_root(&req.path, true)?;
     let payload_cols: Vec<&str> = req.payload_cols.iter().map(String::as_str).collect();
     let imported = {
         let mut guard = state.write().await;
-        guard.import_parquet(&name, path, &req.id_col, &req.vector_col, &payload_cols)?
+        guard.import_parquet(&name, &path, &req.id_col, &req.vector_col, &payload_cols)?
     };
     Ok((StatusCode::OK, Json(ImportParquetResponse { imported })))
 }
@@ -317,10 +371,10 @@ async fn export_parquet(
     Path(name): Path<String>,
     Json(req): Json<ExportParquetRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = std::path::Path::new(&req.path);
+    let path = resolve_under_root(&req.path, false)?;
     {
         let guard = state.read().await;
-        guard.export_parquet(&name, path)?;
+        guard.export_parquet(&name, &path)?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

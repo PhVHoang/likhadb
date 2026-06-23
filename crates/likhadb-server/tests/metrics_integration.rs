@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use likhadb_persist::WalManager;
-use likhadb_server::{install_prometheus, router, seed_collection_gauges, AppState};
+use likhadb_server::{install_prometheus, router, seed_collection_gauges, ApiToken, AppState};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -11,7 +11,8 @@ fn build_app() -> (axum::Router, TempDir) {
     let prometheus = install_prometheus();
     seed_collection_gauges(&wal);
     let state = AppState::new(wal);
-    (router(state, prometheus), dir)
+    // Auth disabled so existing assertions exercise the handlers directly.
+    (router(state, prometheus, ApiToken::new(None)), dir)
 }
 
 fn json_request(method: &str, uri: &str, body: &'static str) -> Request<Body> {
