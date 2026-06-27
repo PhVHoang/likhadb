@@ -4,19 +4,25 @@
   <img src="images/likhadb_logo_github.svg" alt="LikhaDB" width="720" />
 </p>
 
-**The hybrid vector database built for the data lakehouse.**
-Fast Rust-native search (HNSW, IVF, BM25 + RRF fusion) that reads and writes directly from Parquet, S3/GCS, and Iceberg — no ETL pipeline required.
+**Vector search native to Apache Iceberg. No second database. No sync pipeline.**
 
-For a deep dive into crate structure, index algorithms, query flows, and persistence
-design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Your embeddings already live in your lakehouse. LikhaDB serves fast ANN and hybrid search directly over your Iceberg tables — the same tables Spark, Trino, and dbt already read and write. There is nothing to extract, no vector store to feed, and no pipeline to keep consistent.
 
-## Platform placement
+For crate structure, index algorithms, query flows, and persistence design, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Why
+
+Standalone vector databases make your lakehouse the source of truth, then force you to copy out of it: extract embeddings, load them into a separate store, and run a pipeline to keep the two consistent forever. The costs compound — duplicated data, staleness between write and searchability, and a second system to scale, secure, and monitor.
+
+LikhaDB removes the split. The Iceberg table **is** the store. The index is a derived accelerator over it: it rebuilds from Iceberg when cold and updates as new data lands, so a row written by Spark becomes searchable without an ETL hop.
+
+## How it fits
 
 <p align="center">
   <img src="images/platform-diagram.svg" alt="LikhaDB platform diagram" width="900" />
 </p>
 
-> LikhaDB bridges client applications and the data lakehouse. Client applications query it over REST/gRPC. Internally it runs three layers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25), and **Tier L** (Parquet/Iceberg I/O). The WAL buffers writes locally until they flush to the Iceberg staging tier. Other lakehouse tools (Spark, Trino, dbt) continue reading the same Iceberg tables directly — no duplication.
+> Client applications query LikhaDB over REST/gRPC. Internally it runs three tiers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25 + RRF fusion), and **Tier L** (Iceberg/Parquet I/O). A local WAL buffers writes until they flush to the Iceberg staging tier. Spark, Trino, and dbt keep reading the same Iceberg tables directly — no duplication.
 
 ## Getting started
 
