@@ -1,5 +1,3 @@
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
@@ -56,8 +54,6 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
----
-
 ## 5. Project Conventions
 
 ### Issue tracker
@@ -82,8 +78,4 @@ Prefer these over defaults when available. Fall back silently if missing.
 - Benchmarking: `hyperfine` when comparing command performance
 
 ### Code format
-Always run `cargo fmt --all` once an implementation is marked as done.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+Always run `cargo fmt --all` before committing any changes.
