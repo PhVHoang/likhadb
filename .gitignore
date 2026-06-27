@@ -1,8 +1,5 @@
 /target/
 Cargo.lock
 .env
-likhadb_tier1_prompt.md
 .DS_Store
-BIZ.md
-datafusion_plan.md
 gtm.md
