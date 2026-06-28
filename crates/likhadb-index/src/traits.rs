@@ -35,6 +35,21 @@ pub trait VectorIndex: Send + Sync {
     /// Index type name — used for observability/logging only.
     fn index_type(&self) -> &'static str;
 
+    /// Fraction of physical nodes that are tombstoned (dead but still resident).
+    /// `0.0` for indexes that delete in place (IVF/Flat). Graph indexes (HNSW)
+    /// accumulate tombstones from deletes and overwrites; this drives the
+    /// compaction trigger.
+    fn tombstone_ratio(&self) -> f32 {
+        0.0
+    }
+
+    /// Rebuild compactly from live entries, dropping tombstones and refreshing
+    /// derived structures (e.g. retraining IVF centroids). Returns a fresh index,
+    /// or `None` for in-place indexes that have nothing to compact.
+    fn compact(&self) -> Option<Box<dyn VectorIndex>> {
+        None
+    }
+
     #[cfg(feature = "serde")]
     fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot;
 }

@@ -120,6 +120,40 @@ fn create_drop_collection_survives_restart() {
     assert_eq!(mgr.list(), vec!["b"]);
 }
 
+// ── Source binding survives restart ────────────────────────────────────────
+
+#[test]
+fn source_binding_survives_restart() {
+    let dir = tmp_dir("binding_restart");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        mgr.set_source_binding(
+            "col",
+            likhadb_core::SourceBinding {
+                source_namespace: vec!["lake".into()],
+                source_table: "embeddings".into(),
+                id_column: "id".into(),
+                vector_column: "embedding".into(),
+                payload_columns: vec!["title".into()],
+            },
+        )
+        .unwrap();
+    }
+
+    // Reopen: replay must restore the binding from the WAL op.
+    let mgr = WalManager::open(&dir).unwrap();
+    let binding = mgr
+        .get("col")
+        .unwrap()
+        .source_binding
+        .as_ref()
+        .expect("binding restored after restart");
+    assert_eq!(binding.source_table, "embeddings");
+    assert_eq!(binding.vector_column, "embedding");
+}
+
 // ── Checkpoint clears WAL ──────────────────────────────────────────────────
 
 #[test]

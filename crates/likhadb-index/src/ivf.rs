@@ -678,6 +678,31 @@ impl VectorIndex for IvfIndex {
         "IvfIndex"
     }
 
+    /// Rebuild from the live set, re-running k-means so centroids reflect the
+    /// current distribution instead of the (possibly stale) training snapshot.
+    /// Deletes are already in place, so the only reason to compact IVF is
+    /// centroid drift (RFC §8.2). Returns `None` while still in the pre-training
+    /// staging buffer, where there are no centroids to refresh.
+    fn compact(&self) -> Option<Box<dyn VectorIndex>> {
+        if !self.trained {
+            return None;
+        }
+        let mut fresh = if self.quantize {
+            IvfIndex::new_sq8(self.dim, self.metric, self.nlist, self.nprobe)
+        } else {
+            IvfIndex::new(self.dim, self.metric, self.nlist, self.nprobe)
+        }
+        .expect("compact reuses already-validated parameters");
+        for id in self.list_ids() {
+            if let Some(vec) = self.get(id) {
+                fresh
+                    .insert(id, vec)
+                    .expect("live vectors already satisfy the dimension invariant");
+            }
+        }
+        Some(Box::new(fresh))
+    }
+
     #[cfg(feature = "serde")]
     fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot {
         crate::snapshot::IndexSnapshot::Ivf(self.clone())
@@ -1258,5 +1283,43 @@ mod tests {
         assert_eq!(idx.len(), 5);
         idx.delete(0);
         assert_eq!(idx.len(), 4);
+    }
+
+    // --- Compaction ---
+
+    #[test]
+    fn compact_none_before_training() {
+        let mut idx = make_ivf(4, 2);
+        insert_n(&mut idx, 3); // still staging
+        assert!(!idx.trained);
+        assert!(idx.compact().is_none(), "nothing to compact pre-training");
+    }
+
+    #[test]
+    fn compact_retrains_and_preserves_live_set() {
+        let mut idx = make_ivf(4, 4);
+        insert_n(&mut idx, 12); // > nlist, so trained
+        assert!(idx.trained);
+        idx.delete(0);
+        idx.delete(1);
+        assert_eq!(idx.len(), 10);
+
+        let compacted = idx.compact().expect("trained IVF compacts");
+        assert_eq!(compacted.len(), 10, "live count preserved");
+
+        let live: std::collections::HashSet<_> = compacted.list_ids().into_iter().collect();
+        assert!(
+            !live.contains(&0) && !live.contains(&1),
+            "deleted ids stay gone"
+        );
+        for id in 2..12 {
+            assert!(live.contains(&id), "live id {id} dropped after compaction");
+        }
+
+        // Exact search (nprobe == nlist) still finds the nearest live vector.
+        let res = compacted
+            .search(&[5.0_f32, 0.0, 0.0, 0.0], 1, None)
+            .unwrap();
+        assert_eq!(res[0].id, 5);
     }
 }

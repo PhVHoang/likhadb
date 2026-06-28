@@ -97,6 +97,7 @@ async fn create_collection(
     let metric = parse_metric(&req.metric)?;
     let name = req.name;
     let enable_fts = req.enable_fts;
+    let source_binding = req.source_binding;
     let mut guard = state.write().await;
     match req.index {
         IndexConfig::Flat => guard.create_collection(name.clone(), req.dim, metric)?,
@@ -121,6 +122,9 @@ async fn create_collection(
     }
     if enable_fts {
         guard.enable_fts(&name)?;
+    }
+    if let Some(binding) = source_binding {
+        guard.set_source_binding(&name, binding)?;
     }
     Ok(StatusCode::CREATED)
 }

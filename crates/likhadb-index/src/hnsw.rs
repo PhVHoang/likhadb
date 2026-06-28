@@ -461,6 +461,44 @@ impl VectorIndex for HnswIndex {
         "HnswIndex"
     }
 
+    /// Fraction of physical graph nodes that are dead — i.e. tombstoned deletes
+    /// plus ghost nodes left behind by overwrites. `nodes.len()` is the physical
+    /// count; `len()` is the live count.
+    fn tombstone_ratio(&self) -> f32 {
+        let physical = self.nodes.len();
+        if physical == 0 {
+            return 0.0;
+        }
+        let dead = physical - self.len();
+        dead as f32 / physical as f32
+    }
+
+    /// Rebuild a fresh graph containing only the live nodes, dropping all
+    /// tombstones and overwrite ghosts. Live nodes are re-inserted in their
+    /// original insertion order (canonical node per id) via the normal `insert`
+    /// path, so graph quality matches a from-scratch build.
+    fn compact(&self) -> Option<Box<dyn VectorIndex>> {
+        let mut fresh = HnswIndex::new(
+            self.dim,
+            self.metric,
+            self.m,
+            self.ef_construction,
+            self.ef_search,
+        )
+        .expect("compact reuses already-validated parameters");
+        for (i, node) in self.nodes.iter().enumerate() {
+            // Skip ghosts (id remapped to a newer node) and tombstoned deletes.
+            if self.id_to_node.get(&node.id) != Some(&i) || self.deleted.contains(&node.id) {
+                continue;
+            }
+            let vec = self.vec_of(i).to_vec();
+            fresh
+                .insert(node.id, vec)
+                .expect("live vectors already satisfy the dimension invariant");
+        }
+        Some(Box::new(fresh))
+    }
+
     #[cfg(feature = "serde")]
     fn to_snapshot(&self) -> crate::snapshot::IndexSnapshot {
         crate::snapshot::IndexSnapshot::Hnsw(self.clone())
@@ -733,5 +771,68 @@ mod tests {
         idx.insert(5, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
         idx.delete(5);
         assert!(idx.get(5).is_none());
+    }
+
+    // --- Compaction ---
+
+    #[test]
+    fn tombstone_ratio_tracks_deletes_and_overwrites() {
+        let mut idx = make_hnsw(4, 16, 20);
+        insert_n(&mut idx, 10);
+        assert_eq!(idx.tombstone_ratio(), 0.0, "fresh index has no tombstones");
+
+        // 3 deletes + 2 overwrites (ghosts) = 5 dead of 12 physical nodes.
+        for id in 0..3 {
+            assert!(idx.delete(id));
+        }
+        idx.insert(8, vec![9.0, 0.0, 0.0, 0.0]).unwrap();
+        idx.insert(9, vec![9.0, 0.0, 0.0, 0.0]).unwrap();
+        assert_eq!(idx.len(), 7);
+        assert!(
+            idx.tombstone_ratio() > 0.2,
+            "expected ratio > 0.2, got {}",
+            idx.tombstone_ratio()
+        );
+    }
+
+    #[test]
+    fn compact_drops_tombstones_and_preserves_live_results() {
+        let mut idx = make_hnsw(8, 32, 32);
+        insert_n(&mut idx, 30);
+        for id in 0..15 {
+            assert!(idx.delete(id));
+        }
+        assert_eq!(idx.len(), 15);
+        assert!(idx.tombstone_ratio() > 0.2);
+
+        // Query sits exactly on a live point; its nearest neighbour is unambiguous.
+        let query = [20.0_f32, 0.0, 0.0, 0.0];
+        assert_eq!(idx.search(&query, 1, None).unwrap()[0].id, 20);
+
+        let compacted = idx.compact().expect("HNSW compacts");
+        assert_eq!(compacted.len(), 15, "live count unchanged");
+        assert_eq!(compacted.tombstone_ratio(), 0.0, "no tombstones remain");
+
+        // Search quality is preserved: the nearest neighbour is still found, and
+        // every returned id is a live one (HNSW is approximate, so we assert the
+        // recall invariant rather than an exact ordering).
+        let after = compacted.search(&query, 5, None).unwrap();
+        assert_eq!(
+            after[0].id, 20,
+            "nearest neighbour preserved after compaction"
+        );
+        assert!(
+            after.iter().all(|r| (15..30).contains(&r.id)),
+            "all results must be live ids, got {:?}",
+            after.iter().map(|r| r.id).collect::<Vec<_>>()
+        );
+
+        // Deleted ids stay gone; surviving ids remain retrievable.
+        for id in 0..15 {
+            assert!(compacted.get(id).is_none(), "deleted id {id} resurfaced");
+        }
+        for id in 15..30 {
+            assert!(compacted.get(id).is_some(), "live id {id} dropped");
+        }
     }
 }

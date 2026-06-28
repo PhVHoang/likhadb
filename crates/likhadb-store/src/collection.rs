@@ -1,9 +1,10 @@
 use std::path::Path;
 
-use likhadb_core::{Metric, Result, ScoredResult, VecId, Vector};
+use likhadb_core::{Metric, Result, ScoredResult, SourceBinding, VecId, Vector};
 use likhadb_index::{FlatIndex, VectorIndex};
 use serde_json::Value;
 
+use crate::delta::DeltaRow;
 use crate::meta::MetaStore;
 
 pub type VectorWithPayload = (Vector, Option<Value>);
@@ -46,6 +47,14 @@ pub struct Collection {
     pub(crate) meta: MetaStore,
     #[cfg(feature = "fts")]
     pub(crate) fts_index: Option<Box<dyn likhadb_fts::FtsIndex>>,
+    /// Optional binding to an externally-written Iceberg source table. `None`
+    /// means internal-writes-only (the default). Consumed by the maintenance
+    /// task in a later phase.
+    pub source_binding: Option<SourceBinding>,
+    /// The source-table snapshot id whose rows are reflected in this index.
+    /// `None` until a source delta has been applied. Held in memory in this
+    /// phase; durable persistence arrives with the Puffin checkpoint work.
+    pub source_snapshot_id: Option<i64>,
 }
 
 impl Collection {
@@ -70,6 +79,8 @@ impl Collection {
             meta: MetaStore::new(),
             #[cfg(feature = "fts")]
             fts_index: None,
+            source_binding: None,
+            source_snapshot_id: None,
         }
     }
 
@@ -193,6 +204,23 @@ impl Collection {
         Ok(existed)
     }
 
+    /// Apply one [`DeltaRow`] through the existing insert/delete contract.
+    ///
+    /// This is the single choke point shared by the WAL → staging recovery path
+    /// and the source-table incremental-maintenance path. `Upsert` overwrites and
+    /// `Delete` is idempotent, so re-applying a partially-applied range is safe.
+    /// `lsn` gates FTS writes exactly as [`Collection::insert`] / [`Collection::delete`] do.
+    pub fn apply_delta_row(&mut self, row: DeltaRow, lsn: u64) -> Result<()> {
+        match row {
+            DeltaRow::Upsert {
+                id,
+                vector,
+                payload,
+            } => self.insert(id, vector, payload, lsn),
+            DeltaRow::Delete { id } => self.delete(id, lsn).map(|_| ()),
+        }
+    }
+
     pub fn search(
         &self,
         query: &[f32],
@@ -278,6 +306,58 @@ mod tests {
         c.insert(3, vec![1.0, 0.0, 0.0], None, u64::MAX).unwrap();
         let (_, payload) = c.get(3).unwrap().unwrap();
         assert!(payload.is_none());
+    }
+
+    #[test]
+    fn apply_delta_row_upsert_overwrites() {
+        let mut c = make_collection();
+        c.apply_delta_row(
+            DeltaRow::Upsert {
+                id: 1,
+                vector: vec![1.0, 0.0, 0.0],
+                payload: Some(json!({"v": 1})),
+            },
+            u64::MAX,
+        )
+        .unwrap();
+        c.apply_delta_row(
+            DeltaRow::Upsert {
+                id: 1,
+                vector: vec![2.0, 0.0, 0.0],
+                payload: Some(json!({"v": 2})),
+            },
+            u64::MAX,
+        )
+        .unwrap();
+
+        let (vec, payload) = c.get(1).unwrap().unwrap();
+        assert_eq!(vec, vec![2.0, 0.0, 0.0], "upsert must overwrite the vector");
+        assert_eq!(
+            payload.unwrap()["v"],
+            2,
+            "upsert must overwrite the payload"
+        );
+    }
+
+    #[test]
+    fn apply_delta_row_delete_is_idempotent() {
+        let mut c = make_collection();
+        c.apply_delta_row(
+            DeltaRow::Upsert {
+                id: 7,
+                vector: vec![0.0, 1.0, 0.0],
+                payload: None,
+            },
+            u64::MAX,
+        )
+        .unwrap();
+
+        // First delete removes it; second delete on the missing id is a no-op.
+        c.apply_delta_row(DeltaRow::Delete { id: 7 }, u64::MAX)
+            .unwrap();
+        c.apply_delta_row(DeltaRow::Delete { id: 7 }, u64::MAX)
+            .unwrap();
+        assert!(c.get(7).unwrap().is_none());
     }
 
     #[test]

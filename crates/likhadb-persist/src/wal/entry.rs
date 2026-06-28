@@ -1,4 +1,4 @@
-use likhadb_core::{Metric, VecId};
+use likhadb_core::{Metric, SourceBinding, VecId};
 use serde_json::Value;
 
 /// Index configuration captured at collection-creation time so WAL replay can
@@ -45,6 +45,10 @@ pub enum WalOp {
     },
     EnableFts {
         collection: String,
+    },
+    SetSourceBinding {
+        collection: String,
+        binding: SourceBinding,
     },
 }
 

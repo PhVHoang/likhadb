@@ -476,6 +476,21 @@ impl WalManager {
         )
     }
 
+    pub fn set_source_binding(
+        &mut self,
+        collection: &str,
+        binding: likhadb_core::SourceBinding,
+    ) -> Result<(), PersistError> {
+        let col = collection.to_owned();
+        self.log_and_apply(
+            WalOp::SetSourceBinding {
+                collection: col.clone(),
+                binding: binding.clone(),
+            },
+            |mgr| mgr.set_source_binding(&col, binding),
+        )
+    }
+
     // ── Read-through ────────────────────────────────────────────────────────
 
     pub fn get(&self, name: &str) -> likhadb_core::Result<&Collection> {

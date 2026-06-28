@@ -2,7 +2,7 @@ use std::path::Path;
 
 use iceberg::NamespaceIdent;
 use likhadb_persist::{PersistError, WalManager};
-use likhadb_store::{CollectionManager, CollectionSnapshot, ManagerSnapshot};
+use likhadb_store::{CollectionManager, CollectionSnapshot, DeltaRow, ManagerSnapshot};
 
 use crate::error::LakehouseError;
 use crate::iceberg_io::{build_rest_catalog, IcebergConfig};
@@ -91,11 +91,16 @@ pub async fn open_with_iceberg(
         // Entries are already sorted by LSN from scan_pending, so insert/delete
         // order is correct even when the same vector ID appears in both.
         for entry in entries {
-            if entry.is_delete {
-                let _ = col.delete(entry.id, u64::MAX);
+            let row = if entry.is_delete {
+                DeltaRow::Delete { id: entry.id }
             } else {
-                let _ = col.insert(entry.id, entry.vector, entry.payload, u64::MAX);
-            }
+                DeltaRow::Upsert {
+                    id: entry.id,
+                    vector: entry.vector,
+                    payload: entry.payload,
+                }
+            };
+            let _ = col.apply_delta_row(row, u64::MAX);
         }
     }
 
