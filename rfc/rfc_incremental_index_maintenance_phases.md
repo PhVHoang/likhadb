@@ -68,15 +68,26 @@ durable watermark. See below.
 
 ---
 
-## Phase 2 — Scan layer (DEFERRED)
+## Phase 2 — Scan layer (READY; spike done)
 
-**Blocker:** `iceberg-rs` 0.4 incremental-scan + delete maturity spike (RFC §12.1).
+**Spike (RFC §12.1) resolved** — see `spike_iceberg_incremental_scan.md`. Findings:
+`iceberg-rs` 0.4 has **no** incremental scan and **no** delete-file resolution (its
+`TableScan` even errors on any delete file: `scan.rs:448`). But the low-level `spec`
+manifest APIs are sufficient to hand-roll a snapshot diff. So:
 
 - New `crates/likhadb-lakehouse/src/incremental_scan.rs`: `scan_delta(table, {from, to}, binding)`
-  yielding `DeltaRow`s. Resolve `SourceBinding`'s namespace/name strings to `TableIdent`.
-- v1 = full rescan (RFC §11.1 — also the expired-snapshot / first-bind fallback) +
-  incremental append scan + data-file-drop deletes.
-- Row-level deletes deferred behind `likhadb_unresolved_delete_files_total`.
+  yielding `DeltaRow`s, implemented as a **manifest diff** (walk `parent_snapshot_id`;
+  select `ManifestFile`s by `added_snapshot_id ∈ (from, to]`; `Added` data files →
+  `Upsert`, `Deleted` data files → `Delete`). Read added data files **directly via
+  parquet/arrow**, not `table.scan()`. Resolve `SourceBinding` namespace/name → `TableIdent`.
+- v1 = full rescan (RFC §11.1 — also the expired-snapshot / first-bind fallback, the
+  one path that may reuse `import_iceberg` for append-only tables) + manifest-diff
+  appends + data-file-drop deletes.
+- Row-level (position/equality) deletes deferred behind
+  `likhadb_unresolved_delete_files_total` — not viable on 0.4 (would require a custom
+  delete-file parser).
+- Recommended before merge: a runtime validation against a seeded REST-catalog + MinIO
+  table (the spike was source-level).
 
 ## Phase 3 — Maintenance task (DEFERRED)
 
