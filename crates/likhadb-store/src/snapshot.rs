@@ -70,6 +70,27 @@ impl Collection {
     }
 }
 
+impl CollectionManager {
+    pub fn to_snapshot(&self) -> ManagerSnapshot {
+        self.to_snapshot_with_lsn(0)
+    }
+
+    pub fn to_snapshot_with_lsn(&self, last_lsn: u64) -> ManagerSnapshot {
+        ManagerSnapshot {
+            collections: self.all_collections().map(|c| c.to_snapshot()).collect(),
+            last_lsn,
+        }
+    }
+
+    pub fn from_snapshot(snap: ManagerSnapshot, data_dir: Option<&Path>) -> Self {
+        let mut mgr = CollectionManager::new();
+        for col_snap in snap.collections {
+            mgr.insert_collection(Collection::from_snapshot(col_snap, data_dir));
+        }
+        mgr
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,26 +123,5 @@ mod tests {
         let restored = Collection::from_snapshot(col.to_snapshot(), None);
         assert!(restored.source_binding.is_none());
         assert!(restored.source_snapshot_id.is_none());
-    }
-}
-
-impl CollectionManager {
-    pub fn to_snapshot(&self) -> ManagerSnapshot {
-        self.to_snapshot_with_lsn(0)
-    }
-
-    pub fn to_snapshot_with_lsn(&self, last_lsn: u64) -> ManagerSnapshot {
-        ManagerSnapshot {
-            collections: self.all_collections().map(|c| c.to_snapshot()).collect(),
-            last_lsn,
-        }
-    }
-
-    pub fn from_snapshot(snap: ManagerSnapshot, data_dir: Option<&Path>) -> Self {
-        let mut mgr = CollectionManager::new();
-        for col_snap in snap.collections {
-            mgr.insert_collection(Collection::from_snapshot(col_snap, data_dir));
-        }
-        mgr
     }
 }
