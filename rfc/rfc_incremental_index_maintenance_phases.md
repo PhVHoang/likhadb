@@ -68,26 +68,33 @@ durable watermark. See below.
 
 ---
 
-## Phase 2 — Scan layer (READY; spike done)
+## Phase 2 — Scan layer (DONE — code; runtime validation pending)
 
-**Spike (RFC §12.1) resolved** — see `spike_iceberg_incremental_scan.md`. Findings:
+**Spike (RFC §12.1) resolved** — see `spike_iceberg_incremental_scan.md`:
 `iceberg-rs` 0.4 has **no** incremental scan and **no** delete-file resolution (its
-`TableScan` even errors on any delete file: `scan.rs:448`). But the low-level `spec`
-manifest APIs are sufficient to hand-roll a snapshot diff. So:
+`TableScan` even errors on any delete file: `scan.rs:448`). The low-level `spec`
+manifest APIs are sufficient to hand-roll a snapshot diff.
 
-- New `crates/likhadb-lakehouse/src/incremental_scan.rs`: `scan_delta(table, {from, to}, binding)`
-  yielding `DeltaRow`s, implemented as a **manifest diff** (walk `parent_snapshot_id`;
-  select `ManifestFile`s by `added_snapshot_id ∈ (from, to]`; `Added` data files →
-  `Upsert`, `Deleted` data files → `Delete`). Read added data files **directly via
-  parquet/arrow**, not `table.scan()`. Resolve `SourceBinding` namespace/name → `TableIdent`.
-- v1 = full rescan (RFC §11.1 — also the expired-snapshot / first-bind fallback, the
-  one path that may reuse `import_iceberg` for append-only tables) + manifest-diff
-  appends + data-file-drop deletes.
-- Row-level (position/equality) deletes deferred behind
-  `likhadb_unresolved_delete_files_total` — not viable on 0.4 (would require a custom
-  delete-file parser).
-- Recommended before merge: a runtime validation against a seeded REST-catalog + MinIO
-  table (the spike was source-level).
+Implemented in `crates/likhadb-lakehouse/src/incremental_scan.rs`:
+- `scan_delta(table, SnapshotDelta{from, to}, binding) -> DeltaScanResult { rows, unresolved_delete_files }`,
+  a **manifest diff**: walk `parent_snapshot_id` to bound `(from, to]`; select
+  `ManifestFile`s by `added_snapshot_id`; `Added` data files → `Upsert`, `Deleted`
+  data files → `Delete` (ids read from the dropped file); changes applied in
+  `snapshot_id` order. Data files read **directly via the parquet reader**, not
+  `table.scan()`. `from = None` ⇒ full scan (first-bind / expired-snapshot fallback);
+  non-ancestor `from` returns an error so the caller can fall back to full rescan.
+- Row-level (position/equality) delete files are counted in
+  `DeltaScanResult.unresolved_delete_files` (→ future `likhadb_unresolved_delete_files_total`),
+  not resolved — RFC §13.3 minimal cut.
+- Reusable decode helpers `batch_to_vectors` / `batch_to_ids` in `parquet_io.rs`
+  (read embedded `FixedSizeList` dim), unit-tested.
+
+**Still pending for this phase:** end-to-end runtime validation of `scan_delta`
+against a seeded REST-catalog + MinIO table (append a snapshot from another writer,
+diff it) — the spike and unit tests cover the API surface and decode logic, but not
+the live manifest-attribution behaviour. Also: `SourceBinding` namespace/name →
+`TableIdent` resolution + `catalog.load_table` lives in the Phase 3 task that calls
+`scan_delta`.
 
 ## Phase 3 — Maintenance task (DEFERRED)
 
