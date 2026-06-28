@@ -231,6 +231,100 @@ impl LakehouseExt for CollectionManager {
     }
 }
 
+/// A decoded source row: `(id, vector, payload)`.
+#[cfg(feature = "iceberg")]
+pub(crate) type DecodedRow = (u64, Vec<f32>, Option<Value>);
+
+/// Decode a record batch into `(id, vector, payload)` tuples using the given
+/// column names. The vector dimension is read from the `FixedSizeList` itself,
+/// so no external dim is required (the collection's `insert` validates dim on
+/// apply). Used by the incremental-scan layer.
+#[cfg(feature = "iceberg")]
+pub(crate) fn batch_to_vectors(
+    batch: &RecordBatch,
+    id_col: &str,
+    vector_col: &str,
+    payload_cols: &[&str],
+) -> Result<Vec<DecodedRow>, LakehouseError> {
+    let schema = batch.schema();
+
+    let id_idx = schema
+        .index_of(id_col)
+        .map_err(|_| LakehouseError::ColumnNotFound(id_col.to_string()))?;
+    let id_raw = batch.column(id_idx);
+    let id_cast: Arc<dyn Array> = if id_raw.data_type() == &DataType::UInt64 {
+        id_raw.clone()
+    } else {
+        arrow::compute::cast(id_raw, &DataType::UInt64)?
+    };
+    let id_array = id_cast
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| {
+            LakehouseError::Schema("id column could not be cast to UInt64".to_string())
+        })?;
+
+    let vec_idx = schema
+        .index_of(vector_col)
+        .map_err(|_| LakehouseError::ColumnNotFound(vector_col.to_string()))?;
+    let vec_array = batch
+        .column(vec_idx)
+        .as_any()
+        .downcast_ref::<FixedSizeListArray>()
+        .ok_or_else(|| {
+            LakehouseError::Schema("vector column is not FixedSizeListArray".to_string())
+        })?;
+    let dim = vec_array.value_length() as usize;
+    let float_values = vec_array
+        .values()
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .ok_or_else(|| LakehouseError::Schema("vector values are not Float32".to_string()))?;
+
+    let payload_col_indices: Vec<(usize, &str)> = payload_cols
+        .iter()
+        .map(|&name| {
+            schema
+                .index_of(name)
+                .map(|idx| (idx, name))
+                .map_err(|_| LakehouseError::ColumnNotFound(name.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for row in 0..batch.num_rows() {
+        let id = id_array.value(row);
+        let start = row * dim;
+        let vec: Vec<f32> = float_values.values()[start..start + dim].to_vec();
+        let payload = build_payload(batch, &payload_col_indices, row);
+        out.push((id, vec, payload));
+    }
+    Ok(out)
+}
+
+/// Decode just the id column of a record batch — used to turn a dropped data
+/// file into a set of delete ids without materialising vectors.
+#[cfg(feature = "iceberg")]
+pub(crate) fn batch_to_ids(batch: &RecordBatch, id_col: &str) -> Result<Vec<u64>, LakehouseError> {
+    let idx = batch
+        .schema()
+        .index_of(id_col)
+        .map_err(|_| LakehouseError::ColumnNotFound(id_col.to_string()))?;
+    let id_raw = batch.column(idx);
+    let id_cast: Arc<dyn Array> = if id_raw.data_type() == &DataType::UInt64 {
+        id_raw.clone()
+    } else {
+        arrow::compute::cast(id_raw, &DataType::UInt64)?
+    };
+    let id_array = id_cast
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| {
+            LakehouseError::Schema("id column could not be cast to UInt64".to_string())
+        })?;
+    Ok((0..id_array.len()).map(|i| id_array.value(i)).collect())
+}
+
 pub(crate) fn build_payload(
     batch: &RecordBatch,
     payload_col_indices: &[(usize, &str)],
@@ -314,6 +408,53 @@ mod tests {
         let mut m = CollectionManager::new();
         m.create_collection(name, dim, Metric::L2).unwrap();
         m
+    }
+
+    #[cfg(feature = "iceberg")]
+    fn sample_batch() -> RecordBatch {
+        let vector_field = Arc::new(Field::new("item", DataType::Float32, false));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false), // non-UInt64 to exercise the cast
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(vector_field.clone(), 2),
+                false,
+            ),
+            Field::new("title", DataType::Utf8, true),
+        ]));
+        let id_array: ArrayRef = Arc::new(Int64Array::from(vec![10i64, 20]));
+        let float_array = Arc::new(Float32Array::from(vec![1.0f32, 2.0, 3.0, 4.0]));
+        let vec_array: ArrayRef =
+            Arc::new(FixedSizeListArray::try_new(vector_field, 2, float_array, None).unwrap());
+        let title_array: ArrayRef = Arc::new(StringArray::from(vec![Some("a"), None]));
+        RecordBatch::try_new(schema, vec![id_array, vec_array, title_array]).unwrap()
+    }
+
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn batch_to_vectors_reads_embedded_dim_and_payload() {
+        let batch = sample_batch();
+        let rows = batch_to_vectors(&batch, "id", "embedding", &["title"]).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 10); // id cast from Int64
+        assert_eq!(rows[0].1, vec![1.0, 2.0]); // dim read from FixedSizeList(2)
+        assert_eq!(rows[0].2.as_ref().unwrap()["title"], "a");
+        assert!(rows[1].2.is_none(), "null payload column → no payload");
+    }
+
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn batch_to_ids_extracts_id_column_only() {
+        let batch = sample_batch();
+        assert_eq!(batch_to_ids(&batch, "id").unwrap(), vec![10, 20]);
+    }
+
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn batch_to_vectors_missing_column_errors() {
+        let batch = sample_batch();
+        let err = batch_to_vectors(&batch, "id", "nope", &[]).unwrap_err();
+        assert!(matches!(err, LakehouseError::ColumnNotFound(_)));
     }
 
     #[test]

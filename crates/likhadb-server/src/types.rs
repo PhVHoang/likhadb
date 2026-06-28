@@ -15,6 +15,10 @@ pub struct CreateCollectionRequest {
     pub index: IndexConfig,
     #[serde(default)]
     pub enable_fts: bool,
+    /// Optional binding to an externally-written Iceberg source table. When set,
+    /// the collection will (in a later phase) reflect source-table snapshot deltas.
+    #[serde(default)]
+    pub source_binding: Option<likhadb_core::SourceBinding>,
 }
 
 #[derive(Deserialize, Default)]

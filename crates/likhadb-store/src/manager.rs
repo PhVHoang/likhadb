@@ -139,6 +139,18 @@ impl CollectionManager {
         self.get_mut(name)?.enable_fts(fts_dir)
     }
 
+    /// Attach a source-table binding to an existing collection. The binding is
+    /// stored on the collection (and persisted in its snapshot); the maintenance
+    /// task that acts on it lands in a later phase.
+    pub fn set_source_binding(
+        &mut self,
+        name: &str,
+        binding: likhadb_core::SourceBinding,
+    ) -> Result<()> {
+        self.get_mut(name)?.source_binding = Some(binding);
+        Ok(())
+    }
+
     #[cfg(feature = "persist")]
     pub(crate) fn insert_collection(&mut self, col: Collection) {
         self.collections.insert(col.name.clone(), col);
@@ -172,6 +184,37 @@ mod tests {
                 .unwrap();
         }
         mgr
+    }
+
+    fn sample_binding() -> likhadb_core::SourceBinding {
+        likhadb_core::SourceBinding {
+            source_namespace: vec!["lake".into()],
+            source_table: "embeddings".into(),
+            id_column: "id".into(),
+            vector_column: "embedding".into(),
+            payload_columns: vec!["title".into()],
+        }
+    }
+
+    #[test]
+    fn set_source_binding_attaches_to_collection() {
+        let mut mgr = CollectionManager::new();
+        mgr.create_collection("c", 4, Metric::L2).unwrap();
+        assert!(mgr.get("c").unwrap().source_binding.is_none());
+
+        mgr.set_source_binding("c", sample_binding()).unwrap();
+        let binding = mgr.get("c").unwrap().source_binding.as_ref().unwrap();
+        assert_eq!(binding.source_table, "embeddings");
+        assert_eq!(binding.vector_column, "embedding");
+    }
+
+    #[test]
+    fn set_source_binding_unknown_collection_errors() {
+        let mut mgr = CollectionManager::new();
+        assert!(matches!(
+            mgr.set_source_binding("nope", sample_binding()),
+            Err(LikhaDbError::CollectionNotFound(_))
+        ));
     }
 
     #[test]

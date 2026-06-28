@@ -77,5 +77,12 @@ pub fn apply_op(
             }
             Ok(())
         }
+        WalOp::SetSourceBinding {
+            collection,
+            binding,
+        } => match mgr.set_source_binding(&collection, binding) {
+            Ok(()) | Err(LikhaDbError::CollectionNotFound(_)) => Ok(()),
+            Err(e) => Err(PersistError::Apply(e)),
+        },
     }
 }

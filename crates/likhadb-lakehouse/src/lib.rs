@@ -9,6 +9,8 @@ pub mod minio;
 
 #[cfg(feature = "iceberg")]
 pub mod iceberg_io;
+#[cfg(feature = "iceberg")]
+pub mod incremental_scan;
 
 pub use error::LakehouseError;
 pub use parquet_io::LakehouseExt;
@@ -18,6 +20,8 @@ pub use minio::{build_minio_store, MinioConfig, ObjectStoreLakehouseExt};
 
 #[cfg(feature = "iceberg")]
 pub use iceberg_io::{build_rest_catalog, IcebergConfig, IcebergLakehouseExt};
+#[cfg(feature = "iceberg")]
+pub use incremental_scan::{scan_delta, DeltaScanResult, SnapshotDelta};
 
 #[cfg(feature = "iceberg-recovery")]
 pub mod iceberg_flusher;

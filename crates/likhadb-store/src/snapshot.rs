@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use likhadb_core::Metric;
+use likhadb_core::{Metric, SourceBinding};
 use likhadb_index::IndexSnapshot;
 
 use crate::collection::Collection;
@@ -16,6 +16,10 @@ pub struct CollectionSnapshot {
     pub meta: MetaStore,
     #[serde(default)]
     pub fts_enabled: bool,
+    #[serde(default)]
+    pub source_binding: Option<SourceBinding>,
+    #[serde(default)]
+    pub source_snapshot_id: Option<i64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -34,6 +38,8 @@ impl Collection {
             index: self.index.to_snapshot(),
             meta: self.meta.clone(),
             fts_enabled: self.is_fts_enabled(),
+            source_binding: self.source_binding.clone(),
+            source_snapshot_id: self.source_snapshot_id,
         }
     }
 
@@ -49,17 +55,17 @@ impl Collection {
     }
 
     pub fn from_snapshot(snap: CollectionSnapshot, data_dir: Option<&Path>) -> Self {
-        let col = Self::with_index(snap.name, snap.dim, snap.metric, snap.index.into_box())
+        let mut col = Self::with_index(snap.name, snap.dim, snap.metric, snap.index.into_box())
             .with_meta(snap.meta);
+        col.source_binding = snap.source_binding;
+        col.source_snapshot_id = snap.source_snapshot_id;
         #[cfg(feature = "fts")]
-        let col = {
-            let mut c = col;
+        {
             if snap.fts_enabled {
-                let fts_dir = data_dir.map(|d| d.join("fts").join(&c.name));
-                let _ = c.enable_fts(fts_dir.as_deref());
+                let fts_dir = data_dir.map(|d| d.join("fts").join(&col.name));
+                let _ = col.enable_fts(fts_dir.as_deref());
             }
-            c
-        };
+        }
         col
     }
 }
@@ -82,5 +88,40 @@ impl CollectionManager {
             mgr.insert_collection(Collection::from_snapshot(col_snap, data_dir));
         }
         mgr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use likhadb_core::Metric;
+
+    #[test]
+    fn binding_and_source_snapshot_id_round_trip() {
+        let mut col = Collection::new("c".into(), 4, Metric::L2);
+        col.source_binding = Some(SourceBinding {
+            source_namespace: vec!["lake".into(), "v1".into()],
+            source_table: "embeddings".into(),
+            id_column: "id".into(),
+            vector_column: "embedding".into(),
+            payload_columns: vec!["title".into()],
+        });
+        col.source_snapshot_id = Some(42);
+
+        let restored = Collection::from_snapshot(col.to_snapshot(), None);
+        let binding = restored
+            .source_binding
+            .expect("binding survives round-trip");
+        assert_eq!(binding.source_namespace, vec!["lake", "v1"]);
+        assert_eq!(binding.source_table, "embeddings");
+        assert_eq!(restored.source_snapshot_id, Some(42));
+    }
+
+    #[test]
+    fn unbound_collection_round_trips_as_none() {
+        let col = Collection::new("c".into(), 4, Metric::L2);
+        let restored = Collection::from_snapshot(col.to_snapshot(), None);
+        assert!(restored.source_binding.is_none());
+        assert!(restored.source_snapshot_id.is_none());
     }
 }
