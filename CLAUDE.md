@@ -65,6 +65,9 @@ Uses the five default canonical label strings. See `docs/agents/triage-labels.md
 ### Domain docs
 Single-context repo — one `CONTEXT.md` + `docs/adr/` at the root. See `docs/agents/domain.md`.
 
+### Codebase map
+Crate skeleton, the four end-to-end flows, and system invariants: `docs/agents/codebase-map.md`. Conceptual architecture: `docs/ARCHITECTURE.md`.
+
 ### Bash commands
 Prefer these over defaults when available. Fall back silently if missing.
 
