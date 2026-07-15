@@ -6,7 +6,7 @@
 | **Status** | Draft (v1) |
 | **Author(s)** | TBD |
 | **Created** | 2026-06-25 |
-| **Last Updated** | 2026-06-25 |
+| **Last Updated** | 2026-07-15 (`iceberg-rs` maturity reassessed — §3, §12.1) |
 | **Target Milestone** | TBD |
 
 ---
@@ -132,12 +132,24 @@ Two row-removal mechanisms exist in Iceberg v2 and both must be handled:
 | **Data-file delete** (`DELETED` manifest entry) | A whole data file dropped between snapshots (e.g. partition overwrite, compaction) | Every live row id that was in that file is a candidate delete; reconcile against what is currently in the index |
 | **Row-level deletes** (position / equality delete files) | v2 merge-on-read deletes specific rows | Resolve to the affected row ids and issue `index.delete(id)` |
 
-**Honesty about `iceberg-rs` maturity (Open Question 12.1):** `iceberg-rs` 0.4's incremental
-scan and v2 delete-file resolution are not as mature as the Java implementation. The append
-(added-files) path is the tractable one and is the v1 target. Equality/position delete
-resolution may need a spike or a constrained source-table contract (see §4 Non-Goals and
-§12.1). We design the apply layer to be delete-source-agnostic so the scan layer can be
-upgraded independently.
+**`iceberg-rs` maturity — reassessed 2026-07-15 (Open Question 12.1):** LikhaDB currently
+depends on `iceberg-rs` **0.4**, whose scan layer has **no** incremental (snapshot-range) scan
+and **no** delete-file resolution (its `TableScan` errors on any delete file). That is why v1
+hand-rolls the snapshot diff (§6.1) and ships append + data-file-drop deletes only. Two facts
+have since changed upstream and should drive an explicit upgrade decision:
+
+- **Delete-file resolution now exists upstream.** `iceberg-rs` added merge-on-read delete
+  support across **0.8.0** (delete-file loading; position + equality deletes on the same
+  `FileScanTask`) and **0.9.0** (positional + equality delete parsing). Row-level delete
+  resolution — deferred in v1 as a library limitation — is therefore *available by upgrading to
+  ≥ 0.9*, not fundamentally blocked.
+- **Incremental scan still does not exist upstream.** The snapshot-range scan (issue #1469 /
+  PR #1470) was closed **unmerged** and folded into a broader CDC changelog-scan effort. The
+  hand-rolled manifest diff in §6.1 remains necessary regardless of crate version.
+
+Latest published crate is **0.9.1** (2026-05-06); 0.10.0 is tagged upstream but not yet on
+crates.io. We design the apply layer to be delete-source-agnostic so the scan layer can adopt
+the upstream delete readers independently (§4 Non-Goals, §12.1).
 
 A source table is bound to a collection by **snapshot id**, not timestamp. The
 `source_snapshot_id` we persist is the exact point the index reflects, so a diff is always a
@@ -169,9 +181,11 @@ precise, replayable range — never a lossy "everything since time T" heuristic.
   visible error; re-binding is a manual, full-rebuild operation.
 - **Embedding-model-version cutover** semantics (new model = new partition/table). Mentioned
   as future work in §10; the snapshot-binding model makes a clean cutover possible later.
-- Equality-delete resolution **if** the §12.1 spike shows it is not viable in `iceberg-rs`
-  0.4 — in that case v1 ships append-only ingestion plus data-file-drop deletes, and
-  row-level deletes wait for a scan-layer upgrade. This is called out, not hidden.
+- Row-level (equality/position) delete resolution in **v1**, which ships against the current
+  `iceberg-rs` **0.4** dependency (append ingestion + data-file-drop deletes only). This is a
+  dependency-version limitation, **not** a design one: `iceberg-rs` ≥ 0.9 provides the delete
+  readers (§3), so a follow-up that upgrades the crate can resolve row-level deletes through the
+  same delete-source-agnostic apply layer. Called out, not hidden.
 - Distributed / multi-writer. Single-node, single owner per collection (consistent with the
   puffin RFC §11.5).
 
@@ -571,11 +585,20 @@ infrastructure. Rejected.
 
 ### 12.1 `iceberg-rs` incremental scan + v2 delete maturity
 
-The load-bearing dependency. Need a spike to confirm: (a) incremental append scan API exists
-and returns added files for a snapshot range; (b) position/equality delete-file resolution is
-usable, or whether v1 must restrict to append + data-file-drop deletes. **Decision needed
-before implementation starts.** The apply layer (§6.2) is deliberately insulated so the scan
-layer can be upgraded later without touching it.
+**Resolved (2026-07-15).** Findings against the current dependency (0.4) and the latest
+published crate (0.9.1):
+
+- **(a) Incremental append scan:** does **not** exist upstream at any released version. The
+  snapshot-range scan (issue #1469 / PR #1470) was closed **unmerged** and folded into a wider
+  CDC changelog-scan effort. v1 hand-rolls the diff via low-level manifest APIs (§6.1); an
+  upgrade does not change this.
+- **(b) Delete-file resolution:** does **not** exist in 0.4 (`TableScan` errors on any delete
+  file) but **does** exist in ≥ 0.9 (position + equality delete readers landed 0.8.0–0.9.0). v1
+  on 0.4 restricts to append + data-file-drop deletes; a follow-up crate upgrade unlocks
+  row-level deletes (tracked as its own issue).
+
+The apply layer (§6.2) stays insulated so the scan layer can adopt the upstream delete readers
+later without touching it.
 
 ### 12.2 Where do `SourceBinding`s live durably?
 
@@ -630,17 +653,19 @@ write path is reachable from `apply_delta_row` without a second source scan.
 
 ### 13.2 Files changed (summary)
 
-See the table in §6.5. New crates: none. New external deps: none beyond what `iceberg-rs`
-already provides (pending the §12.1 spike).
+See the table in §6.5. New crates: none. New external deps: none beyond the existing
+`iceberg-rs` 0.4 dependency for v1 (§12.1 resolved). Resolving row-level deletes later requires
+bumping `iceberg-rs` to ≥ 0.9 — a version upgrade, not a new dependency.
 
-### 13.3 Minimal v1 cut (if §12.1 constrains us)
+### 13.3 Minimal v1 cut
 
-If row-level delete resolution is not viable in `iceberg-rs` 0.4:
+v1 ships against `iceberg-rs` **0.4**, which has no row-level delete resolution (§12.1), so:
 
 - **Ship:** append-only source ingestion + data-file-drop deletes + HNSW/IVF compaction +
   `source_snapshot_id` checkpoint binding + recovery composition.
 - **Defer:** equality/position delete resolution, behind `likhadb_unresolved_delete_files_total`
-  as a guardrail metric.
+  as a guardrail metric. **Unblocked by upgrading to `iceberg-rs` ≥ 0.9** (delete readers landed
+  0.8.0–0.9.0) — a tracked follow-up, not a permanent gap.
 
 This still delivers the differentiator (external appends become searchable with no ETL) and is
 honest about the delete gap rather than silently dropping deletes.
