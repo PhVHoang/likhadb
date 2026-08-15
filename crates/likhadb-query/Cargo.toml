@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 # Enables the DataFusion post-ANN query pipeline (Q1+).
-# Requires arrow 53-compatible datafusion (>=43) and iceberg 0.4.
+# Requires Arrow 57-compatible DataFusion and iceberg 0.9.
 datafusion = [
     "dep:datafusion",
     "dep:iceberg",
@@ -20,8 +20,8 @@ rerank = [
 
 [dependencies]
 thiserror    = { workspace = true }
-datafusion   = { version = "43", optional = true }
-iceberg      = { version = "0.4", optional = true }
+datafusion   = { version = "51", optional = true }
+iceberg      = { version = "0.9.1", optional = true }
 futures-util = { version = "0.3", optional = true }
 tokio        = { version = "1", features = ["rt"], optional = true }
 reqwest      = { version = "0.12", features = ["json"], optional = true }
