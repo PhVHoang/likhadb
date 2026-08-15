@@ -18,6 +18,7 @@ arrow           = "57.1"
 parquet         = { version = "57.1", features = ["arrow"] }
 alloc-stdlib    = { workspace = true }
 serde_json      = { workspace = true }
+serde           = { workspace = true }
 thiserror       = { workspace = true }
 object_store    = { version = "0.11", features = ["aws"], optional = true }
 bytes           = { version = "1", optional = true }
@@ -32,3 +33,4 @@ tokio                = { version = "1", features = ["rt", "time", "sync"], optio
 [dev-dependencies]
 tempfile = "3"
 tokio    = { version = "1", features = ["rt", "macros"] }
+toml     = "0.8"

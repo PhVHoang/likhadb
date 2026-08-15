@@ -1,4 +1,5 @@
 mod error;
+pub mod maintenance;
 pub mod parquet_io;
 
 #[cfg(feature = "persist")]
@@ -13,6 +14,7 @@ pub mod iceberg_io;
 pub mod incremental_scan;
 
 pub use error::LakehouseError;
+pub use maintenance::MaintenanceConfig;
 pub use parquet_io::LakehouseExt;
 
 #[cfg(feature = "minio")]
