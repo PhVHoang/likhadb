@@ -9,7 +9,7 @@ use futures_util::TryStreamExt;
 use iceberg::spec::{
     DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType, Struct, Type,
 };
-use iceberg::transaction::Transaction;
+use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use likhadb_store::CollectionSnapshot;
 use parquet::arrow::ArrowWriter;
@@ -142,21 +142,13 @@ pub async fn write_collection_snapshot<C: Catalog>(
         .build()
         .map_err(|e| LakehouseError::Schema(format!("DataFile build: {e}")))?;
 
-    let mut append = Transaction::new(&table)
-        .fast_append(None, vec![])
-        .map_err(LakehouseError::Iceberg)?;
-
-    append
+    let tx = Transaction::new(&table);
+    let tx = tx
+        .fast_append()
         .add_data_files([data_file])
+        .apply(tx)
         .map_err(LakehouseError::Iceberg)?;
-
-    append
-        .apply()
-        .await
-        .map_err(LakehouseError::Iceberg)?
-        .commit(catalog)
-        .await
-        .map_err(LakehouseError::Iceberg)?;
+    tx.commit(catalog).await.map_err(LakehouseError::Iceberg)?;
 
     Ok(())
 }

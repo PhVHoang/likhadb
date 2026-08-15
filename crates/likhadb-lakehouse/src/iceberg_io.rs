@@ -5,8 +5,10 @@ use arrow::array::{Array, FixedSizeListArray, Float32Array, UInt64Array};
 use arrow::compute;
 use arrow::datatypes::DataType;
 use futures_util::TryStreamExt;
-use iceberg::{Catalog, TableIdent};
-use iceberg_catalog_rest::{RestCatalog, RestCatalogConfig};
+use iceberg::{Catalog, CatalogBuilder, TableIdent};
+use iceberg_catalog_rest::{
+    RestCatalog, RestCatalogBuilder, REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
+};
 use likhadb_store::manager::CollectionManager;
 
 use crate::error::LakehouseError;
@@ -34,7 +36,7 @@ pub struct IcebergConfig {
 ///
 /// The returned catalog uses path-style S3 requests so it works with a local
 /// MinIO instance without virtual-host DNS configuration.
-pub fn build_rest_catalog(config: &IcebergConfig) -> Result<RestCatalog, LakehouseError> {
+pub async fn build_rest_catalog(config: &IcebergConfig) -> Result<RestCatalog, LakehouseError> {
     let mut props = HashMap::from([
         ("s3.endpoint".to_string(), config.s3_endpoint.clone()),
         ("s3.access-key-id".to_string(), config.access_key.clone()),
@@ -44,16 +46,21 @@ pub fn build_rest_catalog(config: &IcebergConfig) -> Result<RestCatalog, Lakehou
         ),
         ("s3.region".to_string(), config.region.clone()),
         ("s3.path-style-access".to_string(), "true".to_string()),
-        ("warehouse".to_string(), config.warehouse.clone()),
+        (
+            REST_CATALOG_PROP_URI.to_string(),
+            config.catalog_uri.clone(),
+        ),
+        (
+            REST_CATALOG_PROP_WAREHOUSE.to_string(),
+            config.warehouse.clone(),
+        ),
     ]);
     props.extend(config.extra_properties.clone());
 
-    let rest_config = RestCatalogConfig::builder()
-        .uri(config.catalog_uri.clone())
-        .props(props)
-        .build();
-
-    Ok(RestCatalog::new(rest_config))
+    RestCatalogBuilder::default()
+        .load("likhadb", props)
+        .await
+        .map_err(LakehouseError::Iceberg)
 }
 
 /// Async Iceberg import trait for `CollectionManager`.

@@ -49,7 +49,7 @@
 
 use std::collections::HashMap;
 
-use iceberg::{Catalog, NamespaceIdent, TableIdent};
+use iceberg::{NamespaceIdent, TableIdent};
 use likhadb_core::Metric;
 use likhadb_lakehouse::iceberg_io::IcebergLakehouseExt;
 use likhadb_store::manager::CollectionManager;
@@ -94,7 +94,9 @@ async fn iceberg_real_round_trip() {
         warehouse: format!("s3://{bucket}/warehouse"),
         extra_properties: HashMap::new(),
     };
-    let catalog = likhadb_lakehouse::build_rest_catalog(&config).unwrap();
+    let catalog = likhadb_lakehouse::build_rest_catalog(&config)
+        .await
+        .unwrap();
 
     let ns = NamespaceIdent::new("likhadb_test".to_string());
     let ident = TableIdent::new(ns, "vectors".to_string());
@@ -129,7 +131,9 @@ async fn missing_collection_errors_before_catalog_hit() {
         warehouse: "s3://unused/warehouse".to_string(),
         extra_properties: HashMap::new(),
     };
-    let catalog = likhadb_lakehouse::build_rest_catalog(&config).unwrap();
+    let catalog = likhadb_lakehouse::build_rest_catalog(&config)
+        .await
+        .unwrap();
 
     let mut manager = CollectionManager::new();
     // "no_such" collection does not exist.

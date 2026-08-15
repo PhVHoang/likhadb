@@ -143,6 +143,7 @@ impl IcebergFlusher {
 
         // 3. Flush each collection's batch to Iceberg staging (no lock held).
         let catalog = build_rest_catalog(&self.config)
+            .await
             .map_err(|e| LakehouseError::Schema(format!("catalog build: {e}")))?;
 
         let mut flush_errors = 0usize;

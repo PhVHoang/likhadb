@@ -14,8 +14,8 @@ iceberg-recovery = ["iceberg", "dep:bincode", "dep:bytes", "likhadb-store/persis
 likhadb-core    = { path = "../likhadb-core" }
 likhadb-store   = { path = "../likhadb-store" }
 likhadb-persist = { path = "../likhadb-persist", optional = true, features = ["fts"] }
-arrow           = "53"
-parquet         = { version = "53", features = ["arrow"] }
+arrow           = "57.1"
+parquet         = { version = "57.1", features = ["arrow"] }
 alloc-stdlib    = { workspace = true }
 serde_json      = { workspace = true }
 thiserror       = { workspace = true }
@@ -24,8 +24,8 @@ bytes           = { version = "1", optional = true }
 bincode         = { workspace = true, optional = true }
 metrics         = { version = "0.23", optional = true }
 tracing         = { version = "0.1", optional = true }
-iceberg              = { version = "0.4", optional = true }
-iceberg-catalog-rest = { version = "0.4", optional = true }
+iceberg              = { version = "0.9.1", optional = true }
+iceberg-catalog-rest = { version = "0.9.1", optional = true }
 futures-util         = { version = "0.3", optional = true }
 tokio                = { version = "1", features = ["rt", "time", "sync"], optional = true }
 

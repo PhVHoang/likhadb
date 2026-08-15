@@ -37,6 +37,7 @@ pub async fn open_with_iceberg(
     namespace: NamespaceIdent,
 ) -> Result<WalManager, RecoveryError> {
     let catalog = build_rest_catalog(config)
+        .await
         .map_err(|e| LakehouseError::Schema(format!("catalog build: {e}")))?;
 
     // 1. Load index snapshots.

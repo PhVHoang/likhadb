@@ -10,7 +10,7 @@ use futures_util::TryStreamExt;
 use iceberg::spec::{
     DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType, Struct, Type,
 };
-use iceberg::transaction::Transaction;
+use iceberg::transaction::{ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use parquet::arrow::ArrowWriter;
 use serde_json::Value;
@@ -156,15 +156,16 @@ pub async fn append_to_staging<C: Catalog>(
 ) -> Result<(), LakehouseError> {
     if batch.rows.is_empty() {
         // No data rows — only advance the watermark.
-        Transaction::new(table)
-            .set_properties(HashMap::from([(
+        let tx = Transaction::new(table);
+        let tx = tx
+            .update_table_properties()
+            .set(
                 STAGING_WATERMARK_PROP.to_string(),
                 new_watermark.to_string(),
-            )]))
-            .map_err(LakehouseError::Iceberg)?
-            .commit(catalog)
-            .await
+            )
+            .apply(tx)
             .map_err(LakehouseError::Iceberg)?;
+        tx.commit(catalog).await.map_err(LakehouseError::Iceberg)?;
         return Ok(());
     }
 
@@ -240,26 +241,21 @@ pub async fn append_to_staging<C: Catalog>(
         .map_err(|e| LakehouseError::Schema(format!("DataFile build: {e}")))?;
 
     // Atomically commit the data file and the watermark property.
-    let mut append = Transaction::new(table)
-        .set_properties(HashMap::from([(
+    let tx = Transaction::new(table);
+    let tx = tx
+        .update_table_properties()
+        .set(
             STAGING_WATERMARK_PROP.to_string(),
             new_watermark.to_string(),
-        )]))
-        .map_err(LakehouseError::Iceberg)?
-        .fast_append(None, vec![])
+        )
+        .apply(tx)
         .map_err(LakehouseError::Iceberg)?;
-
-    append
+    let tx = tx
+        .fast_append()
         .add_data_files([data_file])
+        .apply(tx)
         .map_err(LakehouseError::Iceberg)?;
-
-    append
-        .apply()
-        .await
-        .map_err(LakehouseError::Iceberg)?
-        .commit(catalog)
-        .await
-        .map_err(LakehouseError::Iceberg)?;
+    tx.commit(catalog).await.map_err(LakehouseError::Iceberg)?;
 
     Ok(())
 }

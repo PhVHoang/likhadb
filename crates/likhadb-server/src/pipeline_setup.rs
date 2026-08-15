@@ -41,7 +41,7 @@ pub async fn try_build_pipeline_from_env(iceberg_config: &IcebergConfig) -> Opti
         }
     };
 
-    let catalog = match build_rest_catalog(iceberg_config) {
+    let catalog = match build_rest_catalog(iceberg_config).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "tier Q catalog init failed");
