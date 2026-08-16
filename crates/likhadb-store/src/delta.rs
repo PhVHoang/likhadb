@@ -8,6 +8,7 @@ use serde_json::Value;
 ///
 /// `Upsert` is idempotent (it overwrites), and `Delete` is idempotent (deleting
 /// a missing id is a no-op), so re-applying a partially-applied range is safe.
+#[derive(Clone, Debug)]
 pub enum DeltaRow {
     Upsert {
         id: VecId,
