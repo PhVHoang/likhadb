@@ -468,7 +468,7 @@ True node removal from an HNSW graph requires repairing every in-bound edge to t
 node — expensive and complex, and still leaves the graph quality questionable after many
 removals. Periodic full compaction is simpler, is what the ecosystem does, and composes
 naturally with the checkpoint machinery (a compaction *is* a fresh checkpoint). Rejected as
-over-engineering for single-use code (CLAUDE.md §2).
+over-engineering for this single-use path.
 
 ---
 
