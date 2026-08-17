@@ -896,8 +896,6 @@ Footer JSON shape:
 
 ### 12.4 Relation to other RFCs
 
-- **`rfc/rfc_realtime_insert_vectordb.md`**: this RFC adds the missing index half of the
-  recovery story sketched there. The two-tier staging architecture is unaffected.
 - **`rfc/rfc_datafusion_integration.md`**: DataFusion reads staging snapshots; this RFC
   does not change what DataFusion sees. Statistics files registered via `SetStatistics`
   are ignored by DataFusion when the blob type is unknown.

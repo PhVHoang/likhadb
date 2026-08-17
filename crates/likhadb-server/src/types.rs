@@ -88,11 +88,11 @@ pub struct QueryRequest {
     pub filter: Option<Value>,
     #[serde(default)]
     pub include_payload: bool,
-    /// Team identifiers for Tier Q ACL enforcement.
+    /// Team identifiers for enriched-query ACL enforcement.
     #[cfg(feature = "enriched-search")]
     #[serde(default)]
     pub allowed_teams: Vec<String>,
-    /// Query text for Tier Q bi-encoder / cross-encoder reranking.
+    /// Query text for bi-encoder / cross-encoder reranking.
     #[cfg(feature = "enriched-search")]
     #[serde(default)]
     pub query_text: Option<String>,
@@ -115,7 +115,7 @@ pub struct HybridQueryRequest {
     pub filter: Option<Value>,
     #[serde(default)]
     pub include_payload: bool,
-    /// Team identifiers for Tier Q ACL enforcement.
+    /// Team identifiers for enriched-query ACL enforcement.
     #[cfg(feature = "enriched-search")]
     #[serde(default)]
     pub allowed_teams: Vec<String>,
@@ -130,7 +130,7 @@ pub struct HybridQueryResponse {
     pub results: Vec<ScoredResult>,
 }
 
-// ── Tier Q ranked response ────────────────────────────────────────────────────
+// ── Enriched ranked response ─────────────────────────────────────────────────
 
 #[cfg(feature = "enriched-search")]
 #[derive(Serialize)]

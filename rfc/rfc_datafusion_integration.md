@@ -35,7 +35,7 @@ This RFC proposes integrating **Apache DataFusion** as the post-ANN execution la
 the native Lakehouse vector search pipeline. DataFusion does not replace the ANN index.
 It owns the execution layer that begins where the ANN store's responsibility ends:
 metadata enrichment from Iceberg, access control enforcement, multi-signal score fusion,
-and tiered model-based reranking.
+and model-based reranking.
 
 The result is a unified, SQL-expressible, auditable query layer that sits between the ANN
 store and the final result — with no new storage systems introduced.
@@ -116,15 +116,6 @@ SIMD distance kernels operating over the flat primitive buffer of a `FixedSizeLi
 can process hundreds of embeddings in a single vectorized loop. This is only possible when
 the execution model passes full arrays to UDFs rather than invoking them row-by-row.
 
-### 3.4 Relationship to the Real-Time Insert RFC
-
-This RFC describes the query path only. The staging tier flat scan described in the
-Real-Time Insert RFC (rfc/rfc_realtime_insert_vectordb.md) is a direct extension of the
-enrichment stage specified here — the staging Iceberg table is simply an additional join
-source in Stage 3, searched via the same distance UDFs defined in Section 7.3 of this RFC.
-
----
-
 ## 4. Design Goals
 
 | ID | Goal |
@@ -146,7 +137,7 @@ source in Stage 3, searched via the same distance UDFs defined in Section 7.3 of
 | NG1 | ANN index construction or management | Owned by the ANN store; DataFusion has no role in index build or recall tuning |
 | NG2 | Embedding generation | Owned by the embedding service upstream of the ANN store |
 | NG3 | Sub-millisecond reranking latency | Cross-encoder calls have irreducible model inference cost; DataFusion minimises overhead but cannot eliminate it |
-| NG4 | Replacing the ANN store with DataFusion full-scan | Full-scan over a large Iceberg corpus is not competitive with ANN recall/latency at scale; addressed by the Real-Time Insert RFC for the staging tier only |
+| NG4 | Replacing ANN search with DataFusion full-scan | Full-scan over a large Iceberg corpus is not competitive with ANN recall/latency at scale |
 | NG5 | Distributed DataFusion deployment (Ballista) | The candidate set is small enough for single-node execution; distributed execution adds operational complexity with no benefit at this cardinality |
 
 ---
@@ -692,7 +683,7 @@ correct home for this logic.
 | **Pushdown** | A query optimization where a filter or projection is moved earlier in the execution plan — into the storage layer (Parquet reader or Iceberg file scanner) — to reduce the volume of data read. |
 | **Build side** | In a hash join, the smaller input that is loaded into a hash map. The larger input (probe side) is scanned and matched against the hash map. DataFusion always selects the `candidates` MemTable as the build side automatically. |
 | **Over-retrieval** | Retrieving more than K candidates at each pipeline stage to ensure the true top-K is not lost due to imperfect score ordering at earlier stages. |
-| **RRF** | Reciprocal Rank Fusion. A rank aggregation method that combines ranked lists without requiring score normalization. Used in the Real-Time Insert RFC for staging tier + main index merge; referenced here as a candidate for the staging tier query path extension. |
+| **RRF** | Reciprocal Rank Fusion. A rank aggregation method that combines ranked lists without requiring score normalization. |
 
 ### 13.2 Iceberg Table Schema Requirements
 

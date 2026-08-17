@@ -1,7 +1,7 @@
 use likhadb_core::{FilterFn, Result, ScoredResult, VecId, Vector};
 
-/// The sole coupling point between the store layer and any index implementation.
-/// Tier 2 (IVF) and Tier 3 (HNSW) implement this trait; the store layer is unchanged.
+/// The sole coupling point between collections and any index implementation.
+/// Flat, IVF, and HNSW indexes implement the same contract.
 pub trait VectorIndex: Send + Sync {
     /// Insert or overwrite a vector. Must validate dimension.
     fn insert(&mut self, id: VecId, vec: Vector) -> Result<()>;

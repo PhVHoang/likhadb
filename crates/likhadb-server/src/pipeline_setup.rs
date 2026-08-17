@@ -1,9 +1,9 @@
-//! Wire the Tier Q DataFusion pipeline into server startup.
+//! Wire DataFusion-powered query processing into server startup.
 //!
 //! Reads enrichment configuration from environment variables and constructs a
 //! `Pipeline` whose enrichment session is backed by the same Iceberg REST
 //! catalog used by the WAL flusher. Returns `None` on missing config or any
-//! init failure — the server keeps running, just without Tier Q ranking.
+//! init failure — the server keeps running without enriched ranking.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,10 +23,10 @@ const DEFAULT_DECAY_LAMBDA: f64 = 0.01;
 const DEFAULT_ANN_TOP_N: usize = 500;
 const DEFAULT_TOP_M: usize = 50;
 
-/// Build a Tier Q `Pipeline` from environment variables and the existing
+/// Build a query `Pipeline` from environment variables and the existing
 /// `IcebergConfig`. Returns `None` when the operator has not opted in
 /// (`LIKHADB_ENRICH_NAMESPACE` unset) or when initialization fails for any
-/// reason — failures are logged and the caller continues without Tier Q.
+/// reason — failures are logged and the caller continues without enrichment.
 pub async fn try_build_pipeline_from_env(iceberg_config: &IcebergConfig) -> Option<Arc<Pipeline>> {
     let enrich_ns = match std::env::var("LIKHADB_ENRICH_NAMESPACE") {
         Ok(s) if !s.is_empty() => s,
@@ -36,7 +36,7 @@ pub async fn try_build_pipeline_from_env(iceberg_config: &IcebergConfig) -> Opti
     let query_config = match build_query_config_from_env() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "tier Q config invalid; pipeline disabled");
+            tracing::error!(error = %e, "query configuration invalid; enrichment disabled");
             return None;
         }
     };
@@ -44,7 +44,7 @@ pub async fn try_build_pipeline_from_env(iceberg_config: &IcebergConfig) -> Opti
     let catalog = match build_rest_catalog(iceberg_config).await {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "tier Q catalog init failed");
+            tracing::error!(error = %e, "query catalog initialization failed");
             return None;
         }
     };
@@ -62,7 +62,7 @@ pub async fn try_build_pipeline_from_env(iceberg_config: &IcebergConfig) -> Opti
             tracing::warn!(
                 error = %e,
                 namespace = %enrich_ns,
-                "tier Q session init failed"
+                "query session initialization failed"
             );
             return None;
         }
@@ -76,7 +76,7 @@ pub async fn try_build_pipeline_from_env(iceberg_config: &IcebergConfig) -> Opti
         namespace = %enrich_ns,
         top_n,
         top_m,
-        "tier Q pipeline initialised"
+        "enriched query processing initialized"
     );
     Some(Arc::new(pipeline))
 }
