@@ -25,39 +25,25 @@ LikhaDB — ANN index + FTS + query pipeline
 Your application
 ```
 
-The ANN index (HNSW, IVF, or flat brute-force) is LikhaDB's *recall layer*. Its sole responsibility is: given a query vector, return the top-N most similar candidate IDs and their distances, fast.
+The ANN index (HNSW, IVF, or flat brute-force) finds the top-N most similar candidate IDs and their distances.
 
-Everything downstream of recall — metadata enrichment, ACL enforcement, multi-signal score fusion, and reranking — is handled by Apache DataFusion. DataFusion's columnar SQL execution engine can join the small candidate set against large Iceberg tables with predicate pushdown and partition pruning, making it the right tool for this second stage.
+LikhaDB then handles metadata enrichment, ACL enforcement, multi-signal score fusion, and reranking with Apache DataFusion. DataFusion's columnar SQL execution engine can join the small candidate set against large Iceberg tables with predicate pushdown and partition pruning.
 
 The source of truth for embeddings, metadata, and business data is the Iceberg catalog on cloud object storage. LikhaDB's in-memory index is a *query accelerator* over that data, not an independent store. When the index is cold or empty, it is rebuilt from Iceberg. When new data arrives in Iceberg, the index is updated to reflect it.
 
-## Architecture Layers
+## Application Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                   Application / API layer                    │
-│              REST (port 8080)  +  gRPC (port 50051)          │
-└────────────────────────────┬─────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────┐
-│              Tier Q — DataFusion Query Layer                  │
-│    Enrichment · ACL enforcement · Score fusion · Reranking   │
-└────────────────────────────┬─────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────┐
-│              Tier R — ANN Retrieval                          │
-│         HNSW · IVF · FlatIndex · BM25 · Hybrid RRF           │
-└────────────────────────────┬─────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────┐
-│              Tier L — Lakehouse I/O                          │
-│          Parquet · Object storage · Apache Iceberg           │
+│                        LikhaDB                               │
+│  REST/gRPC · ANN/BM25 · DataFusion · WAL · Parquet/Iceberg  │
+│  Search · enrichment · ACL · ranking · persistence          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### Query flow
 
-End-to-end path from client request to ranked response, covering both the current ANN+RRF path and the planned DataFusion enrichment tier (Tier Q):
+End-to-end path from client request to ranked response, including ANN, RRF, and optional DataFusion enrichment:
 
 ```mermaid
 sequenceDiagram
@@ -68,7 +54,7 @@ sequenceDiagram
     participant Store as Collection<br/>(likhadb-store)
     participant ANN as VectorIndex<br/>(HNSW / IVF / Flat)
     participant FTS as FtsIndex<br/>(Tantivy / BM25)
-    participant Pipeline as QueryPipeline<br/>(likhadb-query · Tier Q)
+    participant Pipeline as QueryPipeline<br/>(likhadb-query)
     participant DF as DataFusion<br/>SessionContext
     participant Parquet as Parquet tables<br/>(documents · authors · acl)
 
@@ -94,7 +80,7 @@ sequenceDiagram
     Server->>Server: drop read lock
 
     rect rgb(230, 245, 255)
-        note over Pipeline,Parquet: Tier Q — DataFusion enrichment (planned, likhadb-query)
+        note over Pipeline,Parquet: Optional DataFusion enrichment and ranking
         Server->>Pipeline: run(candidates, k)
         Pipeline->>DF: register candidates MemTable<br/>(id, ann_distance, ann_rank)
         Pipeline->>DF: Stage 3 — enrichment SQL<br/>JOIN documents, authors<br/>WHERE acl allows + sensitivity != restricted
@@ -113,16 +99,16 @@ sequenceDiagram
     Server-->>Client: { results: [{ id, score, payload }] }
 ```
 
-> **Tier Q note:** stages inside the blue box are implemented by the `likhadb-query` crate (currently in progress — Q0 config/error done; Q1–Q4 planned). Without Tier Q the server returns the ANN/RRF result directly.
+The stages inside the blue box are implemented by the `likhadb-query` crate. When enriched search is disabled, LikhaDB returns the ANN/RRF result directly.
 
 For a deeper walkthrough of each stage see [`rfc/rfc_datafusion_integration.md`](rfc/rfc_datafusion_integration.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 See [`docs/quick-usages.md`](docs/quick-usages.md) for Rust API and REST usage examples.
 
 
-### Tier L — Lakehouse I/O
+### Lakehouse I/O
 
-This tier is what makes LikhaDB a lakehouse-native system rather than an isolated database. It handles reading and writing vector data in formats that are already standard across the lakehouse ecosystem.
+LikhaDB reads and writes vector data in formats that are already standard across the lakehouse ecosystem.
 
 **Parquet** is the canonical format for embedding tables. LikhaDB can bulk-import vectors and metadata from any Parquet file that carries a `FixedSizeList<f32>` column for embeddings and export collections back to Parquet for downstream consumption.
 
@@ -132,9 +118,9 @@ This tier is what makes LikhaDB a lakehouse-native system rather than an isolate
 
 The design principle is: **LikhaDB should not own the data**. The lakehouse owns the data; LikhaDB accelerates queries over it.
 
-### Tier R — ANN Retrieval
+### ANN and Hybrid Search
 
-The retrieval tier has a single responsibility: given a query vector, return the top-N most similar candidates as fast as possible.
+Given a query vector, LikhaDB returns the top-N most similar candidates as fast as possible.
 
 Three index types cover the recall–memory–latency trade-off space:
 
@@ -144,7 +130,7 @@ Three index types cover the recall–memory–latency trade-off space:
 | `IvfIndex` | Approximate; k-means clustering; optional SQ8 quantisation for 4× memory reduction |
 | `HnswIndex` | Approximate; hierarchical proximity graph; sub-200µs on 100k vectors |
 
-All three are interchangeable behind a common `VectorIndex` contract, so the rest of the system — the store layer, the API layer, the DataFusion pipeline — does not care which index backs a given collection. The choice is a deployment parameter tuned to dataset size and latency budget.
+All three are interchangeable behind a common `VectorIndex` contract, so query behavior is consistent regardless of which index backs a collection. The choice is a deployment parameter tuned to dataset size and latency budget.
 
 **Full-text search** is available as an opt-in layer alongside any vector index. When enabled, all string fields in the JSON payload are indexed for BM25 search (via Tantivy). Full-text results are fused with vector results using Reciprocal Rank Fusion (RRF).
 
@@ -156,9 +142,9 @@ rrf_score(id) = 1/(k + rank_vector) + 1/(k + rank_fts)
 
 A document that ranks 2nd by vector similarity and 3rd by keyword relevance will outscore a document that is first in only one modality. This is the right default for knowledge retrieval workloads where the query has both semantic and lexical intent — neither signal alone is sufficient.
 
-### Tier Q — DataFusion Query Layer (in design)
+### DataFusion Query Processing
 
-After the ANN index returns a candidate set (typically 100–500 IDs with their distances), the DataFusion layer takes over. It handles all the business logic that the ANN index is not designed to handle.
+After ANN search returns a candidate set (typically 100–500 IDs with their distances), LikhaDB can use DataFusion for enrichment, filtering, scoring, and reranking.
 
 **Stage 1 — Enrichment.** The candidate IDs are registered as a small in-memory Arrow table. DataFusion joins this table against the relevant Iceberg tables (document text, author metadata, timestamps, sensitivity labels, access control lists). Because the candidate set is tiny (the build side of a hash join), DataFusion's optimizer automatically applies hash-build-on-candidates and probes the large Iceberg tables, with Parquet row-group-level predicate pushdown eliminating most of the data from the scan before it is read.
 
@@ -197,7 +183,7 @@ Both stages use the *materialise-then-call* pattern: the RecordBatch is collecte
 12. Response returned with enriched metadata
 ```
 
-Steps 6–11 are the DataFusion layer. At the current state of the project, the pipeline runs through step 5 and returns the fused candidates directly. Steps 6–11 are the planned Tier Q work.
+Steps 6–11 use DataFusion. When enriched search is disabled, the pipeline returns the fused candidates after step 5.
 
 ## Durability and State
 
@@ -225,10 +211,10 @@ When fully realised, LikhaDB will:
 
 **The index is not the database.** LikhaDB's ANN index accelerates queries over data that the lakehouse owns. The lakehouse is the authoritative store; the index is derived and rebuildable. This keeps the data architecture simple: one source of truth.
 
-**Separation of recall from relevance.** The ANN index is optimised for recall and latency. All business logic — enrichment, access control, multi-signal scoring, reranking — runs downstream in DataFusion. Each layer is independently tunable without affecting the other.
+**One query, appropriate tools.** ANN search is optimised for recall and latency, while DataFusion performs enrichment, access control, multi-signal scoring, and reranking. LikhaDB owns and executes the complete query flow.
 
 **Hybrid by default.** Combining vector similarity and BM25 text search consistently outperforms either signal alone on knowledge retrieval tasks. RRF is a principled, parameter-light fusion method. LikhaDB makes hybrid search a first-class primitive, not an afterthought.
 
-**Lakehouse formats, not proprietary formats.** Embeddings are stored in Parquet. Tables are managed by Iceberg. Any tool that reads Parquet or Iceberg can read LikhaDB's data. There is no vendor lock-in at the storage layer.
+**Lakehouse formats, not proprietary formats.** Embeddings are stored in Parquet. Tables are managed by Iceberg. Any tool that reads Parquet or Iceberg can read LikhaDB's data. There is no vendor lock-in in storage.
 
-**SQL as the business logic layer.** Enrichment, ACL enforcement, and score fusion are expressed in SQL, not scattered across application code. This makes business logic auditable, independently testable, and decoupled from the retrieval path.
+**SQL for business logic.** Enrichment, ACL enforcement, and score fusion are expressed in SQL, not scattered across application code. This makes business logic auditable and independently testable.

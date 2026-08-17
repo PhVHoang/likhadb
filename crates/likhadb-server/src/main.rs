@@ -73,7 +73,7 @@ async fn main() {
         tracing::warn!("LIKHADB_API_TOKEN unset — REST and gRPC are UNAUTHENTICATED (dev mode)");
     }
 
-    // Attach the Tier Q pipeline when both Iceberg and LIKHADB_ENRICH_NAMESPACE
+    // Attach enriched query processing when both Iceberg and LIKHADB_ENRICH_NAMESPACE
     // are configured. Failures inside the helper are logged; state.pipeline
     // stays None and the server keeps serving non-enriched queries.
     #[cfg(feature = "enriched-search")]

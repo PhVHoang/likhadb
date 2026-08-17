@@ -65,7 +65,7 @@ pub struct PipelineResult {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-/// Composed Tier Q pipeline.
+/// Composed query pipeline.
 ///
 /// Construct once at service startup via [`Pipeline::new`] and share across
 /// requests via `Arc<Pipeline>`. Each call to [`Pipeline::execute`] acquires a

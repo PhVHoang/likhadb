@@ -47,9 +47,8 @@ no full rebuild in the steady state.
 
 The design composes with, and does not replace, two existing pieces:
 
-- **The WAL → staging path** (`rfc_realtime_insert_vectordb.md`,
-  `docs/adr/design-review-iceberg-lakehouse.md`) stays the low-latency path for writes that
-  originate *inside* LikhaDB.
+- **The WAL → Iceberg write path** stays the low-latency path for writes that originate
+  *inside* LikhaDB.
 - **Puffin index checkpoints** (`rfc_puffin_backed_index_snapshots.md`) become the durable
   record of *which source snapshot the index reflects*, via one new blob property
   (`likhadb.source_snapshot_id`). That RFC names "incremental index updates
@@ -108,8 +107,7 @@ but not for the *freshness contract* (we don't see other engines' writes).
 
 ### 2.3 What this RFC is *not* trying to be
 
-- Not sub-second insert visibility. That is the two-tier staging design in
-  `rfc_realtime_insert_vectordb.md`. This task operates on a coarse, snapshot-driven cadence
+- Not sub-second insert visibility. This task operates on a coarse, snapshot-driven cadence
   (seconds-to-minutes), matched to how often other engines commit Iceberg snapshots.
 - Not bidirectional. We **read** source-table deltas into the index. We do not write the
   index's view back into the source table. The source table is owned by whoever writes it.
@@ -174,7 +172,7 @@ precise, replayable range — never a lossy "everything since time T" heuristic.
 
 ### Non-Goals
 
-- Sub-second freshness (→ `rfc_realtime_insert_vectordb.md`).
+- Sub-second freshness.
 - Writing the index's state back to the source table.
 - **Schema evolution** of the source embedding column mid-stream (dim change, metric change).
   A schema change on the source aborts maintenance for that collection with an operator-
@@ -618,13 +616,7 @@ Is "compact every N rows" sufficient, or do we need a real distribution-drift me
 (inverted-list length variance, or sampled recall against a holdout)? Cheap heuristic first;
 measure before adding a drift estimator.
 
-### 12.5 Composition ordering with the realtime-insert two-tier RFC
-
-If `rfc_realtime_insert_vectordb.md`'s two-tier (mutable flat staging + main IVF) lands, the
-source delta should feed the **main tier**, not the hot staging tier. Confirm the layering
-when both designs are concurrent.
-
-### 12.6 FTS deltas
+### 12.5 FTS deltas
 
 The same `DeltaRow` stream should update the Tantivy FTS index for bound collections with FTS
 enabled. Tantivy supports `delete_term` + re-add, so apply maps cleanly — but confirm the FTS
@@ -640,9 +632,6 @@ write path is reachable from `apply_delta_row` without a second source scan.
   (manifest-diff-driven merging)" that the puffin RFC lists as an explicit non-goal/future
   RFC (its §4 Non-Goals). It adds exactly one field to the checkpoint blob
   (`likhadb.source_snapshot_id`) and otherwise consumes the puffin machinery unchanged.
-- **`rfc_realtime_insert_vectordb.md`** — orthogonal axis. That RFC reduces *internal* insert
-  latency via a two-tier index; this RFC adds *external* source-table ingestion. They meet
-  only at §12.5.
 - **`docs/adr/design-review-iceberg-lakehouse.md`** — extends the "log is the source of
   truth" model with a second, externally-owned log (the source table). The ADR's WAL/Iceberg
   watermark coexistence is untouched; we add a parallel, independent watermark that is

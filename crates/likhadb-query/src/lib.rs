@@ -1,6 +1,6 @@
 //! DataFusion post-ANN query pipeline for LikhaDB.
 //!
-//! This crate implements the Tier Q (DataFusion Query Layer) described in
+//! This crate implements DataFusion-powered query processing described in
 //! `rfc/rfc_datafusion_integration.md`. It takes the small candidate set
 //! returned by the ANN index and runs it through a sequence of DataFusion
 //! stages: metadata enrichment, access control enforcement, multi-signal

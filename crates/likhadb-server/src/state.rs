@@ -35,7 +35,7 @@ impl AppState {
         }
     }
 
-    /// Attach a Tier Q pipeline. Only available when the `enriched-search` feature is enabled.
+    /// Attach enriched query processing. Only available with the `enriched-search` feature.
     #[cfg(feature = "enriched-search")]
     pub fn with_pipeline(mut self, pipeline: Arc<likhadb_query::pipeline::Pipeline>) -> Self {
         self.pipeline = Some(pipeline);

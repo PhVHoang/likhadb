@@ -18,11 +18,10 @@ LikhaDB removes the split. The Iceberg table **is** the store. The index is a de
 
 ## How it fits
 
-<p align="center">
-  <img src="images/platform-diagram.svg" alt="LikhaDB platform diagram" width="900" />
-</p>
-
-> Client applications query LikhaDB over REST/gRPC. Internally it runs three tiers: **Tier Q** (DataFusion enrichment, ACL, reranking), **Tier R** (ANN recall: HNSW, IVF, BM25 + RRF fusion), and **Tier L** (Iceberg/Parquet I/O). A local WAL buffers writes until they flush to the Iceberg staging tier. Spark, Trino, and dbt keep reading the same Iceberg tables directly — no duplication.
+LikhaDB is one application exposed over REST and gRPC. A query can combine ANN search,
+BM25, DataFusion enrichment, ACL filtering, score fusion, and reranking in one request.
+Parquet and Iceberg integration keep the application connected to the same tables used by
+Spark, Trino, and dbt, while the local WAL protects writes between durable checkpoints.
 
 ## Getting started
 
