@@ -1,10 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use likhadb_core::Metric;
-use likhadb_index::HnswIndex;
 use likhadb_index::{IvfIndex, VectorIndex};
 use likhadb_store::CollectionManager;
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use std::time::Duration;
 
 fn random_vec(rng: &mut StdRng, dim: usize) -> Vec<f32> {
     (0..dim).map(|_| rng.gen::<f32>()).collect()
@@ -223,33 +221,6 @@ fn bench_ivf_search(
     });
 }
 
-/// Measures cumulative HNSW build time: inserts n vectors one by one, timed as a whole.
-fn bench_hnsw_build(
-    c: &mut Criterion,
-    label: &str,
-    n: usize,
-    dim: usize,
-    m: usize,
-    ef_construction: usize,
-) {
-    let mut rng = StdRng::seed_from_u64(42);
-    let vecs: Vec<Vec<f32>> = (0..n).map(|_| random_vec(&mut rng, dim)).collect();
-
-    c.bench_with_input(BenchmarkId::new("hnsw_build", label), &vecs, |b, vecs| {
-        b.iter_batched(
-            || (),
-            |()| {
-                let mut idx = HnswIndex::new(dim, Metric::L2, m, ef_construction, 50).unwrap();
-                for (i, v) in vecs.iter().enumerate() {
-                    idx.insert(i as u64, v.clone()).unwrap();
-                }
-                black_box(idx);
-            },
-            BatchSize::LargeInput,
-        );
-    });
-}
-
 /// Measures post-build HNSW query latency at a given ef_search.
 fn bench_hnsw_search(
     c: &mut Criterion,
@@ -334,23 +305,5 @@ fn benchmarks(c: &mut Criterion) {
     }
 }
 
-/// HNSW build benchmarks in a separate group with tight time limits.
-/// Each iteration rebuilds the full index, so 100k vectors at d=384 takes
-/// several seconds — Criterion's default 100-sample target would take hours.
-fn hnsw_build_benchmarks(c: &mut Criterion) {
-    // Only 10k: a 100k build takes 5-10s per iteration; even sample_size=10
-    // at that cost would run for minutes. The 100k *search* bench (pre-built)
-    // already covers scale for query-time measurements.
-    bench_hnsw_build(c, "10k_d384", 10_000, 384, 16, 200);
-}
-
 criterion_group!(benches, benchmarks);
-criterion_group! {
-    name    = slow_benches;
-    config  = Criterion::default()
-        .sample_size(10)
-        .warm_up_time(Duration::from_secs(1))
-        .measurement_time(Duration::from_secs(15));
-    targets = hnsw_build_benchmarks
-}
-criterion_main!(benches, slow_benches);
+criterion_main!(benches);

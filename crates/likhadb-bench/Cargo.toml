@@ -15,3 +15,7 @@ rayon         = { workspace = true }
 [[bench]]
 name    = "search_bench"
 harness = false
+
+[[bench]]
+name    = "hnsw_build_bench"
+harness = false
