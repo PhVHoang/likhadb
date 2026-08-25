@@ -55,6 +55,7 @@ pub struct HnswIndex {
     m0: usize,              // max edges at layer 0 = 2 * m
     ef_construction: usize, // beam width during graph construction
     ef_search: usize,       // beam width during query
+    use_heuristic: bool,    // diversify graph connections during construction
     ml: f64,                // level multiplier = 1 / ln(m)
 
     nodes: Vec<HnswNode>,
@@ -105,6 +106,7 @@ impl HnswIndex {
             m0: 2 * m,
             ef_construction,
             ef_search,
+            use_heuristic: false,
             ml: 1.0 / (m as f64).ln(),
             nodes: Vec::new(),
             data: Vec::new(),
@@ -113,6 +115,17 @@ impl HnswIndex {
             entry_point: None,
             max_level: 0,
         })
+    }
+
+    /// Enable or disable Algorithm 4's diversity heuristic during graph construction.
+    ///
+    /// The heuristic generally improves graph navigability and recall, especially for
+    /// clustered data, at the cost of extra distance calculations while inserting.
+    /// It is disabled by default so existing callers retain their current build-time
+    /// and graph-selection behavior.
+    pub fn with_heuristic(mut self, use_heuristic: bool) -> Self {
+        self.use_heuristic = use_heuristic;
+        self
     }
 
     /// Sample a random level for a new node using the geometric distribution
@@ -237,8 +250,55 @@ impl HnswIndex {
         candidates.into_iter().map(|(_, idx)| idx).collect()
     }
 
+    /// Select diverse neighbours using Algorithm 4 from the HNSW paper.
+    ///
+    /// Candidates are considered nearest-first. A candidate is accepted only when
+    /// it is closer to the query than to every already-selected neighbour. Rejected
+    /// candidates are retained and used to fill any remaining slots, matching the
+    /// paper's `keepPrunedConnections` option and avoiding under-connected nodes.
+    fn select_neighbors_heuristic(
+        &self,
+        candidates: BinaryHeap<(OrderedFloat<f32>, usize)>,
+        m_max: usize,
+    ) -> Vec<usize> {
+        let sorted = candidates.into_sorted_vec();
+        let mut selected = Vec::with_capacity(m_max);
+        let mut discarded = Vec::new();
+
+        for (distance_to_query, candidate) in sorted {
+            if selected.len() == m_max {
+                break;
+            }
+
+            let is_diverse = selected.iter().all(|&neighbour| {
+                simd_distance(self.metric, self.vec_of(candidate), self.vec_of(neighbour))
+                    > distance_to_query.into_inner()
+            });
+            if is_diverse {
+                selected.push(candidate);
+            } else {
+                discarded.push(candidate);
+            }
+        }
+
+        selected.extend(discarded.into_iter().take(m_max - selected.len()));
+        selected
+    }
+
+    fn select_neighbors_configured(
+        &self,
+        candidates: BinaryHeap<(OrderedFloat<f32>, usize)>,
+        m_max: usize,
+    ) -> Vec<usize> {
+        if self.use_heuristic {
+            self.select_neighbors_heuristic(candidates, m_max)
+        } else {
+            Self::select_neighbors(candidates, m_max)
+        }
+    }
+
     /// Prune node `node_idx`'s neighbour list at `level` to at most `m_max` entries,
-    /// keeping the `m_max` closest.
+    /// using the index's configured neighbour-selection strategy.
     fn prune_connections(&mut self, node_idx: usize, level: usize, m_max: usize) {
         let nbrs = self.nodes[node_idx].layers[level].clone();
         if nbrs.len() <= m_max {
@@ -254,7 +314,7 @@ impl HnswIndex {
                 )
             })
             .collect();
-        self.nodes[node_idx].layers[level] = Self::select_neighbors(heap, m_max);
+        self.nodes[node_idx].layers[level] = self.select_neighbors_configured(heap, m_max);
     }
 
     /// Find the closest non-deleted node in a candidate heap.  Returns `None` if
@@ -331,7 +391,7 @@ impl VectorIndex for HnswIndex {
             }
 
             let m_max = self.m_at(lc);
-            let neighbours = Self::select_neighbors(candidates, m_max);
+            let neighbours = self.select_neighbors_configured(candidates, m_max);
 
             self.nodes[node_idx].layers[lc] = neighbours.clone();
 
@@ -485,7 +545,8 @@ impl VectorIndex for HnswIndex {
             self.ef_construction,
             self.ef_search,
         )
-        .expect("compact reuses already-validated parameters");
+        .expect("compact reuses already-validated parameters")
+        .with_heuristic(self.use_heuristic);
         for (i, node) in self.nodes.iter().enumerate() {
             // Skip ghosts (id remapped to a newer node) and tombstoned deletes.
             if self.id_to_node.get(&node.id) != Some(&i) || self.deleted.contains(&node.id) {
@@ -547,6 +608,59 @@ mod tests {
         assert_eq!(idx.dim(), 4);
         assert_eq!(idx.index_type(), "HnswIndex");
         assert!(idx.is_empty());
+        assert!(!idx.use_heuristic);
+
+        let heuristic = make_hnsw(16, 200, 50).with_heuristic(true);
+        assert!(heuristic.use_heuristic);
+    }
+
+    fn selection_fixture(points: &[[f32; 2]]) -> HnswIndex {
+        let mut idx = HnswIndex::new(2, Metric::L2, 2, 4, 4).unwrap();
+        for (id, point) in points.iter().enumerate() {
+            idx.nodes.push(HnswNode {
+                id: id as VecId,
+                layers: vec![vec![]],
+            });
+            idx.data.extend_from_slice(point);
+        }
+        idx
+    }
+
+    fn candidates_for(idx: &HnswIndex, query: &[f32]) -> BinaryHeap<(OrderedFloat<f32>, usize)> {
+        (0..idx.nodes.len())
+            .map(|node| (OrderedFloat(idx.dist(query, node)), node))
+            .collect()
+    }
+
+    #[test]
+    fn heuristic_selects_diverse_neighbours() {
+        let idx = selection_fixture(&[[1.0, 0.0], [1.1, 0.0], [0.0, 2.0]]);
+        let query = [0.0, 0.0];
+
+        let selected = idx.select_neighbors_heuristic(candidates_for(&idx, &query), 2);
+
+        assert_eq!(selected, vec![0, 2]);
+    }
+
+    #[test]
+    fn heuristic_backfills_discarded_candidates() {
+        let idx = selection_fixture(&[[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]);
+        let query = [0.0, 0.0];
+
+        let selected = idx.select_neighbors_heuristic(candidates_for(&idx, &query), 3);
+
+        assert_eq!(selected, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn heuristic_is_used_when_pruning_reverse_connections() {
+        let mut idx = selection_fixture(&[[0.0, 0.0], [1.0, 0.0], [1.1, 0.0], [0.0, 2.0]])
+            .with_heuristic(true);
+        idx.nodes[0].layers[0] = vec![1, 2, 3];
+
+        idx.prune_connections(0, 0, 2);
+
+        assert_eq!(idx.nodes[0].layers[0], vec![1, 3]);
     }
 
     // --- Basic insert and search ---
@@ -685,23 +799,37 @@ mod tests {
 
     #[test]
     fn high_recall() {
-        // With generous ef_search, HNSW should match FlatIndex on ≥90% of top-10.
+        // With the diversity heuristic and generous ef_search, HNSW should match
+        // FlatIndex on at least 95% of a high-dimensional top-20 query.
         use crate::flat::FlatIndex;
 
         let n = 500usize;
-        let dim = 4;
-        let k = 10;
+        let dim = 128;
+        let k = 20;
 
-        let mut hnsw = HnswIndex::new(dim, Metric::L2, 16, 100, 200).unwrap();
+        let mut hnsw = HnswIndex::new(dim, Metric::L2, 16, 100, 200)
+            .unwrap()
+            .with_heuristic(true);
         let mut flat = FlatIndex::new(dim, Metric::L2);
 
         for i in 0..n as u64 {
-            let v = vec![i as f32, (i % 17) as f32, (i % 7) as f32, (i % 3) as f32];
+            let mut state = i + 1;
+            let v = (0..dim)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state as f32 / u64::MAX as f32
+                })
+                .collect::<Vec<_>>();
             hnsw.insert(i, v.clone()).unwrap();
             flat.insert(i, v).unwrap();
         }
 
-        let query = [50.0_f32, 3.0, 2.0, 1.0];
+        let mut query = flat.get(50).unwrap();
+        for (dimension, value) in query.iter_mut().enumerate() {
+            *value += [-0.001, 0.0, 0.001][dimension % 3];
+        }
         let hnsw_res = hnsw.search(&query, k, None).unwrap();
         let flat_res = flat.search(&query, k, None).unwrap();
 
@@ -709,8 +837,8 @@ mod tests {
         let flat_ids: HashSet<u64> = flat_res.iter().map(|r| r.id).collect();
         let overlap = hnsw_ids.intersection(&flat_ids).count();
         assert!(
-            overlap * 10 >= k * 9,
-            "HNSW recall too low: {overlap}/{k} (expected ≥90%)"
+            overlap * 100 >= k * 95,
+            "HNSW recall too low: {overlap}/{k} (expected ≥95%)"
         );
     }
 
