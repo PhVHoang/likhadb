@@ -16,6 +16,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ── Stage 3: build dependencies, then the binary ─────────────────────────────
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
+# Use the workspace's declared toolchain while cooking dependencies, just as the
+# subsequent source build does after `COPY . .`.
+COPY rust-toolchain.toml rust-toolchain.toml
 # Cook just the server package's dependency tree so bench crates are excluded.
 RUN cargo chef cook --release -p likhadb-server --recipe-path recipe.json
 COPY . .
