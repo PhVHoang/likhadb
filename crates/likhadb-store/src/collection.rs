@@ -175,6 +175,28 @@ impl Collection {
         lsn: u64,
     ) -> Result<()> {
         self.index.insert(id, vec)?;
+        self.apply_insert_payload(id, payload, lsn)
+    }
+
+    /// Insert a batch while allowing the backing index to use its optimized
+    /// bulk-construction path. Payload and FTS updates retain input order.
+    pub fn insert_batch(
+        &mut self,
+        rows: Vec<(VecId, Vector, Option<Value>)>,
+        lsn: u64,
+    ) -> Result<()> {
+        let index_rows: Vec<_> = rows
+            .iter()
+            .map(|(id, vector, _)| (*id, vector.clone()))
+            .collect();
+        self.index.insert_batch(&index_rows)?;
+        for (id, _, payload) in rows {
+            self.apply_insert_payload(id, payload, lsn)?;
+        }
+        Ok(())
+    }
+
+    fn apply_insert_payload(&mut self, id: VecId, payload: Option<Value>, lsn: u64) -> Result<()> {
         if let Some(p) = payload {
             #[cfg(feature = "fts")]
             if let Some(fts) = &mut self.fts_index {
@@ -284,6 +306,23 @@ mod tests {
         let (vec, payload) = c.get(1).unwrap().unwrap();
         assert_eq!(vec, vec![1.0, 2.0, 3.0]);
         assert_eq!(payload.unwrap()["tag"], "a");
+    }
+
+    #[test]
+    fn insert_batch_updates_vectors_and_payloads() {
+        let mut c = make_collection();
+        c.insert_batch(
+            vec![
+                (1, vec![1.0, 2.0, 3.0], Some(json!({"tag": "a"}))),
+                (2, vec![4.0, 5.0, 6.0], Some(json!({"tag": "b"}))),
+            ],
+            u64::MAX,
+        )
+        .unwrap();
+
+        assert_eq!(c.len(), 2);
+        assert_eq!(c.get(1).unwrap().unwrap().1.unwrap()["tag"], "a");
+        assert_eq!(c.get(2).unwrap().unwrap().1.unwrap()["tag"], "b");
     }
 
     #[test]

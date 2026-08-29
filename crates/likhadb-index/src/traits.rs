@@ -6,6 +6,17 @@ pub trait VectorIndex: Send + Sync {
     /// Insert or overwrite a vector. Must validate dimension.
     fn insert(&mut self, id: VecId, vec: Vector) -> Result<()>;
 
+    /// Insert or overwrite a batch of vectors.
+    ///
+    /// Implementations may override this to accelerate bulk construction. The
+    /// default preserves input order by delegating to [`VectorIndex::insert`].
+    fn insert_batch(&mut self, vecs: &[(VecId, Vector)]) -> Result<()> {
+        for (id, vector) in vecs {
+            self.insert(*id, vector.clone())?;
+        }
+        Ok(())
+    }
+
     /// Remove a vector. Returns true if it existed.
     fn delete(&mut self, id: VecId) -> bool;
 
