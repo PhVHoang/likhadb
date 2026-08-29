@@ -1,5 +1,5 @@
 use likhadb_core::Metric;
-use likhadb_persist::{PersistError, WalManager};
+use likhadb_persist::{PersistError, WalConfig, WalManager};
 use serde_json::json;
 
 fn tmp_dir(label: &str) -> std::path::PathBuf {
@@ -15,6 +15,13 @@ fn open_empty_dir_succeeds() {
     let dir = tmp_dir("open_empty");
     let mgr = WalManager::open(&dir).unwrap();
     assert!(mgr.list().is_empty());
+}
+
+#[test]
+fn wal_config_has_bounded_defaults() {
+    let config = WalConfig::default();
+    assert_eq!(config.checkpoint_every_n_entries, 100_000);
+    assert_eq!(config.checkpoint_every_n_bytes, 256 * 1024 * 1024);
 }
 
 // ── Insert survives restart ────────────────────────────────────────────────
@@ -182,6 +189,93 @@ fn checkpoint_clears_wal() {
         .search(&[0.0; 4], 1, None, false)
         .unwrap();
     assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn auto_checkpoint_after_entry_threshold() {
+    let dir = tmp_dir("auto_checkpoint_entries");
+    let config = WalConfig {
+        checkpoint_every_n_entries: 2,
+        checkpoint_every_n_bytes: 0,
+    };
+
+    {
+        let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        assert!(!dir.join("snapshot.bin").exists());
+
+        mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        assert!(dir.join("snapshot.bin").exists());
+        assert_eq!(std::fs::metadata(dir.join("wal.log")).unwrap().len(), 0);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    assert_eq!(
+        mgr.get("col")
+            .unwrap()
+            .search(&[0.0; 4], 10, None, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn auto_checkpoint_after_byte_threshold() {
+    let dir = tmp_dir("auto_checkpoint_bytes");
+    let config = WalConfig {
+        checkpoint_every_n_entries: 0,
+        checkpoint_every_n_bytes: 1,
+    };
+
+    let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+
+    assert!(dir.join("snapshot.bin").exists());
+    assert_eq!(std::fs::metadata(dir.join("wal.log")).unwrap().len(), 0);
+}
+
+#[test]
+fn zero_auto_checkpoint_thresholds_disable_triggers() {
+    let dir = tmp_dir("auto_checkpoint_disabled");
+    let config = WalConfig {
+        checkpoint_every_n_entries: 0,
+        checkpoint_every_n_bytes: 0,
+    };
+
+    let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+        .unwrap();
+
+    assert!(!dir.join("snapshot.bin").exists());
+    assert!(std::fs::metadata(dir.join("wal.log")).unwrap().len() > 0);
+}
+
+#[test]
+fn recovered_entries_count_toward_auto_checkpoint_threshold() {
+    let dir = tmp_dir("auto_checkpoint_recovered_entries");
+    let disabled = WalConfig {
+        checkpoint_every_n_entries: 0,
+        checkpoint_every_n_bytes: 0,
+    };
+
+    {
+        let mut mgr = WalManager::open_with_config(&dir, disabled).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+    }
+
+    let config = WalConfig {
+        checkpoint_every_n_entries: 2,
+        checkpoint_every_n_bytes: 0,
+    };
+    let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
+    mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+        .unwrap();
+
+    assert!(dir.join("snapshot.bin").exists());
+    assert_eq!(std::fs::metadata(dir.join("wal.log")).unwrap().len(), 0);
 }
 
 // ── Recovery across checkpoint boundary ───────────────────────────────────
