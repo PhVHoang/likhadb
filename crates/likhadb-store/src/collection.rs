@@ -185,12 +185,27 @@ impl Collection {
         rows: Vec<(VecId, Vector, Option<Value>)>,
         lsn: u64,
     ) -> Result<()> {
+        self.insert_batch_with_lsns(
+            rows.into_iter()
+                .map(|(id, vector, payload)| (id, vector, payload, lsn))
+                .collect(),
+        )
+    }
+
+    /// Insert a batch whose rows have distinct WAL sequence numbers.
+    ///
+    /// This keeps bulk index construction available to persistence callers
+    /// while ensuring payload and FTS updates observe each row's actual LSN.
+    pub fn insert_batch_with_lsns(
+        &mut self,
+        rows: Vec<(VecId, Vector, Option<Value>, u64)>,
+    ) -> Result<()> {
         let index_rows: Vec<_> = rows
             .iter()
-            .map(|(id, vector, _)| (*id, vector.clone()))
+            .map(|(id, vector, _, _)| (*id, vector.clone()))
             .collect();
         self.index.insert_batch(&index_rows)?;
-        for (id, _, payload) in rows {
+        for (id, _, payload, lsn) in rows {
             self.apply_insert_payload(id, payload, lsn)?;
         }
         Ok(())

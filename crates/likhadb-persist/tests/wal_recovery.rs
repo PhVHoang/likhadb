@@ -41,6 +41,174 @@ fn insert_survives_restart() {
     assert_eq!(results.len(), 10);
 }
 
+// ── Batch insert uses one group commit and survives restart ────────────────
+
+#[test]
+fn batch_insert_survives_restart() {
+    let dir = tmp_dir("batch_insert_restart");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        let inserted = mgr
+            .insert_batch(
+                "col",
+                [
+                    (1, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"tag": "first"}))),
+                    (2, vec![2.0, 0.0, 0.0, 0.0], None),
+                    (3, vec![3.0, 0.0, 0.0, 0.0], Some(json!({"tag": "third"}))),
+                ],
+            )
+            .unwrap();
+        assert_eq!(inserted, 3);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let col = mgr.get("col").unwrap();
+    assert_eq!(col.len(), 3);
+    assert_eq!(col.get(1).unwrap().unwrap().1.unwrap()["tag"], "first");
+    assert_eq!(col.get(3).unwrap().unwrap().1.unwrap()["tag"], "third");
+}
+
+#[test]
+fn empty_batch_does_not_write_to_wal() {
+    let dir = tmp_dir("empty_batch");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    let wal_path = dir.join("wal.log");
+    let len_before = std::fs::metadata(&wal_path).unwrap().len();
+
+    let inserted = mgr
+        .insert_batch(
+            "col",
+            std::iter::empty::<(u64, Vec<f32>, Option<serde_json::Value>)>(),
+        )
+        .unwrap();
+
+    assert_eq!(inserted, 0);
+    assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), len_before);
+    assert!(mgr.get("col").unwrap().is_empty());
+}
+
+#[test]
+fn invalid_batch_is_rejected_before_wal_write() {
+    let dir = tmp_dir("invalid_batch");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    let wal_path = dir.join("wal.log");
+    let len_before = std::fs::metadata(&wal_path).unwrap().len();
+
+    let result = mgr.insert_batch(
+        "col",
+        [
+            (1, vec![1.0, 0.0, 0.0, 0.0], None),
+            (2, vec![2.0, 0.0, 0.0], None),
+        ],
+    );
+
+    assert!(matches!(
+        result,
+        Err(PersistError::Apply(
+            likhadb_core::LikhaDbError::DimMismatch {
+                expected: 4,
+                got: 3
+            }
+        ))
+    ));
+    assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), len_before);
+    assert!(mgr.get("col").unwrap().is_empty());
+}
+
+#[test]
+fn batch_insert_preserves_duplicate_input_order() {
+    let dir = tmp_dir("batch_duplicate_ids");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_hnsw_collection("col", 4, Metric::L2, 4, 8, 4)
+            .unwrap();
+        mgr.insert_batch(
+            "col",
+            [
+                (7, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"v": 1}))),
+                (7, vec![2.0, 0.0, 0.0, 0.0], Some(json!({"v": 2}))),
+            ],
+        )
+        .unwrap();
+
+        let (vector, payload) = mgr.get("col").unwrap().get(7).unwrap().unwrap();
+        assert_eq!(vector, vec![2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(payload.unwrap()["v"], 2);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let (vector, payload) = mgr.get("col").unwrap().get(7).unwrap().unwrap();
+    assert_eq!(vector, vec![2.0, 0.0, 0.0, 0.0]);
+    assert_eq!(payload.unwrap()["v"], 2);
+}
+
+#[cfg(feature = "fts")]
+#[test]
+fn batch_insert_indexes_every_payload_for_fts() {
+    let dir = tmp_dir("batch_fts");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("docs", 4, Metric::L2).unwrap();
+    mgr.enable_fts("docs").unwrap();
+
+    mgr.insert_batch(
+        "docs",
+        [
+            (
+                1,
+                vec![1.0, 0.0, 0.0, 0.0],
+                Some(json!({"body": "alpha canary"})),
+            ),
+            (
+                2,
+                vec![2.0, 0.0, 0.0, 0.0],
+                Some(json!({"body": "beta canary"})),
+            ),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        mgr.get("docs").unwrap().fts_search("alpha", 5).unwrap()[0].id,
+        1
+    );
+    assert_eq!(
+        mgr.get("docs").unwrap().fts_search("beta", 5).unwrap()[0].id,
+        2
+    );
+}
+
+#[cfg(feature = "iceberg-recovery")]
+#[test]
+fn batch_insert_tracks_each_unflushed_entry() {
+    let dir = tmp_dir("batch_unflushed");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    mgr.set_iceberg_watermark(1);
+
+    mgr.insert_batch(
+        "col",
+        [
+            (1, vec![1.0, 0.0, 0.0, 0.0], None),
+            (2, vec![2.0, 0.0, 0.0, 0.0], None),
+        ],
+    )
+    .unwrap();
+
+    let unflushed = mgr.collect_unflushed();
+    assert_eq!(
+        unflushed.iter().map(|entry| entry.lsn).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(unflushed
+        .iter()
+        .all(|entry| matches!(&entry.op, likhadb_persist::wal::WalOp::Insert { .. })));
+}
+
 // ── Delete survives restart ────────────────────────────────────────────────
 
 #[test]
