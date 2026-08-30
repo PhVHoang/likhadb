@@ -21,13 +21,16 @@ use recovery::apply_op;
 
 struct WalWriter {
     file: BufWriter<File>,
+    bytes_written: u64,
 }
 
 impl WalWriter {
     fn open_append(path: &Path) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let bytes_written = file.metadata()?.len();
         Ok(Self {
             file: BufWriter::new(file),
+            bytes_written,
         })
     }
 
@@ -40,9 +43,18 @@ impl WalWriter {
         write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
         self.file.flush().map_err(PersistError::Io)?;
         self.file.get_mut().sync_data().map_err(PersistError::Io)?;
+        self.bytes_written = self.bytes_written.saturating_add(frame_bytes);
         metrics::counter!("likhadb_wal_bytes_written_total").increment(frame_bytes);
         metrics::counter!("likhadb_wal_appends_total").increment(1);
         Ok(())
+    }
+
+    fn bytes_on_disk(&self) -> u64 {
+        self.file
+            .get_ref()
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(self.bytes_written)
     }
 
     fn truncate(path: &Path) -> std::io::Result<()> {
@@ -52,6 +64,21 @@ impl WalWriter {
 }
 
 // ── WalManager ─────────────────────────────────────────────────────────────
+
+/// Point-in-time statistics for a [`WalManager`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WalStats {
+    /// Total entries written since this `WalManager` was opened.
+    pub entries_written: u64,
+    /// Entries newer than the most recent snapshot and pending replay.
+    pub entries_since_checkpoint: u64,
+    /// Approximate byte size of `wal.log` on disk.
+    pub wal_bytes: u64,
+    /// LSN of the last committed entry.
+    pub last_lsn: u64,
+    /// LSN captured in the most recent snapshot (`0` if none exists).
+    pub snapshot_lsn: u64,
+}
 
 /// A `CollectionManager` wrapper that durably logs every mutation to a
 /// Write-Ahead Log before applying it in memory.
@@ -77,6 +104,9 @@ pub struct WalManager {
     inner: CollectionManager,
     wal: WalWriter,
     next_lsn: u64,
+    entries_written: u64,
+    entries_since_checkpoint: u64,
+    snapshot_lsn: u64,
     dir: PathBuf,
     /// Highest LSN confirmed durably committed to Iceberg staging.  Zero means
     /// none.  Only meaningful when the `iceberg-recovery` feature is active.
@@ -117,8 +147,10 @@ impl WalManager {
 
         // 2. Replay WAL entries newer than the snapshot.
         let mut next_lsn = snapshot_lsn + 1;
+        let mut entries_since_checkpoint = 0;
         if wal_path.exists() {
-            next_lsn = Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
+            (next_lsn, entries_since_checkpoint) =
+                Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
         }
 
         // 3. Open WAL for appending.
@@ -128,6 +160,9 @@ impl WalManager {
             inner,
             wal,
             next_lsn,
+            entries_written: 0,
+            entries_since_checkpoint,
+            snapshot_lsn,
             dir: dir.to_path_buf(),
             #[cfg(feature = "iceberg-recovery")]
             iceberg_watermark: 0,
@@ -154,8 +189,10 @@ impl WalManager {
 
         let mut inner = inner;
         let mut next_lsn = iceberg_watermark + 1;
+        let mut entries_since_checkpoint = 0;
         if wal_path.exists() {
-            next_lsn = Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
+            (next_lsn, entries_since_checkpoint) =
+                Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
         }
 
         let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
@@ -163,24 +200,28 @@ impl WalManager {
             inner,
             wal,
             next_lsn,
+            entries_written: 0,
+            entries_since_checkpoint,
+            snapshot_lsn: 0,
             dir: dir.to_path_buf(),
             iceberg_watermark,
             unflushed: Vec::new(),
         })
     }
 
-    /// Replay WAL entries with LSN > `snapshot_lsn`.  Returns the `next_lsn`
-    /// to use for new writes.
+    /// Replay WAL entries with LSN > `snapshot_lsn`. Returns the `next_lsn`
+    /// and number of replayable entries for statistics.
     fn replay_wal(
         path: &Path,
         mgr: &mut CollectionManager,
         snapshot_lsn: u64,
         data_dir: &Path,
-    ) -> Result<u64, PersistError> {
+    ) -> Result<(u64, u64), PersistError> {
         let file = File::open(path).map_err(PersistError::Io)?;
         let reader = BufReader::new(file);
         let mut iter = FrameIter::new(reader);
         let mut last_lsn = snapshot_lsn;
+        let mut entries_since_checkpoint = 0u64;
 
         for item in &mut iter {
             let (payload, stored_crc) = item.map_err(PersistError::Io)?;
@@ -211,9 +252,20 @@ impl WalManager {
 
             apply_op(mgr, entry.op, entry.lsn, Some(data_dir))?;
             last_lsn = entry.lsn;
+            entries_since_checkpoint = entries_since_checkpoint.saturating_add(1);
         }
 
-        Ok(last_lsn + 1)
+        Ok((last_lsn + 1, entries_since_checkpoint))
+    }
+
+    fn record_append(&mut self, _entry: &WalEntry) {
+        self.entries_written = self.entries_written.saturating_add(1);
+        self.entries_since_checkpoint = self.entries_since_checkpoint.saturating_add(1);
+        #[cfg(feature = "iceberg-recovery")]
+        if let Ok(payload) = bincode_opts().serialize(_entry) {
+            self.unflushed.push((_entry.lsn, payload));
+        }
+        self.next_lsn += 1;
     }
 
     /// Append a WAL entry then apply `f` to the inner manager.
@@ -227,11 +279,7 @@ impl WalManager {
             op,
         };
         self.wal.append(&entry)?;
-        #[cfg(feature = "iceberg-recovery")]
-        if let Ok(payload) = bincode_opts().serialize(&entry) {
-            self.unflushed.push((entry.lsn, payload));
-        }
-        self.next_lsn += 1;
+        self.record_append(&entry);
         f(&mut self.inner).map_err(PersistError::Apply)
     }
 
@@ -311,6 +359,7 @@ impl WalManager {
         // Atomic rename then reopen.
         std::fs::rename(&tmp_path, &wal_path).map_err(PersistError::Io)?;
         self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        self.entries_since_checkpoint = entries_to_keep.len() as u64;
 
         Ok(())
     }
@@ -429,11 +478,7 @@ impl WalManager {
             },
         };
         self.wal.append(&entry)?;
-        #[cfg(feature = "iceberg-recovery")]
-        if let Ok(payload_bytes) = bincode_opts().serialize(&entry) {
-            self.unflushed.push((lsn, payload_bytes));
-        }
-        self.next_lsn += 1;
+        self.record_append(&entry);
         self.inner
             .get_mut(&col)?
             .insert(id, vector, payload, lsn)
@@ -451,11 +496,7 @@ impl WalManager {
             },
         };
         self.wal.append(&entry)?;
-        #[cfg(feature = "iceberg-recovery")]
-        if let Ok(payload) = bincode_opts().serialize(&entry) {
-            self.unflushed.push((lsn, payload));
-        }
-        self.next_lsn += 1;
+        self.record_append(&entry);
         self.inner
             .get_mut(&col)?
             .delete(id, lsn)
@@ -501,6 +542,17 @@ impl WalManager {
         self.inner.list()
     }
 
+    /// Return a point-in-time view of WAL activity and checkpoint progress.
+    pub fn stats(&self) -> WalStats {
+        WalStats {
+            entries_written: self.entries_written,
+            entries_since_checkpoint: self.entries_since_checkpoint,
+            wal_bytes: self.wal.bytes_on_disk(),
+            last_lsn: self.next_lsn.saturating_sub(1),
+            snapshot_lsn: self.snapshot_lsn,
+        }
+    }
+
     // ── Checkpoint ─────────────────────────────────────────────────────────
 
     /// Write a snapshot capturing the current state (including `last_lsn`),
@@ -525,6 +577,8 @@ impl WalManager {
             writer.get_mut().sync_all().map_err(PersistError::Io)?;
         }
         std::fs::rename(&tmp_path, &snapshot_path).map_err(PersistError::Io)?;
+        self.snapshot_lsn = last_lsn;
+        self.entries_since_checkpoint = 0;
 
         // Truncate WAL and reopen for appending.
         WalWriter::truncate(&wal_path).map_err(PersistError::Io)?;
