@@ -1,6 +1,13 @@
 use likhadb_core::{Metric, SourceBinding, VecId};
 use serde_json::Value;
 
+/// WAL entry format emitted and understood by this release.
+///
+/// The version is serialized as the first byte of every [`WalEntry`] so a
+/// reader can reject an unsupported format before attempting to decode a
+/// potentially unknown [`WalOp`] variant.
+pub const CURRENT_WAL_VERSION: u8 = 1;
+
 /// Index configuration captured at collection-creation time so WAL replay can
 /// reconstruct the right index type without touching the store layer.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -54,8 +61,19 @@ pub enum WalOp {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WalEntry {
+    pub version: u8,
     pub lsn: u64,
     pub op: WalOp,
+}
+
+impl WalEntry {
+    pub fn new(lsn: u64, op: WalOp) -> Self {
+        Self {
+            version: CURRENT_WAL_VERSION,
+            lsn,
+            op,
+        }
+    }
 }
 
 /// Serialize `Option<serde_json::Value>` as `Option<String>` so bincode (which

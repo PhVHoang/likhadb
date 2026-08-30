@@ -1,5 +1,5 @@
 use likhadb_core::Metric;
-use likhadb_persist::{PersistError, WalManager};
+use likhadb_persist::{wal::CURRENT_WAL_VERSION, PersistError, WalManager};
 use serde_json::json;
 
 fn tmp_dir(label: &str) -> std::path::PathBuf {
@@ -15,6 +15,43 @@ fn open_empty_dir_succeeds() {
     let dir = tmp_dir("open_empty");
     let mgr = WalManager::open(&dir).unwrap();
     assert!(mgr.list().is_empty());
+}
+
+#[test]
+fn wal_entry_starts_with_current_format_version() {
+    let dir = tmp_dir("format_version");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+    }
+
+    let wal = std::fs::read(dir.join("wal.log")).unwrap();
+    assert!(wal.len() > 8, "WAL must contain a complete frame");
+    assert_eq!(wal[8], CURRENT_WAL_VERSION);
+}
+
+#[test]
+fn unsupported_wal_version_is_reported_before_entry_decode() {
+    let dir = tmp_dir("unsupported_version");
+    let future_version = CURRENT_WAL_VERSION.checked_add(1).unwrap();
+    let payload = [future_version];
+    let checksum = crc32fast::hash(&payload);
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&checksum.to_le_bytes());
+    frame.extend_from_slice(&payload);
+    std::fs::write(dir.join("wal.log"), frame).unwrap();
+
+    let result = WalManager::open(&dir);
+    assert!(
+        matches!(
+            result,
+            Err(PersistError::UnsupportedVersion { found, max })
+                if found == future_version && max == CURRENT_WAL_VERSION
+        ),
+        "future WAL format should surface PersistError::UnsupportedVersion"
+    );
 }
 
 // ── Insert survives restart ────────────────────────────────────────────────

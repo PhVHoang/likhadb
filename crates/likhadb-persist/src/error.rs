@@ -8,6 +8,8 @@ pub enum PersistError {
     Encode(#[source] bincode::Error),
     #[error("decode error: {0}")]
     Decode(#[source] bincode::Error),
+    #[error("unsupported WAL version {found}; maximum supported version is {max}")]
+    UnsupportedVersion { found: u8, max: u8 },
     #[error("WAL CRC mismatch at mid-log frame: expected {expected:#010x}, got {got:#010x}")]
     Crc { expected: u32, got: u32 },
     #[error("WAL replay error: {0}")]

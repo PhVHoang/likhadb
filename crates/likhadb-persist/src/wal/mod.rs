@@ -2,7 +2,7 @@ mod entry;
 mod frame;
 mod recovery;
 
-pub use entry::{IndexKind, WalEntry, WalOp};
+pub use entry::{IndexKind, WalEntry, WalOp, CURRENT_WAL_VERSION};
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
@@ -16,6 +16,25 @@ use serde_json::Value;
 use crate::{bincode_opts, PersistError};
 use frame::{checksum, write_frame, FrameIter};
 use recovery::apply_op;
+
+fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
+    // `version` is deliberately the first serialized field, and bincode
+    // encodes a u8 as one byte. Inspect it before decoding `WalOp` so future
+    // variants produce a useful version error instead of a generic decode
+    // failure.
+    if let Some(&found) = payload.first() {
+        if found != CURRENT_WAL_VERSION {
+            return Err(PersistError::UnsupportedVersion {
+                found,
+                max: CURRENT_WAL_VERSION,
+            });
+        }
+    }
+
+    bincode_opts()
+        .deserialize(payload)
+        .map_err(PersistError::Decode)
+}
 
 // ── WalWriter ──────────────────────────────────────────────────────────────
 
@@ -201,9 +220,7 @@ impl WalManager {
                 });
             }
 
-            let entry: WalEntry = bincode_opts()
-                .deserialize(&payload)
-                .map_err(PersistError::Decode)?;
+            let entry = decode_entry(&payload)?;
 
             if entry.lsn <= snapshot_lsn {
                 continue;
@@ -222,10 +239,7 @@ impl WalManager {
         F: FnOnce(&mut CollectionManager) -> likhadb_core::Result<()>,
     {
         let _span = tracing::debug_span!("wal_append", lsn = self.next_lsn).entered();
-        let entry = WalEntry {
-            lsn: self.next_lsn,
-            op,
-        };
+        let entry = WalEntry::new(self.next_lsn, op);
         self.wal.append(&entry)?;
         #[cfg(feature = "iceberg-recovery")]
         if let Ok(payload) = bincode_opts().serialize(&entry) {
@@ -282,9 +296,7 @@ impl WalManager {
                 if frame::checksum(&payload) != stored_crc {
                     break; // Treat corrupt tail as end of log.
                 }
-                let entry: WalEntry = bincode_opts()
-                    .deserialize(&payload)
-                    .map_err(PersistError::Decode)?;
+                let entry = decode_entry(&payload)?;
                 if entry.lsn > watermark {
                     kept.push(entry);
                 }
@@ -419,15 +431,15 @@ impl WalManager {
         let col = collection.to_owned();
         let lsn = self.next_lsn;
         let _span = tracing::debug_span!("wal_append", lsn = lsn).entered();
-        let entry = WalEntry {
+        let entry = WalEntry::new(
             lsn,
-            op: WalOp::Insert {
+            WalOp::Insert {
                 collection: col.clone(),
                 id,
                 vector: vector.clone(),
                 payload: payload.clone(),
             },
-        };
+        );
         self.wal.append(&entry)?;
         #[cfg(feature = "iceberg-recovery")]
         if let Ok(payload_bytes) = bincode_opts().serialize(&entry) {
@@ -443,13 +455,13 @@ impl WalManager {
     pub fn delete(&mut self, collection: &str, id: VecId) -> Result<bool, PersistError> {
         let col = collection.to_owned();
         let lsn = self.next_lsn;
-        let entry = WalEntry {
+        let entry = WalEntry::new(
             lsn,
-            op: WalOp::Delete {
+            WalOp::Delete {
                 collection: col.clone(),
                 id,
             },
-        };
+        );
         self.wal.append(&entry)?;
         #[cfg(feature = "iceberg-recovery")]
         if let Ok(payload) = bincode_opts().serialize(&entry) {
