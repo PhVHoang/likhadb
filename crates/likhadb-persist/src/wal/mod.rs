@@ -17,6 +17,35 @@ use crate::{bincode_opts, PersistError};
 use frame::{checksum, write_frame, FrameIter};
 use recovery::apply_op;
 
+/// A WAL entry that could not be applied during recovery.
+#[derive(Debug)]
+pub struct SkippedWalEntry {
+    /// Log sequence number of the skipped entry.
+    pub lsn: u64,
+    /// Application error that prevented the entry from being replayed.
+    pub error: PersistError,
+}
+
+/// Summary of application-level WAL recovery outcomes.
+///
+/// Structural WAL failures such as I/O, decoding, and mid-log CRC errors remain
+/// fatal and are returned from [`WalManager::open`]. Application failures are
+/// recorded here so callers can decide whether to use the recovered manager.
+#[derive(Debug, Default)]
+pub struct RecoveryReport {
+    /// Number of post-snapshot entries applied successfully.
+    pub entries_replayed: u64,
+    /// Post-snapshot entries skipped because their operations could not apply.
+    pub entries_skipped: Vec<SkippedWalEntry>,
+}
+
+impl RecoveryReport {
+    /// Whether every post-snapshot entry applied successfully.
+    pub fn is_clean(&self) -> bool {
+        self.entries_skipped.is_empty()
+    }
+}
+
 // ── WalWriter ──────────────────────────────────────────────────────────────
 
 struct WalWriter {
@@ -92,7 +121,9 @@ impl Default for WalConfig {
 /// On [`WalManager::open`], if a snapshot exists it is loaded first.  Then any
 /// WAL entries with LSN greater than the snapshot's `last_lsn` are replayed in
 /// order.  A truncated or CRC-corrupt tail frame (crash mid-write) is silently
-/// discarded — it was never committed.
+/// discarded — it was never committed. Entries that cannot be applied are
+/// skipped and recorded in [`WalManager::recovery_report`]; structural WAL
+/// errors remain fatal.
 ///
 /// # Error type
 /// All write methods return `Result<_, PersistError>` rather than
@@ -105,6 +136,7 @@ pub struct WalManager {
     wal_entries: u64,
     next_lsn: u64,
     dir: PathBuf,
+    recovery_report: RecoveryReport,
     /// Highest LSN confirmed durably committed to Iceberg staging.  Zero means
     /// none.  Only meaningful when the `iceberg-recovery` feature is active.
     #[cfg(feature = "iceberg-recovery")]
@@ -151,8 +183,10 @@ impl WalManager {
         // 2. Replay WAL entries newer than the snapshot.
         let mut next_lsn = snapshot_lsn + 1;
         let mut wal_entries = 0;
+        let mut recovery_report = RecoveryReport::default();
         if wal_path.exists() {
-            (next_lsn, wal_entries) = Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
+            (next_lsn, wal_entries, recovery_report) =
+                Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
         }
 
         // 3. Open WAL for appending.
@@ -165,6 +199,7 @@ impl WalManager {
             wal_entries,
             next_lsn,
             dir: dir.to_path_buf(),
+            recovery_report,
             #[cfg(feature = "iceberg-recovery")]
             iceberg_watermark: 0,
             #[cfg(feature = "iceberg-recovery")]
@@ -207,8 +242,9 @@ impl WalManager {
         let mut inner = inner;
         let mut next_lsn = iceberg_watermark + 1;
         let mut wal_entries = 0;
+        let mut recovery_report = RecoveryReport::default();
         if wal_path.exists() {
-            (next_lsn, wal_entries) =
+            (next_lsn, wal_entries, recovery_report) =
                 Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
         }
 
@@ -220,24 +256,27 @@ impl WalManager {
             wal_entries,
             next_lsn,
             dir: dir.to_path_buf(),
+            recovery_report,
             iceberg_watermark,
             unflushed: Vec::new(),
         })
     }
 
-    /// Replay WAL entries with LSN > `snapshot_lsn`. Returns the `next_lsn`
-    /// and number of valid entries currently occupying the WAL.
+    /// Replay WAL entries with LSN > `snapshot_lsn`. Returns the `next_lsn`,
+    /// number of valid entries currently occupying the WAL, and application
+    /// recovery report.
     fn replay_wal(
         path: &Path,
         mgr: &mut CollectionManager,
         snapshot_lsn: u64,
         data_dir: &Path,
-    ) -> Result<(u64, u64), PersistError> {
+    ) -> Result<(u64, u64, RecoveryReport), PersistError> {
         let file = File::open(path).map_err(PersistError::Io)?;
         let reader = BufReader::new(file);
         let mut iter = FrameIter::new(reader);
         let mut last_lsn = snapshot_lsn;
         let mut wal_entries = 0u64;
+        let mut report = RecoveryReport::default();
 
         for item in &mut iter {
             let (payload, stored_crc) = item.map_err(PersistError::Io)?;
@@ -267,11 +306,21 @@ impl WalManager {
                 continue;
             }
 
-            apply_op(mgr, entry.op, entry.lsn, Some(data_dir))?;
+            let lsn = entry.lsn;
+            match apply_op(mgr, entry.op, lsn, Some(data_dir)) {
+                Ok(()) => {
+                    report.entries_replayed = report.entries_replayed.saturating_add(1);
+                }
+                Err(error @ PersistError::Apply(_)) => {
+                    tracing::warn!(lsn, error = %error, "skipping WAL entry during recovery");
+                    report.entries_skipped.push(SkippedWalEntry { lsn, error });
+                }
+                Err(error) => return Err(error),
+            }
             last_lsn = entry.lsn;
         }
 
-        Ok((last_lsn + 1, wal_entries))
+        Ok((last_lsn + 1, wal_entries, report))
     }
 
     /// Append a WAL entry then apply `f` to the inner manager.
@@ -552,6 +601,12 @@ impl WalManager {
 
     pub fn list(&self) -> Vec<&str> {
         self.inner.list()
+    }
+
+    /// Report application-level failures encountered while opening this
+    /// manager and replaying its WAL.
+    pub fn recovery_report(&self) -> &RecoveryReport {
+        &self.recovery_report
     }
 
     // ── Checkpoint ─────────────────────────────────────────────────────────
