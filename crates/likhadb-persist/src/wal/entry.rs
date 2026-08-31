@@ -3,7 +3,7 @@ use serde_json::Value;
 
 /// Index configuration captured at collection-creation time so WAL replay can
 /// reconstruct the right index type without touching the store layer.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum IndexKind {
     Flat,
     Ivf {
@@ -21,7 +21,7 @@ pub enum IndexKind {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum WalOp {
     CreateCollection {
         name: String,
@@ -52,7 +52,7 @@ pub enum WalOp {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WalEntry {
     pub lsn: u64,
     pub op: WalOp,

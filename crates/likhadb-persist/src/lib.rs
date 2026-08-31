@@ -2,7 +2,7 @@ mod error;
 pub mod wal;
 
 pub use error::PersistError;
-pub use wal::{WalConfig, WalManager};
+pub use wal::{WalConfig, WalManager, WalReader};
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
