@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 fts              = ["likhadb-store/fts"]
 iceberg-recovery = []
+zstd             = ["dep:zstd"]
 
 [dependencies]
 likhadb-core  = { path = "../likhadb-core" }
@@ -19,6 +20,7 @@ serde_json    = { workspace = true }
 crc32fast     = "1"
 metrics       = "0.23"
 tracing       = "0.1"
+zstd          = { version = "0.13", optional = true }
 
 [dev-dependencies]
 rand          = { workspace = true }

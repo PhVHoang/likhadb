@@ -2,9 +2,72 @@ use std::io::{self, Read, Write};
 
 use crc32fast::Hasher;
 
+use super::Compression;
+
+const FLAG_ZSTD: u8 = 0x01;
+const KNOWN_FLAGS: u8 = FLAG_ZSTD;
+
+/// Add the per-frame flags byte and optionally compress the serialized entry.
+///
+/// Compression is kept only when it makes the frame smaller, so enabling zstd
+/// cannot inflate small WAL operations such as collection creation or deletes.
+pub fn encode_payload(payload: &[u8], compression: &Compression) -> io::Result<Vec<u8>> {
+    let (flags, encoded) = match compression {
+        Compression::None => (0, payload.to_vec()),
+        #[cfg(feature = "zstd")]
+        Compression::Zstd { level } => {
+            let compressed = zstd::stream::encode_all(payload, *level)?;
+            if compressed.len() < payload.len() {
+                (FLAG_ZSTD, compressed)
+            } else {
+                (0, payload.to_vec())
+            }
+        }
+    };
+
+    let mut framed = Vec::with_capacity(1 + encoded.len());
+    framed.push(flags);
+    framed.extend_from_slice(&encoded);
+    Ok(framed)
+}
+
+/// Remove the flags byte and decompress a frame payload when required.
+pub fn decode_payload(payload: Vec<u8>) -> io::Result<Vec<u8>> {
+    let Some((&flags, encoded)) = payload.split_first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WAL frame payload is missing its flags byte",
+        ));
+    };
+
+    if flags & !KNOWN_FLAGS != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("WAL frame uses unsupported flags {flags:#04x}"),
+        ));
+    }
+
+    if flags & FLAG_ZSTD != 0 {
+        #[cfg(feature = "zstd")]
+        {
+            return zstd::stream::decode_all(encoded);
+        }
+        #[cfg(not(feature = "zstd"))]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "WAL frame is zstd-compressed but likhadb-persist was built without the `zstd` feature",
+            ));
+        }
+    }
+
+    Ok(encoded.to_vec())
+}
+
 /// Write a length-prefixed, CRC32-checksummed frame.
 ///
-/// Format: `[payload_len: u32 LE][crc32: u32 LE][payload: payload_len bytes]`
+/// Format: `[payload_len: u32 LE][crc32: u32 LE][flags: u8][payload bytes]`.
+/// The length and CRC cover the flags byte plus the encoded payload.
 pub fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     let len = payload.len() as u32;
     let crc = checksum(payload);
