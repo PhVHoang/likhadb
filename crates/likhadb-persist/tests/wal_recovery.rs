@@ -15,6 +15,8 @@ fn open_empty_dir_succeeds() {
     let dir = tmp_dir("open_empty");
     let mgr = WalManager::open(&dir).unwrap();
     assert!(mgr.list().is_empty());
+    assert!(mgr.recovery_report().is_clean());
+    assert_eq!(mgr.recovery_report().entries_replayed, 0);
 }
 
 #[test]
@@ -125,6 +127,51 @@ fn create_drop_collection_survives_restart() {
 
     let mgr = WalManager::open(&dir).unwrap();
     assert_eq!(mgr.list(), vec!["b"]);
+}
+
+#[test]
+fn apply_failure_is_reported_and_later_entries_are_replayed() {
+    let dir = tmp_dir("skip_apply_failure");
+    let disabled = WalConfig {
+        checkpoint_every_n_entries: 0,
+        checkpoint_every_n_bytes: 0,
+    };
+
+    {
+        let mut mgr = WalManager::open_with_config(&dir, disabled).unwrap();
+        mgr.create_collection("dropped", 4, Metric::L2).unwrap();
+        mgr.insert("dropped", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        mgr.drop_collection("dropped").unwrap();
+
+        let error = mgr.delete("dropped", 1).unwrap_err();
+        assert!(matches!(
+            error,
+            PersistError::Apply(likhadb_core::LikhaDbError::CollectionNotFound(ref name))
+                if name == "dropped"
+        ));
+
+        mgr.create_collection("after_failure", 4, Metric::L2)
+            .unwrap();
+        mgr.insert("after_failure", 2, vec![2.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+
+    assert!(mgr.get("dropped").is_err());
+    assert_eq!(mgr.get("after_failure").unwrap().len(), 1);
+
+    let report = mgr.recovery_report();
+    assert!(!report.is_clean());
+    assert_eq!(report.entries_replayed, 5);
+    assert_eq!(report.entries_skipped.len(), 1);
+    assert_eq!(report.entries_skipped[0].lsn, 4);
+    assert!(matches!(
+        report.entries_skipped[0].error,
+        PersistError::Apply(likhadb_core::LikhaDbError::CollectionNotFound(ref name))
+            if name == "dropped"
+    ));
 }
 
 // ── Source binding survives restart ────────────────────────────────────────
