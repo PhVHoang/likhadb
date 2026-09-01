@@ -9,6 +9,7 @@ use iceberg::{Catalog, CatalogBuilder, TableIdent};
 use iceberg_catalog_rest::{
     RestCatalog, RestCatalogBuilder, REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
 };
+use iceberg_storage_opendal::OpenDalStorageFactory;
 use likhadb_store::manager::CollectionManager;
 
 use crate::error::LakehouseError;
@@ -58,6 +59,10 @@ pub async fn build_rest_catalog(config: &IcebergConfig) -> Result<RestCatalog, L
     props.extend(config.extra_properties.clone());
 
     RestCatalogBuilder::default()
+        .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
+            configured_scheme: "s3".to_string(),
+            customized_credential_load: None,
+        }))
         .load("likhadb", props)
         .await
         .map_err(LakehouseError::Iceberg)
