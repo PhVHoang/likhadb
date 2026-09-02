@@ -48,8 +48,8 @@ pub struct Collection {
     #[cfg(feature = "fts")]
     pub(crate) fts_index: Option<Box<dyn likhadb_fts::FtsIndex>>,
     /// Optional binding to an externally-written Iceberg source table. `None`
-    /// means internal-writes-only (the default). Consumed by the maintenance
-    /// task in a later phase.
+    /// means internal-writes-only (the default). Consumed by the lakehouse
+    /// maintenance task.
     pub source_binding: Option<SourceBinding>,
     /// The source-table snapshot id whose rows are reflected in this index.
     /// `None` until a source delta has been applied. Held in memory in this
@@ -200,11 +200,14 @@ impl Collection {
         if let Some(p) = payload {
             #[cfg(feature = "fts")]
             if let Some(fts) = &mut self.fts_index {
-                if lsn > fts.last_lsn() {
+                let out_of_band = lsn == u64::MAX;
+                if out_of_band || lsn > fts.last_lsn() {
                     let text = extract_text_fields(&p);
                     if !text.is_empty() {
                         fts.index_document(id, &text)?;
-                        fts.set_lsn(lsn)?;
+                        if !out_of_band {
+                            fts.set_lsn(lsn)?;
+                        }
                     }
                 }
             }
@@ -218,9 +221,12 @@ impl Collection {
         self.meta.remove(id);
         #[cfg(feature = "fts")]
         if let Some(fts) = &mut self.fts_index {
-            if lsn > fts.last_lsn() {
+            let out_of_band = lsn == u64::MAX;
+            if out_of_band || lsn > fts.last_lsn() {
                 fts.delete_document(id)?;
-                fts.set_lsn(lsn)?;
+                if !out_of_band {
+                    fts.set_lsn(lsn)?;
+                }
             }
         }
         Ok(existed)
@@ -232,6 +238,8 @@ impl Collection {
     /// and the source-table incremental-maintenance path. `Upsert` overwrites and
     /// `Delete` is idempotent, so re-applying a partially-applied range is safe.
     /// `lsn` gates FTS writes exactly as [`Collection::insert`] / [`Collection::delete`] do.
+    /// Use `u64::MAX` for out-of-band source rows that must update FTS without
+    /// advancing its internal-WAL recovery watermark.
     pub fn apply_delta_row(&mut self, row: DeltaRow, lsn: u64) -> Result<()> {
         match row {
             DeltaRow::Upsert {
@@ -496,6 +504,44 @@ mod tests {
             c.delete(1, u64::MAX).unwrap();
             let after = c.fts_search("tantivy", 5).unwrap();
             assert!(after.is_empty(), "deleted doc should not appear");
+        }
+
+        #[test]
+        fn out_of_band_deltas_do_not_poison_fts_lsn_watermark() {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "likhadb_fts_source_delta_{}_{}",
+                std::process::id(),
+                unique
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut c = Collection::new("fts_test".into(), 3, Metric::L2);
+            c.enable_fts(Some(&dir)).unwrap();
+
+            for (id, text) in [(1, "external alpha"), (2, "external beta")] {
+                c.apply_delta_row(
+                    DeltaRow::Upsert {
+                        id,
+                        vector: vec![id as f32, 0.0, 0.0],
+                        payload: Some(json!({"body": text})),
+                    },
+                    u64::MAX,
+                )
+                .unwrap();
+            }
+            assert_eq!(c.fts_search("external", 10).unwrap().len(), 2);
+
+            c.insert(
+                3,
+                vec![3.0, 0.0, 0.0],
+                Some(json!({"body": "internal gamma"})),
+                1,
+            )
+            .unwrap();
+            assert_eq!(c.fts_search("internal", 10).unwrap()[0].id, 3);
         }
 
         #[test]

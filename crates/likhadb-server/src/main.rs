@@ -86,12 +86,22 @@ async fn main() {
         state
     };
 
-    // Spawn Iceberg background flusher when catalog is configured.
+    // Spawn Iceberg background services when a catalog is configured.
     #[cfg(feature = "iceberg-recovery")]
     if let Some((config, namespace)) = iceberg_flusher_args {
-        use likhadb_server::IcebergFlusher;
+        use likhadb_server::{IcebergFlusher, IndexMaintenanceTask};
+        use std::sync::Arc;
+
+        let catalog = likhadb_server::build_rest_catalog(&config)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to build maintenance catalog");
+                std::process::exit(1);
+            });
+        let _maintenance = IndexMaintenanceTask::new(state.wal_arc(), Arc::new(catalog)).spawn();
         let _flusher = IcebergFlusher::new(state.wal_arc(), config, namespace).spawn();
         tracing::info!("iceberg background flusher started");
+        tracing::info!("index maintenance task started");
     }
 
     let checkpoint_task =
