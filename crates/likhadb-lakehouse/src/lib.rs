@@ -12,6 +12,8 @@ pub mod minio;
 pub mod iceberg_io;
 #[cfg(feature = "iceberg")]
 pub mod incremental_scan;
+#[cfg(feature = "iceberg")]
+pub mod source_table;
 
 pub use error::LakehouseError;
 pub use maintenance::MaintenanceConfig;
@@ -24,6 +26,8 @@ pub use minio::{build_minio_store, MinioConfig, ObjectStoreLakehouseExt};
 pub use iceberg_io::{build_rest_catalog, IcebergConfig, IcebergLakehouseExt};
 #[cfg(feature = "iceberg")]
 pub use incremental_scan::{scan_delta, DeltaScanResult, SnapshotDelta};
+#[cfg(feature = "iceberg")]
+pub use source_table::{load_source_table, source_table_ident};
 
 #[cfg(feature = "iceberg-recovery")]
 pub mod iceberg_flusher;
