@@ -15,6 +15,72 @@ fn open_empty_dir_succeeds() {
     let dir = tmp_dir("open_empty");
     let mgr = WalManager::open(&dir).unwrap();
     assert!(mgr.list().is_empty());
+    assert_eq!(
+        mgr.stats(),
+        likhadb_persist::WalStats {
+            entries_written: 0,
+            entries_since_checkpoint: 0,
+            wal_bytes: 0,
+            last_lsn: 0,
+            snapshot_lsn: 0,
+        }
+    );
+}
+
+#[test]
+fn wal_stats_track_writes_checkpoints_and_recovery() {
+    let dir = tmp_dir("stats");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        mgr.delete("col", 1).unwrap();
+
+        let stats = mgr.stats();
+        assert_eq!(stats.entries_written, 3);
+        assert_eq!(stats.entries_since_checkpoint, 3);
+        assert_eq!(stats.last_lsn, 3);
+        assert_eq!(stats.snapshot_lsn, 0);
+        assert_eq!(
+            stats.wal_bytes,
+            std::fs::metadata(dir.join("wal.log")).unwrap().len()
+        );
+        assert!(stats.wal_bytes > 0);
+
+        mgr.checkpoint().unwrap();
+        assert_eq!(
+            mgr.stats(),
+            likhadb_persist::WalStats {
+                entries_written: 3,
+                entries_since_checkpoint: 0,
+                wal_bytes: 0,
+                last_lsn: 3,
+                snapshot_lsn: 3,
+            }
+        );
+
+        mgr.insert("col", 2, vec![2.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        let stats = mgr.stats();
+        assert_eq!(stats.entries_written, 4);
+        assert_eq!(stats.entries_since_checkpoint, 1);
+        assert_eq!(stats.last_lsn, 4);
+        assert_eq!(stats.snapshot_lsn, 3);
+        assert!(stats.wal_bytes > 0);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let stats = mgr.stats();
+    assert_eq!(stats.entries_written, 0);
+    assert_eq!(stats.entries_since_checkpoint, 1);
+    assert_eq!(stats.last_lsn, 4);
+    assert_eq!(stats.snapshot_lsn, 3);
+    assert_eq!(
+        stats.wal_bytes,
+        std::fs::metadata(dir.join("wal.log")).unwrap().len()
+    );
 }
 
 #[test]
@@ -203,11 +269,16 @@ fn auto_checkpoint_after_entry_threshold() {
         let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
         mgr.create_collection("col", 4, Metric::L2).unwrap();
         assert!(!dir.join("snapshot.bin").exists());
+        assert_eq!(mgr.stats().entries_since_checkpoint, 1);
 
         mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
             .unwrap();
         assert!(dir.join("snapshot.bin").exists());
         assert_eq!(std::fs::metadata(dir.join("wal.log")).unwrap().len(), 0);
+        assert_eq!(mgr.stats().entries_written, 2);
+        assert_eq!(mgr.stats().entries_since_checkpoint, 0);
+        assert_eq!(mgr.stats().last_lsn, 2);
+        assert_eq!(mgr.stats().snapshot_lsn, 2);
     }
 
     let mgr = WalManager::open(&dir).unwrap();
