@@ -8,10 +8,9 @@
 /// the table. A collection with no binding behaves exactly as before — the
 /// feature is opt-in and additive.
 ///
-/// In this phase the binding is plumbed through create-collection and persisted,
-/// but nothing consumes it yet: the background maintenance task that reads source
-/// deltas lands in a later phase.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// The lakehouse maintenance task consumes persisted bindings to resolve and
+/// poll their source tables.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceBinding {
     /// Namespace path of the source table, e.g. `["lake", "embeddings"]`.
     pub source_namespace: Vec<String>,

@@ -12,8 +12,8 @@ pub use auth::{grpc_interceptor, require_bearer, ApiToken};
 pub use grpc::{GrpcMetricsLayer, LikhaDbGrpc, LikhaDbServer};
 #[cfg(feature = "iceberg-recovery")]
 pub use likhadb_lakehouse::{
-    iceberg_io::IcebergConfig, iceberg_recovery::open_with_iceberg,
-    iceberg_recovery::RecoveryError, IcebergFlusher, NamespaceIdent,
+    build_rest_catalog, iceberg_io::IcebergConfig, iceberg_recovery::open_with_iceberg,
+    iceberg_recovery::RecoveryError, IcebergFlusher, IndexMaintenanceTask, NamespaceIdent,
 };
 pub use metrics::{install as install_prometheus, seed_collection_gauges};
 pub use metrics_exporter_prometheus::PrometheusHandle;

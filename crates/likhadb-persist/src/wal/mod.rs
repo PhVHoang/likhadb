@@ -9,8 +9,8 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use bincode::Options as _;
-use likhadb_core::{Metric, VecId, Vector};
-use likhadb_store::{Collection, CollectionManager};
+use likhadb_core::{Metric, SourceBinding, VecId, Vector};
+use likhadb_store::{Collection, CollectionManager, DeltaRow};
 use serde_json::Value;
 
 use crate::{bincode_opts, PersistError};
@@ -590,6 +590,38 @@ impl WalManager {
             },
             |mgr| mgr.set_source_binding(&col, binding),
         )
+    }
+
+    /// Apply a source-table snapshot delta without writing it to the internal WAL.
+    ///
+    /// The caller must supply the binding and watermark observed before scanning.
+    /// Both are revalidated under the store write lock so rows from a stale scan
+    /// are never applied after a rebind or a concurrent maintenance tick. `Ok(false)`
+    /// means that validation failed and the caller should discard the scan.
+    ///
+    /// The source watermark advances only after every row applies successfully.
+    /// A partial failure therefore leaves the old watermark in place and the
+    /// idempotent range can be retried on the next tick.
+    pub fn apply_source_delta(
+        &mut self,
+        collection: &str,
+        expected_binding: &SourceBinding,
+        from_snapshot_id: Option<i64>,
+        to_snapshot_id: i64,
+        rows: impl IntoIterator<Item = DeltaRow>,
+    ) -> likhadb_core::Result<bool> {
+        let col = self.inner.get_mut(collection)?;
+        if col.source_binding.as_ref() != Some(expected_binding)
+            || col.source_snapshot_id != from_snapshot_id
+        {
+            return Ok(false);
+        }
+
+        for row in rows {
+            col.apply_delta_row(row, u64::MAX)?;
+        }
+        col.source_snapshot_id = Some(to_snapshot_id);
+        Ok(true)
     }
 
     // ── Read-through ────────────────────────────────────────────────────────

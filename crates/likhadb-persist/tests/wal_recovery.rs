@@ -1,5 +1,6 @@
-use likhadb_core::Metric;
+use likhadb_core::{Metric, SourceBinding};
 use likhadb_persist::{PersistError, WalConfig, WalManager};
+use likhadb_store::DeltaRow;
 use serde_json::json;
 
 fn tmp_dir(label: &str) -> std::path::PathBuf {
@@ -225,6 +226,146 @@ fn source_binding_survives_restart() {
         .expect("binding restored after restart");
     assert_eq!(binding.source_table, "embeddings");
     assert_eq!(binding.vector_column, "embedding");
+}
+
+fn source_binding() -> SourceBinding {
+    SourceBinding {
+        source_namespace: vec!["lake".into()],
+        source_table: "embeddings".into(),
+        id_column: "id".into(),
+        vector_column: "embedding".into(),
+        payload_columns: vec!["title".into()],
+    }
+}
+
+#[test]
+fn source_delta_updates_index_and_advances_watermark() {
+    let dir = tmp_dir("source_delta_apply");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_hnsw_collection("col", 2, Metric::L2, 4, 8, 10)
+        .unwrap();
+    let binding = source_binding();
+    mgr.set_source_binding("col", binding.clone()).unwrap();
+    assert!(mgr
+        .apply_source_delta("col", &binding, None, 10, [])
+        .unwrap());
+
+    assert!(mgr
+        .apply_source_delta(
+            "col",
+            &binding,
+            Some(10),
+            11,
+            [
+                DeltaRow::Upsert {
+                    id: 1,
+                    vector: vec![1.0, 0.0],
+                    payload: Some(json!({"source": "external"})),
+                },
+                DeltaRow::Upsert {
+                    id: 2,
+                    vector: vec![2.0, 0.0],
+                    payload: None,
+                },
+                DeltaRow::Delete { id: 1 },
+            ],
+        )
+        .unwrap());
+
+    let collection = mgr.get("col").unwrap();
+    assert_eq!(collection.source_snapshot_id, Some(11));
+    assert!(collection.get(1).unwrap().is_none());
+    assert_eq!(
+        collection.search(&[2.0, 0.0], 1, None, false).unwrap()[0].id,
+        2
+    );
+}
+
+#[test]
+fn failed_source_delta_keeps_watermark_for_idempotent_retry() {
+    let dir = tmp_dir("source_delta_retry");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 2, Metric::L2).unwrap();
+    let binding = source_binding();
+    mgr.set_source_binding("col", binding.clone()).unwrap();
+    assert!(mgr
+        .apply_source_delta("col", &binding, None, 20, [])
+        .unwrap());
+
+    let error = mgr
+        .apply_source_delta(
+            "col",
+            &binding,
+            Some(20),
+            21,
+            [
+                DeltaRow::Upsert {
+                    id: 1,
+                    vector: vec![1.0, 0.0],
+                    payload: None,
+                },
+                DeltaRow::Upsert {
+                    id: 2,
+                    vector: vec![2.0, 0.0, 0.0],
+                    payload: None,
+                },
+            ],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("dimension mismatch"));
+    assert_eq!(mgr.get("col").unwrap().source_snapshot_id, Some(20));
+    assert!(mgr.get("col").unwrap().get(1).unwrap().is_some());
+
+    assert!(mgr
+        .apply_source_delta(
+            "col",
+            &binding,
+            Some(20),
+            21,
+            [
+                DeltaRow::Upsert {
+                    id: 1,
+                    vector: vec![1.0, 0.0],
+                    payload: None,
+                },
+                DeltaRow::Upsert {
+                    id: 2,
+                    vector: vec![2.0, 0.0],
+                    payload: None,
+                },
+            ],
+        )
+        .unwrap());
+    assert_eq!(mgr.get("col").unwrap().source_snapshot_id, Some(21));
+    assert_eq!(mgr.get("col").unwrap().len(), 2);
+}
+
+#[test]
+fn stale_source_delta_is_discarded() {
+    let dir = tmp_dir("source_delta_stale");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 2, Metric::L2).unwrap();
+    let binding = source_binding();
+    mgr.set_source_binding("col", binding.clone()).unwrap();
+    assert!(mgr
+        .apply_source_delta("col", &binding, None, 30, [])
+        .unwrap());
+
+    assert!(!mgr
+        .apply_source_delta(
+            "col",
+            &binding,
+            Some(29),
+            31,
+            [DeltaRow::Upsert {
+                id: 1,
+                vector: vec![1.0, 0.0],
+                payload: None,
+            }],
+        )
+        .unwrap());
+    assert_eq!(mgr.get("col").unwrap().source_snapshot_id, Some(30));
+    assert!(mgr.get("col").unwrap().is_empty());
 }
 
 // ── Checkpoint clears WAL ──────────────────────────────────────────────────
