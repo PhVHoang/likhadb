@@ -93,8 +93,10 @@ impl WalWriter {
             .unwrap_or(self.bytes_written)
     }
 
-    fn truncate(path: &Path) -> std::io::Result<()> {
-        File::create(path)?; // O_TRUNC
+    fn truncate(&mut self) -> std::io::Result<()> {
+        self.file.flush()?;
+        self.file.get_mut().set_len(0)?;
+        self.bytes_written = 0;
         Ok(())
     }
 }
@@ -738,7 +740,6 @@ impl WalManager {
         let last_lsn = self.next_lsn.saturating_sub(1);
         let snapshot_path = self.dir.join(Self::SNAPSHOT_FILE);
         let tmp_path = self.dir.join("snapshot.bin.tmp");
-        let wal_path = self.dir.join(Self::WAL_FILE);
 
         // Write snapshot to tmp then atomically rename.
         {
@@ -756,11 +757,50 @@ impl WalManager {
         self.snapshot_lsn = last_lsn;
         self.entries_since_checkpoint = 0;
 
-        // Truncate WAL and reopen for appending.
-        WalWriter::truncate(&wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        // Truncate through the existing, known-good handle.  Reopening after
+        // truncation could fail and leave the manager holding stale writer
+        // bookkeeping for a WAL that had already been cleared.
+        self.wal.truncate().map_err(PersistError::Io)?;
         self.wal_entries = 0;
 
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::fd::AsRawFd;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use likhadb_core::Metric;
+
+    use super::WalManager;
+
+    #[test]
+    fn checkpoint_keeps_the_open_wal_handle() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "likhadb_checkpoint_handle_{}_{}",
+            std::process::id(),
+            unique
+        ));
+
+        let mut manager = WalManager::open(&dir).unwrap();
+        manager.create_collection("col", 4, Metric::L2).unwrap();
+        let handle_before = manager.wal.file.get_ref().as_raw_fd();
+
+        manager.checkpoint().unwrap();
+
+        let handle_after = manager.wal.file.get_ref().as_raw_fd();
+        assert_eq!(
+            handle_after, handle_before,
+            "checkpoint must not reopen the WAL after truncating it"
+        );
+
+        drop(manager);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
