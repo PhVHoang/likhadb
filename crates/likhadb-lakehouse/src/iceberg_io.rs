@@ -206,18 +206,18 @@ impl IcebergLakehouseExt for CollectionManager {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let collection = self
-                .get_mut(collection_name)
-                .map_err(|_| LakehouseError::CollectionNotFound(collection_name.to_string()))?;
-
+            let mut rows = Vec::with_capacity(num_rows);
             for row in 0..num_rows {
                 let id = id_array.value(row);
                 let start = row * batch_dim;
                 let end = start + batch_dim;
                 let vec: Vec<f32> = float_values.values()[start..end].to_vec();
                 let payload = build_payload(&batch, &payload_col_indices, row);
-                collection.insert(id, vec, payload, u64::MAX)?;
+                rows.push((id, vec, payload));
             }
+            self.get_mut(collection_name)
+                .map_err(|_| LakehouseError::CollectionNotFound(collection_name.to_string()))?
+                .insert_batch(rows, u64::MAX)?;
 
             total += num_rows;
         }

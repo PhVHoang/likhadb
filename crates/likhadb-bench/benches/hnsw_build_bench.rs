@@ -9,41 +9,51 @@ fn random_vec(rng: &mut StdRng, dim: usize) -> Vec<f32> {
     (0..dim).map(|_| rng.gen::<f32>()).collect()
 }
 
-/// Compare cumulative build time for greedy and diversity-based neighbour selection.
-fn bench_hnsw_build(c: &mut Criterion, use_heuristic: bool) {
+/// Compare cumulative serial and parallel build time for greedy and
+/// diversity-based neighbour selection.
+fn bench_hnsw_build(c: &mut Criterion, use_heuristic: bool, parallel: bool) {
     const N: usize = 10_000;
     const DIM: usize = 384;
     const M: usize = 16;
     const EF_CONSTRUCTION: usize = 200;
 
     let mut rng = StdRng::seed_from_u64(42);
-    let vecs: Vec<Vec<f32>> = (0..N).map(|_| random_vec(&mut rng, DIM)).collect();
+    let vecs: Vec<(u64, Vec<f32>)> = (0..N)
+        .map(|id| (id as u64, random_vec(&mut rng, DIM)))
+        .collect();
     let selector = if use_heuristic { "heuristic" } else { "greedy" };
+    let benchmark = if parallel {
+        "hnsw_build_parallel"
+    } else {
+        "hnsw_build_serial"
+    };
 
-    c.bench_with_input(
-        BenchmarkId::new("hnsw_build", selector),
-        &vecs,
-        |b, vecs| {
-            b.iter_batched(
-                || (),
-                |()| {
-                    let mut idx = HnswIndex::new(DIM, Metric::L2, M, EF_CONSTRUCTION, 50)
-                        .unwrap()
-                        .with_heuristic(use_heuristic);
-                    for (i, vector) in vecs.iter().enumerate() {
-                        idx.insert(i as u64, vector.clone()).unwrap();
+    c.bench_with_input(BenchmarkId::new(benchmark, selector), &vecs, |b, vecs| {
+        b.iter_batched(
+            || (),
+            |()| {
+                let mut idx = HnswIndex::new(DIM, Metric::L2, M, EF_CONSTRUCTION, 50)
+                    .unwrap()
+                    .with_heuristic(use_heuristic);
+                if parallel {
+                    idx.build_from_vecs(vecs).unwrap();
+                } else {
+                    for (id, vector) in vecs {
+                        idx.insert(*id, vector.clone()).unwrap();
                     }
-                    black_box(idx);
-                },
-                BatchSize::LargeInput,
-            );
-        },
-    );
+                }
+                black_box(idx);
+            },
+            BatchSize::LargeInput,
+        );
+    });
 }
 
 fn hnsw_build_benchmarks(c: &mut Criterion) {
-    bench_hnsw_build(c, false);
-    bench_hnsw_build(c, true);
+    bench_hnsw_build(c, false, false);
+    bench_hnsw_build(c, false, true);
+    bench_hnsw_build(c, true, false);
+    bench_hnsw_build(c, true, true);
 }
 
 criterion_group! {

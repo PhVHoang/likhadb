@@ -11,6 +11,7 @@ thread_local! {
 }
 
 use ordered_float::OrderedFloat;
+use rayon::prelude::*;
 
 use likhadb_core::{FilterFn, LikhaDbError, Metric, Result, ScoredResult, VecId, Vector};
 
@@ -29,6 +30,14 @@ struct HnswNode {
     id: VecId,
     /// `layers[l]` holds the indices into `HnswIndex::nodes` of neighbours at level `l`.
     layers: Vec<Vec<usize>>,
+}
+
+/// Read-only work produced before an insertion mutates the graph.
+struct InsertionPlan {
+    id: VecId,
+    vector: Vector,
+    level: usize,
+    neighbours: Vec<Vec<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +333,132 @@ impl HnswIndex {
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal))
             .map(|&(_, idx)| idx)
     }
+
+    /// Compute the expensive, read-only portion of an insertion. Plans created
+    /// from the same graph snapshot can be evaluated concurrently.
+    fn plan_insert(&self, id: VecId, vector: Vector, level: usize) -> InsertionPlan {
+        let Some(mut ep) = self.entry_point else {
+            return InsertionPlan {
+                id,
+                vector,
+                level,
+                neighbours: vec![Vec::new(); level + 1],
+            };
+        };
+
+        // Greedy descent through layers above the new node's top layer.
+        for lc in (level + 1..=self.max_level).rev() {
+            let candidates = self.search_layer(&vector, &[ep], 1, lc);
+            if let Some(closest) = self.closest_live(&candidates) {
+                ep = closest;
+            }
+        }
+
+        let mut neighbours = vec![Vec::new(); level + 1];
+        for lc in (0..=level.min(self.max_level)).rev() {
+            let candidates = self.search_layer(&vector, &[ep], self.ef_construction, lc);
+            if let Some(closest) = self.closest_live(&candidates) {
+                ep = closest;
+            }
+            neighbours[lc] = self.select_neighbors_configured(candidates, self.m_at(lc));
+        }
+
+        InsertionPlan {
+            id,
+            vector,
+            level,
+            neighbours,
+        }
+    }
+
+    /// Apply an insertion plan and all reverse-edge updates. Keeping this stage
+    /// ordered prevents concurrent writes to the same neighbour list.
+    fn commit_insert(&mut self, plan: InsertionPlan) {
+        let InsertionPlan {
+            id,
+            vector,
+            level,
+            neighbours,
+        } = plan;
+
+        // Overwrites retain the existing tombstone/ghost semantics. The fresh
+        // node becomes the canonical entry for this id below.
+        if self.id_to_node.contains_key(&id) {
+            self.deleted.insert(id);
+        }
+
+        let node_idx = self.nodes.len();
+        self.nodes.push(HnswNode {
+            id,
+            layers: neighbours,
+        });
+        self.data.extend_from_slice(&vector);
+        self.id_to_node.insert(id, node_idx);
+        self.deleted.remove(&id);
+
+        for lc in 0..self.nodes[node_idx].layers.len() {
+            let m_max = self.m_at(lc);
+            let layer_neighbours = self.nodes[node_idx].layers[lc].clone();
+            for nbr in layer_neighbours {
+                if nbr < self.nodes.len() && lc < self.nodes[nbr].layers.len() {
+                    self.nodes[nbr].layers[lc].push(node_idx);
+                    if self.nodes[nbr].layers[lc].len() > m_max {
+                        self.prune_connections(nbr, lc, m_max);
+                    }
+                }
+            }
+        }
+
+        if self.entry_point.is_none() || level > self.max_level {
+            self.entry_point = Some(node_idx);
+            self.max_level = level;
+        }
+    }
+
+    /// Build or extend the graph from a batch of vectors.
+    ///
+    /// Candidate discovery runs in bounded parallel waves. Each wave reads the
+    /// graph produced by prior waves, then commits its plans in input order so
+    /// reverse-edge mutation remains race-free and overwrite ordering is stable.
+    pub fn build_from_vecs(&mut self, vecs: &[(VecId, Vector)]) -> Result<()> {
+        // Validate the whole batch before making any mutation.
+        if let Some((_, vector)) = vecs.iter().find(|(_, vector)| vector.len() != self.dim) {
+            return Err(LikhaDbError::DimMismatch {
+                expected: self.dim,
+                got: vector.len(),
+            });
+        }
+        if vecs.is_empty() {
+            return Ok(());
+        }
+
+        let mut start = 0;
+        if self.entry_point.is_none() {
+            let (id, vector) = &vecs[0];
+            let level = self.random_level().min(MAX_LEVEL);
+            let plan = self.plan_insert(*id, vector.clone(), level);
+            self.commit_insert(plan);
+            start = 1;
+        }
+
+        let wave_size = rayon::current_num_threads().max(1);
+        for wave in vecs[start..].chunks(wave_size) {
+            // Level assignment stays ordered; only graph traversal is parallel.
+            let inputs: Vec<_> = wave
+                .iter()
+                .map(|(id, vector)| (*id, vector.clone(), self.random_level().min(MAX_LEVEL)))
+                .collect();
+            let plans: Vec<_> = inputs
+                .into_par_iter()
+                .map(|(id, vector, level)| self.plan_insert(id, vector, level))
+                .collect();
+            for plan in plans {
+                self.commit_insert(plan);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,75 +482,14 @@ impl VectorIndex for HnswIndex {
             });
         }
 
-        // Overwrite: tombstone the old entry (keep graph edges; old node_idx becomes a
-        // ghost).  The new node gets a fresh node_idx and is the canonical entry for `id`.
-        if self.id_to_node.contains_key(&id) {
-            self.deleted.insert(id);
-        }
-
-        let node_idx = self.nodes.len();
         let level = self.random_level().min(MAX_LEVEL);
-
-        self.nodes.push(HnswNode {
-            id,
-            layers: vec![vec![]; level + 1],
-        });
-        self.data.extend_from_slice(&vec);
-        self.id_to_node.insert(id, node_idx);
-        self.deleted.remove(&id); // ensure live after overwrite
-
-        // First node: just set the entry point.
-        if self.entry_point.is_none() {
-            self.entry_point = Some(node_idx);
-            self.max_level = level;
-            return Ok(());
-        }
-
-        let mut ep = self.entry_point.unwrap();
-
-        // Phase 1: greedy descent from max_level down to level+1 (ef=1 per layer).
-        for lc in (level + 1..=self.max_level).rev() {
-            let w = self.search_layer(&vec, &[ep], 1, lc);
-            if let Some(closest) = self.closest_live(&w) {
-                ep = closest;
-            }
-        }
-
-        // Phase 2: beam search from min(level, max_level) down to 0 and connect.
-        for lc in (0..=level.min(self.max_level)).rev() {
-            let candidates = self.search_layer(&vec, &[ep], self.ef_construction, lc);
-
-            // Update ep for the next (lower) layer.
-            if let Some(closest) = self.closest_live(&candidates) {
-                ep = closest;
-            }
-
-            let m_max = self.m_at(lc);
-            let neighbours = self.select_neighbors_configured(candidates, m_max);
-
-            self.nodes[node_idx].layers[lc] = neighbours.clone();
-
-            // Add reverse edges and prune if over-full.
-            for &nbr in &neighbours {
-                if nbr >= self.nodes.len() {
-                    continue;
-                }
-                if lc < self.nodes[nbr].layers.len() {
-                    self.nodes[nbr].layers[lc].push(node_idx);
-                    if self.nodes[nbr].layers[lc].len() > m_max {
-                        self.prune_connections(nbr, lc, m_max);
-                    }
-                }
-            }
-        }
-
-        // Promote entry point if this node has a higher level.
-        if level > self.max_level {
-            self.entry_point = Some(node_idx);
-            self.max_level = level;
-        }
-
+        let plan = self.plan_insert(id, vec, level);
+        self.commit_insert(plan);
         Ok(())
+    }
+
+    fn insert_batch(&mut self, vecs: &[(VecId, Vector)]) -> Result<()> {
+        self.build_from_vecs(vecs)
     }
 
     fn delete(&mut self, id: VecId) -> bool {
@@ -774,6 +848,60 @@ mod tests {
     }
 
     #[test]
+    fn bulk_insert_validates_before_mutating() {
+        let mut idx = make_hnsw(4, 8, 10);
+        let rows = vec![(1, vec![1.0; 4]), (2, vec![2.0; 3])];
+
+        assert!(matches!(
+            idx.build_from_vecs(&rows),
+            Err(LikhaDbError::DimMismatch {
+                expected: 4,
+                got: 3
+            })
+        ));
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn bulk_insert_builds_and_extends_index() {
+        let mut idx = make_hnsw(4, 16, 32);
+        let initial: Vec<_> = (0..64)
+            .map(|id| (id, vec![id as f32, 0.0, 0.0, 0.0]))
+            .collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        pool.install(|| idx.build_from_vecs(&initial)).unwrap();
+
+        assert_eq!(idx.len(), 64);
+        assert_eq!(idx.get(17), Some(vec![17.0, 0.0, 0.0, 0.0]));
+
+        let extension = vec![
+            (64, vec![64.0, 0.0, 0.0, 0.0]),
+            (17, vec![17.5, 0.0, 0.0, 0.0]),
+        ];
+        pool.install(|| idx.build_from_vecs(&extension)).unwrap();
+        assert_eq!(idx.len(), 65);
+        assert_eq!(idx.get(17), Some(vec![17.5, 0.0, 0.0, 0.0]));
+        assert_eq!(idx.get(64), Some(vec![64.0, 0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn bulk_insert_preserves_duplicate_input_order() {
+        let mut idx = make_hnsw(4, 8, 10);
+        let rows = vec![
+            (7, vec![1.0, 0.0, 0.0, 0.0]),
+            (7, vec![2.0, 0.0, 0.0, 0.0]),
+            (7, vec![3.0, 0.0, 0.0, 0.0]),
+        ];
+
+        idx.build_from_vecs(&rows).unwrap();
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.get(7), Some(vec![3.0, 0.0, 0.0, 0.0]));
+    }
+
+    #[test]
     fn dim_mismatch_search() {
         let idx = make_hnsw(4, 8, 10);
         assert!(matches!(
@@ -839,6 +967,62 @@ mod tests {
         assert!(
             overlap * 100 >= k * 95,
             "HNSW recall too low: {overlap}/{k} (expected ≥95%)"
+        );
+    }
+
+    #[test]
+    fn bulk_build_has_high_recall() {
+        use crate::flat::FlatIndex;
+
+        let n = 500usize;
+        let dim = 128;
+        let k = 20;
+        let mut rows = Vec::with_capacity(n);
+        let mut flat = FlatIndex::new(dim, Metric::L2);
+        for id in 0..n as u64 {
+            let mut state = id + 1;
+            let vector = (0..dim)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    state as f32 / u64::MAX as f32
+                })
+                .collect::<Vec<_>>();
+            rows.push((id, vector.clone()));
+            flat.insert(id, vector).unwrap();
+        }
+
+        let mut hnsw = HnswIndex::new(dim, Metric::L2, 16, 100, 200)
+            .unwrap()
+            .with_heuristic(true);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| hnsw.build_from_vecs(&rows))
+            .unwrap();
+
+        let mut query = flat.get(50).unwrap();
+        for (dimension, value) in query.iter_mut().enumerate() {
+            *value += [-0.001, 0.0, 0.001][dimension % 3];
+        }
+        let hnsw_ids: HashSet<_> = hnsw
+            .search(&query, k, None)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.id)
+            .collect();
+        let flat_ids: HashSet<_> = flat
+            .search(&query, k, None)
+            .unwrap()
+            .into_iter()
+            .map(|result| result.id)
+            .collect();
+        let overlap = hnsw_ids.intersection(&flat_ids).count();
+        assert!(
+            overlap * 100 >= k * 95,
+            "bulk HNSW recall too low: {overlap}/{k} (expected ≥95%)"
         );
     }
 
