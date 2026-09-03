@@ -2,7 +2,7 @@ mod entry;
 mod frame;
 mod recovery;
 
-pub use entry::{IndexKind, WalEntry, WalOp};
+pub use entry::{IndexKind, WalEntry, WalOp, CURRENT_WAL_VERSION};
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
@@ -16,6 +16,25 @@ use serde_json::Value;
 use crate::{bincode_opts, PersistError};
 use frame::{checksum, write_frame, FrameIter};
 use recovery::apply_op;
+
+fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
+    // `version` is deliberately the first serialized field, and bincode
+    // encodes a u8 as one byte. Inspect it before decoding `WalOp` so future
+    // variants produce a useful version error instead of a generic decode
+    // failure.
+    if let Some(&found) = payload.first() {
+        if found != CURRENT_WAL_VERSION {
+            return Err(PersistError::UnsupportedVersion {
+                found,
+                max: CURRENT_WAL_VERSION,
+            });
+        }
+    }
+
+    bincode_opts()
+        .deserialize(payload)
+        .map_err(PersistError::Decode)
+}
 
 // ── WalWriter ──────────────────────────────────────────────────────────────
 
@@ -295,9 +314,7 @@ impl WalManager {
                 });
             }
 
-            let entry: WalEntry = bincode_opts()
-                .deserialize(&payload)
-                .map_err(PersistError::Decode)?;
+            let entry = decode_entry(&payload)?;
             wal_entries = wal_entries.saturating_add(1);
 
             if entry.lsn <= snapshot_lsn {
@@ -329,10 +346,7 @@ impl WalManager {
         F: FnOnce(&mut CollectionManager) -> likhadb_core::Result<T>,
     {
         let _span = tracing::debug_span!("wal_append", lsn = self.next_lsn).entered();
-        let entry = WalEntry {
-            lsn: self.next_lsn,
-            op,
-        };
+        let entry = WalEntry::new(self.next_lsn, op);
         self.wal.append(&entry)?;
         self.record_append(&entry);
         let result = f(&mut self.inner).map_err(PersistError::Apply)?;
@@ -399,9 +413,7 @@ impl WalManager {
                 if frame::checksum(&payload) != stored_crc {
                     break; // Treat corrupt tail as end of log.
                 }
-                let entry: WalEntry = bincode_opts()
-                    .deserialize(&payload)
-                    .map_err(PersistError::Decode)?;
+                let entry = decode_entry(&payload)?;
                 if entry.lsn > watermark {
                     kept.push(entry);
                 }
