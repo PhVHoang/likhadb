@@ -54,18 +54,35 @@ impl WalWriter {
     }
 
     fn append(&mut self, entry: &WalEntry) -> Result<(), PersistError> {
-        let payload = bincode_opts()
-            .serialize(entry)
-            .map_err(PersistError::Encode)?;
-        // Frame layout: 4-byte length prefix + 4-byte CRC + payload
-        let frame_bytes = 8u64 + payload.len() as u64;
-        write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
+        self.append_batch(std::slice::from_ref(entry)).map(|_| ())
+    }
+
+    /// Serialize and durably append a group of entries with one flush/fsync.
+    ///
+    /// Serialization finishes before the first frame is written, so an encode
+    /// failure cannot leave a partially-written batch in the WAL.
+    fn append_batch(&mut self, entries: &[WalEntry]) -> Result<Vec<Vec<u8>>, PersistError> {
+        let payloads: Vec<Vec<u8>> = entries
+            .iter()
+            .map(|entry| {
+                bincode_opts()
+                    .serialize(entry)
+                    .map_err(PersistError::Encode)
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut frame_bytes = 0u64;
+        for payload in &payloads {
+            write_frame(&mut self.file, payload).map_err(PersistError::Io)?;
+            // Frame layout: 4-byte length prefix + 4-byte CRC + payload.
+            frame_bytes += 8u64 + payload.len() as u64;
+        }
         self.file.flush().map_err(PersistError::Io)?;
         self.file.get_mut().sync_data().map_err(PersistError::Io)?;
         self.bytes_written = self.bytes_written.saturating_add(frame_bytes);
         metrics::counter!("likhadb_wal_bytes_written_total").increment(frame_bytes);
-        metrics::counter!("likhadb_wal_appends_total").increment(1);
-        Ok(())
+        metrics::counter!("likhadb_wal_appends_total").increment(entries.len() as u64);
+        Ok(payloads)
     }
 
     fn bytes_on_disk(&self) -> u64 {
@@ -561,6 +578,93 @@ impl WalManager {
             },
             |mgr| mgr.get_mut(&col)?.insert(id, vector, payload, lsn),
         )
+    }
+
+    /// Durably insert a group of vectors using a single WAL flush and fsync.
+    ///
+    /// The entire batch is validated and serialized before any WAL frame is
+    /// written. Each row still receives its own LSN, preserving replay order,
+    /// while the collection can use its optimized bulk-index construction path.
+    pub fn insert_batch(
+        &mut self,
+        collection: &str,
+        items: impl IntoIterator<Item = (VecId, Vector, Option<Value>)>,
+    ) -> Result<usize, PersistError> {
+        let rows: Vec<_> = items.into_iter().collect();
+        let expected_dim = self.inner.get(collection)?.dim;
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        // Validate before logging so a bad row cannot make an otherwise
+        // rejected batch durable and break recovery on the next restart.
+        if let Some((_, vector, _)) = rows
+            .iter()
+            .find(|(_, vector, _)| vector.len() != expected_dim)
+        {
+            return Err(PersistError::Apply(
+                likhadb_core::LikhaDbError::DimMismatch {
+                    expected: expected_dim,
+                    got: vector.len(),
+                },
+            ));
+        }
+
+        let count = rows.len();
+        let count_u64 = u64::try_from(count).map_err(|_| {
+            PersistError::Apply(likhadb_core::LikhaDbError::InvalidArgument(
+                "WAL batch length exceeds u64".to_owned(),
+            ))
+        })?;
+        let next_lsn = self.next_lsn.checked_add(count_u64).ok_or_else(|| {
+            PersistError::Apply(likhadb_core::LikhaDbError::InvalidArgument(
+                "WAL LSN overflow".to_owned(),
+            ))
+        })?;
+        let col = collection.to_owned();
+        let entries: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .map(|(offset, (id, vector, payload))| WalEntry {
+                lsn: self.next_lsn + offset as u64,
+                op: WalOp::Insert {
+                    collection: col.clone(),
+                    id: *id,
+                    vector: vector.clone(),
+                    payload: payload.clone(),
+                },
+            })
+            .collect();
+
+        let _span = tracing::debug_span!(
+            "wal_append_batch",
+            first_lsn = self.next_lsn,
+            entries = count
+        )
+        .entered();
+        let serialized = self.wal.append_batch(&entries)?;
+        #[cfg(feature = "iceberg-recovery")]
+        self.unflushed.extend(
+            entries
+                .iter()
+                .zip(serialized)
+                .map(|(entry, payload)| (entry.lsn, payload)),
+        );
+        #[cfg(not(feature = "iceberg-recovery"))]
+        drop(serialized);
+        self.next_lsn = next_lsn;
+
+        let rows_with_lsns = rows
+            .into_iter()
+            .enumerate()
+            .map(|(offset, (id, vector, payload))| (id, vector, payload, entries[offset].lsn))
+            .collect();
+        self.inner
+            .get_mut(&col)?
+            .insert_batch_with_lsns(rows_with_lsns)
+            .map_err(PersistError::Apply)?;
+
+        Ok(count)
     }
 
     pub fn delete(&mut self, collection: &str, id: VecId) -> Result<bool, PersistError> {
