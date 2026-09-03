@@ -5,7 +5,7 @@ mod recovery;
 pub use entry::{IndexKind, WalEntry, WalOp, CURRENT_WAL_VERSION};
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use bincode::Options as _;
@@ -16,6 +16,8 @@ use serde_json::Value;
 use crate::{bincode_opts, PersistError};
 use frame::{checksum, write_frame, FrameIter};
 use recovery::apply_op;
+
+const LEGACY_CRC_FRAME_HEADER_BYTES: u64 = 8;
 
 fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
     // `version` is deliberately the first serialized field, and bincode
@@ -34,6 +36,51 @@ fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
     bincode_opts()
         .deserialize(payload)
         .map_err(PersistError::Decode)
+}
+
+/// Reject a complete v1 frame before its narrower checksum header can make it
+/// look like an incomplete v2 crash tail. A WAL uses one frame format, so the
+/// first complete entry identifies the whole file.
+fn reject_legacy_frame_format(file: &mut File) -> Result<(), PersistError> {
+    let file_len = file.metadata().map_err(PersistError::Io)?.len();
+    if file_len < 4 {
+        return Ok(());
+    }
+
+    let mut len_buf = [0u8; 4];
+    file.read_exact(&mut len_buf).map_err(PersistError::Io)?;
+    let payload_len = u32::from_le_bytes(len_buf) as u64;
+
+    // A valid current frame is authoritative, even if bytes within its hash
+    // happen to resemble a legacy entry prefix.
+    if file_len >= frame::HEADER_BYTES.saturating_add(payload_len) {
+        let mut hash_buf = [0u8; 8];
+        file.read_exact(&mut hash_buf).map_err(PersistError::Io)?;
+        let mut payload = vec![0u8; payload_len as usize];
+        file.read_exact(&mut payload).map_err(PersistError::Io)?;
+        if checksum(&payload) == u64::from_le_bytes(hash_buf) {
+            file.rewind().map_err(PersistError::Io)?;
+            return Ok(());
+        }
+    }
+
+    if file_len >= LEGACY_CRC_FRAME_HEADER_BYTES.saturating_add(payload_len) {
+        file.seek(SeekFrom::Start(LEGACY_CRC_FRAME_HEADER_BYTES))
+            .map_err(PersistError::Io)?;
+        let mut payload = vec![0u8; payload_len as usize];
+        file.read_exact(&mut payload).map_err(PersistError::Io)?;
+        if let Ok(entry) = bincode_opts().deserialize::<WalEntry>(&payload) {
+            if entry.version < CURRENT_WAL_VERSION {
+                return Err(PersistError::UnsupportedVersion {
+                    found: entry.version,
+                    max: CURRENT_WAL_VERSION,
+                });
+            }
+        }
+    }
+
+    file.rewind().map_err(PersistError::Io)?;
+    Ok(())
 }
 
 // ── WalWriter ──────────────────────────────────────────────────────────────
@@ -74,8 +121,8 @@ impl WalWriter {
         let mut frame_bytes = 0u64;
         for payload in &payloads {
             write_frame(&mut self.file, payload).map_err(PersistError::Io)?;
-            // Frame layout: 4-byte length prefix + 4-byte CRC + payload.
-            frame_bytes += 8u64 + payload.len() as u64;
+            // Frame layout: 4-byte length + 8-byte xxHash64 + payload.
+            frame_bytes += frame::HEADER_BYTES + payload.len() as u64;
         }
         self.file.flush().map_err(PersistError::Io)?;
         self.file.get_mut().sync_data().map_err(PersistError::Io)?;
@@ -150,7 +197,7 @@ impl Default for WalConfig {
 /// # Recovery
 /// On [`WalManager::open`], if a snapshot exists it is loaded first.  Then any
 /// WAL entries with LSN greater than the snapshot's `last_lsn` are replayed in
-/// order.  A truncated or CRC-corrupt tail frame (crash mid-write) is silently
+/// order.  A truncated or checksum-corrupt tail frame (crash mid-write) is silently
 /// discarded — it was never committed.
 ///
 /// # Error type
@@ -305,7 +352,8 @@ impl WalManager {
         snapshot_lsn: u64,
         data_dir: &Path,
     ) -> Result<(u64, u64, u64), PersistError> {
-        let file = File::open(path).map_err(PersistError::Io)?;
+        let mut file = File::open(path).map_err(PersistError::Io)?;
+        reject_legacy_frame_format(&mut file)?;
         let reader = BufReader::new(file);
         let mut iter = FrameIter::new(reader);
         let mut last_lsn = snapshot_lsn;
@@ -313,10 +361,10 @@ impl WalManager {
         let mut entries_since_checkpoint = 0u64;
 
         for item in &mut iter {
-            let (payload, stored_crc) = item.map_err(PersistError::Io)?;
+            let (payload, stored_hash) = item.map_err(PersistError::Io)?;
 
             let computed = checksum(&payload);
-            if computed != stored_crc {
+            if computed != stored_hash {
                 // If no bytes follow this frame it is a crash-truncated tail
                 // (the last write never completed); discard it and stop replay.
                 // If bytes remain after it, the corruption is mid-log and must
@@ -326,7 +374,7 @@ impl WalManager {
                     break;
                 }
                 return Err(PersistError::Crc {
-                    expected: stored_crc,
+                    expected: stored_hash,
                     got: computed,
                 });
             }
@@ -426,8 +474,8 @@ impl WalManager {
             let mut iter = frame::FrameIter::new(reader);
             let mut kept = Vec::new();
             for item in &mut iter {
-                let (payload, stored_crc) = item.map_err(PersistError::Io)?;
-                if frame::checksum(&payload) != stored_crc {
+                let (payload, stored_hash) = item.map_err(PersistError::Io)?;
+                if frame::checksum(&payload) != stored_hash {
                     break; // Treat corrupt tail as end of log.
                 }
                 let entry = decode_entry(&payload)?;
@@ -625,14 +673,16 @@ impl WalManager {
         let entries: Vec<_> = rows
             .iter()
             .enumerate()
-            .map(|(offset, (id, vector, payload))| WalEntry {
-                lsn: self.next_lsn + offset as u64,
-                op: WalOp::Insert {
-                    collection: col.clone(),
-                    id: *id,
-                    vector: vector.clone(),
-                    payload: payload.clone(),
-                },
+            .map(|(offset, (id, vector, payload))| {
+                WalEntry::new(
+                    self.next_lsn + offset as u64,
+                    WalOp::Insert {
+                        collection: col.clone(),
+                        id: *id,
+                        vector: vector.clone(),
+                        payload: payload.clone(),
+                    },
+                )
             })
             .collect();
 

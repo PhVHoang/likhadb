@@ -10,8 +10,8 @@ pub enum PersistError {
     Decode(#[source] bincode::Error),
     #[error("unsupported WAL version {found}; maximum supported version is {max}")]
     UnsupportedVersion { found: u8, max: u8 },
-    #[error("WAL CRC mismatch at mid-log frame: expected {expected:#010x}, got {got:#010x}")]
-    Crc { expected: u32, got: u32 },
+    #[error("WAL checksum mismatch at mid-log frame: expected {expected:#018x}, got {got:#018x}")]
+    Crc { expected: u64, got: u64 },
     #[error("WAL replay error: {0}")]
     Apply(#[from] likhadb_core::LikhaDbError),
 }
