@@ -6,7 +6,7 @@ use serde_json::Value;
 /// The version is serialized as the first byte of every [`WalEntry`] so a
 /// reader can reject an unsupported format before attempting to decode a
 /// potentially unknown [`WalOp`] variant.
-pub const CURRENT_WAL_VERSION: u8 = 1;
+pub const CURRENT_WAL_VERSION: u8 = 2;
 
 /// Index configuration captured at collection-creation time so WAL replay can
 /// reconstruct the right index type without touching the store layer.
