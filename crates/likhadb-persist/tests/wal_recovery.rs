@@ -1,6 +1,10 @@
 use likhadb_core::Metric;
-use likhadb_persist::{wal::CURRENT_WAL_VERSION, PersistError, WalConfig, WalManager};
+use likhadb_persist::{
+    wal::{WalEntry, WalOp, CURRENT_WAL_VERSION},
+    PersistError, WalConfig, WalManager,
+};
 use serde_json::json;
+use xxhash_rust::xxh64::xxh64;
 
 fn tmp_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("likhadb_wal_{label}_{}", std::process::id()));
@@ -100,8 +104,13 @@ fn wal_entry_starts_with_current_format_version() {
     }
 
     let wal = std::fs::read(dir.join("wal.log")).unwrap();
-    assert!(wal.len() > 8, "WAL must contain a complete frame");
-    assert_eq!(wal[8], CURRENT_WAL_VERSION);
+    assert!(wal.len() > 12, "WAL must contain a complete frame");
+    assert_eq!(wal[12], CURRENT_WAL_VERSION);
+
+    let payload_len = u32::from_le_bytes(wal[0..4].try_into().unwrap()) as usize;
+    let stored_hash = u64::from_le_bytes(wal[4..12].try_into().unwrap());
+    assert_eq!(wal.len(), 12 + payload_len);
+    assert_eq!(stored_hash, xxh64(&wal[12..], 0));
 }
 
 #[test]
@@ -109,7 +118,7 @@ fn unsupported_wal_version_is_reported_before_entry_decode() {
     let dir = tmp_dir("unsupported_version");
     let future_version = CURRENT_WAL_VERSION.checked_add(1).unwrap();
     let payload = [future_version];
-    let checksum = crc32fast::hash(&payload);
+    let checksum = xxh64(&payload, 0);
     let mut frame = Vec::new();
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(&checksum.to_le_bytes());
@@ -124,6 +133,42 @@ fn unsupported_wal_version_is_reported_before_entry_decode() {
                 if found == future_version && max == CURRENT_WAL_VERSION
         ),
         "future WAL format should surface PersistError::UnsupportedVersion"
+    );
+}
+
+#[test]
+fn legacy_crc32_frame_is_rejected_instead_of_ignored_as_a_crash_tail() {
+    use bincode::Options as _;
+
+    let dir = tmp_dir("legacy_crc32_frame");
+    let entry = WalEntry {
+        version: 1,
+        lsn: 1,
+        op: WalOp::CreateCollection {
+            name: "col".into(),
+            dim: 4,
+            metric: Metric::L2,
+            kind: likhadb_persist::wal::IndexKind::Flat,
+        },
+    };
+    let payload = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialize(&entry)
+        .unwrap();
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&[0u8; 4]);
+    frame.extend_from_slice(&payload);
+    std::fs::write(dir.join("wal.log"), frame).unwrap();
+
+    let result = WalManager::open(&dir);
+    assert!(
+        matches!(
+            result,
+            Err(PersistError::UnsupportedVersion { found: 1, max })
+                if max == CURRENT_WAL_VERSION
+        ),
+        "legacy frame format should be rejected explicitly"
     );
 }
 
@@ -626,7 +671,7 @@ fn truncated_wal_tail_is_ignored() {
     );
 }
 
-// ── Mid-log CRC corruption returns an error ────────────────────────────────
+// ── Mid-log checksum corruption returns an error ───────────────────────────
 
 #[test]
 fn mid_log_corruption_is_error() {
@@ -651,7 +696,7 @@ fn mid_log_corruption_is_error() {
     let result = WalManager::open(&dir);
     assert!(
         matches!(result, Err(PersistError::Crc { .. })),
-        "mid-log CRC corruption should surface as PersistError::Crc"
+        "mid-log checksum corruption should surface as PersistError::Crc"
     );
 }
 
@@ -681,8 +726,8 @@ fn second_frame_mid_log_corruption_is_error() {
     let wal_path = dir.join("wal.log");
     let mut data = std::fs::read(&wal_path).unwrap();
     let first_frame_payload_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let second_frame_start = 4 + 4 + first_frame_payload_len;
-    data[second_frame_start + 8 + 1] ^= 0xFF;
+    let second_frame_start = 4 + 8 + first_frame_payload_len;
+    data[second_frame_start + 12 + 1] ^= 0xFF;
     std::fs::write(&wal_path, &data).unwrap();
 
     let result = WalManager::open(&dir);
