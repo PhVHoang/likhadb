@@ -5,6 +5,8 @@ use arrow::array::{
     Array, ArrayRef, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array,
     Int64Array, StringArray, UInt32Array, UInt64Array, UInt64Builder,
 };
+#[cfg(feature = "iceberg")]
+use arrow::array::{LargeListArray, ListArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use likhadb_store::manager::CollectionManager;
@@ -236,8 +238,9 @@ impl LakehouseExt for CollectionManager {
 pub(crate) type DecodedRow = (u64, Vec<f32>, Option<Value>);
 
 /// Decode a record batch into `(id, vector, payload)` tuples using the given
-/// column names. The vector dimension is read from the `FixedSizeList` itself,
-/// so no external dim is required (the collection's `insert` validates dim on
+/// column names. Direct Parquet reads preserve vectors as `FixedSizeList`,
+/// while Iceberg table scans expose the schema-level `List`; both are accepted.
+/// No external dim is required (the collection's `insert` validates dim on
 /// apply). Used by the incremental-scan layer.
 #[cfg(feature = "iceberg")]
 pub(crate) fn batch_to_vectors(
@@ -267,19 +270,7 @@ pub(crate) fn batch_to_vectors(
     let vec_idx = schema
         .index_of(vector_col)
         .map_err(|_| LakehouseError::ColumnNotFound(vector_col.to_string()))?;
-    let vec_array = batch
-        .column(vec_idx)
-        .as_any()
-        .downcast_ref::<FixedSizeListArray>()
-        .ok_or_else(|| {
-            LakehouseError::Schema("vector column is not FixedSizeListArray".to_string())
-        })?;
-    let dim = vec_array.value_length() as usize;
-    let float_values = vec_array
-        .values()
-        .as_any()
-        .downcast_ref::<Float32Array>()
-        .ok_or_else(|| LakehouseError::Schema("vector values are not Float32".to_string()))?;
+    let vec_array = batch.column(vec_idx);
 
     let payload_col_indices: Vec<(usize, &str)> = payload_cols
         .iter()
@@ -294,12 +285,36 @@ pub(crate) fn batch_to_vectors(
     let mut out = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
         let id = id_array.value(row);
-        let start = row * dim;
-        let vec: Vec<f32> = float_values.values()[start..start + dim].to_vec();
+        let vec = vector_at(vec_array.as_ref(), row)?;
         let payload = build_payload(batch, &payload_col_indices, row);
         out.push((id, vec, payload));
     }
     Ok(out)
+}
+
+#[cfg(feature = "iceberg")]
+fn vector_at(array: &dyn Array, row: usize) -> Result<Vec<f32>, LakehouseError> {
+    if array.is_null(row) {
+        return Err(LakehouseError::Schema(
+            "vector column contains a null value".to_string(),
+        ));
+    }
+    let values = if let Some(array) = array.as_any().downcast_ref::<FixedSizeListArray>() {
+        array.value(row)
+    } else if let Some(array) = array.as_any().downcast_ref::<ListArray>() {
+        array.value(row)
+    } else if let Some(array) = array.as_any().downcast_ref::<LargeListArray>() {
+        array.value(row)
+    } else {
+        return Err(LakehouseError::Schema(
+            "vector column is not FixedSizeList, List, or LargeList".to_string(),
+        ));
+    };
+    let values = values
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .ok_or_else(|| LakehouseError::Schema("vector values are not Float32".to_string()))?;
+    Ok(values.values().to_vec())
 }
 
 /// Decode just the id column of a record batch — used to turn a dropped data
@@ -400,6 +415,9 @@ fn col_value_at(col: &dyn Array, row: usize) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "iceberg")]
+    use arrow::array::{Float32Builder, ListBuilder};
+
     use super::*;
     use likhadb_core::Metric;
     use tempfile::tempdir;
@@ -440,6 +458,36 @@ mod tests {
         assert_eq!(rows[0].1, vec![1.0, 2.0]); // dim read from FixedSizeList(2)
         assert_eq!(rows[0].2.as_ref().unwrap()["title"], "a");
         assert!(rows[1].2.is_none(), "null payload column → no payload");
+    }
+
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn batch_to_vectors_accepts_iceberg_list_arrays() {
+        let mut vectors = ListBuilder::new(Float32Builder::new());
+        vectors.values().append_slice(&[1.0, 2.0]);
+        vectors.append(true);
+        vectors.values().append_slice(&[3.0, 4.0]);
+        vectors.append(true);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![10, 20])),
+                Arc::new(vectors.finish()),
+            ],
+        )
+        .unwrap();
+
+        let rows = batch_to_vectors(&batch, "id", "embedding", &[]).unwrap();
+        assert_eq!(rows[0].1, vec![1.0, 2.0]);
+        assert_eq!(rows[1].1, vec![3.0, 4.0]);
     }
 
     #[cfg(feature = "iceberg")]
