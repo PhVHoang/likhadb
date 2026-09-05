@@ -513,6 +513,7 @@ fn auto_checkpoint_after_entry_threshold() {
     let config = WalConfig {
         checkpoint_every_n_entries: 2,
         checkpoint_every_n_bytes: 0,
+        ..WalConfig::default()
     };
 
     {
@@ -548,6 +549,7 @@ fn auto_checkpoint_after_byte_threshold() {
     let config = WalConfig {
         checkpoint_every_n_entries: 0,
         checkpoint_every_n_bytes: 1,
+        ..WalConfig::default()
     };
 
     let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
@@ -563,6 +565,7 @@ fn zero_auto_checkpoint_thresholds_disable_triggers() {
     let config = WalConfig {
         checkpoint_every_n_entries: 0,
         checkpoint_every_n_bytes: 0,
+        ..WalConfig::default()
     };
 
     let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
@@ -580,6 +583,7 @@ fn recovered_entries_count_toward_auto_checkpoint_threshold() {
     let disabled = WalConfig {
         checkpoint_every_n_entries: 0,
         checkpoint_every_n_bytes: 0,
+        ..WalConfig::default()
     };
 
     {
@@ -590,6 +594,7 @@ fn recovered_entries_count_toward_auto_checkpoint_threshold() {
     let config = WalConfig {
         checkpoint_every_n_entries: 2,
         checkpoint_every_n_bytes: 0,
+        ..WalConfig::default()
     };
     let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
     mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)

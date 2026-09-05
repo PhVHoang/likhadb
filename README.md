@@ -23,6 +23,33 @@ BM25, DataFusion enrichment, ACL filtering, score fusion, and reranking in one r
 Parquet and Iceberg integration keep the application connected to the same tables used by
 Spark, Trino, and dbt, while the local WAL protects writes between durable checkpoints.
 
+```mermaid
+flowchart LR
+    Client["Applications and agents"]
+
+    subgraph LikhaDB["LikhaDB — one application"]
+        API["REST / gRPC"]
+        Search["ANN + BM25<br/>candidate retrieval"]
+        Query["DataFusion<br/>enrichment · ACL · score fusion · reranking"]
+        WAL[("Local WAL<br/>write protection")]
+
+        API --> Search --> Query
+        API -. "durable writes" .-> WAL
+    end
+
+    subgraph Lakehouse["Lakehouse — source of truth"]
+        Tables[("Apache Iceberg / Parquet<br/>on object storage")]
+    end
+
+    Tools["Spark · Trino · dbt"]
+
+    Client -->|"one query"| API
+    Query <-->|"native read / write"| Tables
+    WAL -. "checkpoint" .-> Tables
+    Tools <-->|"use the same tables"| Tables
+    Query -->|"ranked, enriched results"| Client
+```
+
 ## Getting started
 
 **Prerequisites:** Rust stable toolchain.

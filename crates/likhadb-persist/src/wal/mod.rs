@@ -91,11 +91,11 @@ struct WalWriter {
 }
 
 impl WalWriter {
-    fn open_append(path: &Path) -> std::io::Result<Self> {
+    fn open_append(path: &Path, write_buffer_bytes: usize) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let bytes_written = file.metadata()?.len();
         Ok(Self {
-            file: BufWriter::new(file),
+            file: BufWriter::with_capacity(write_buffer_bytes, file),
             bytes_written,
         })
     }
@@ -163,7 +163,7 @@ pub struct WalStats {
     pub snapshot_lsn: u64,
 }
 
-/// Thresholds that control automatic WAL checkpoints.
+/// Settings that control WAL buffering and automatic checkpoints.
 ///
 /// A threshold of zero disables that trigger. When both thresholds are
 /// enabled, a checkpoint runs as soon as either one is reached.
@@ -173,6 +173,9 @@ pub struct WalConfig {
     pub checkpoint_every_n_entries: u64,
     /// Trigger a checkpoint after `wal.log` reaches this size (`0` = disabled).
     pub checkpoint_every_n_bytes: u64,
+    /// Capacity of the buffered writer for `wal.log`, in bytes (`0` disables
+    /// buffering).
+    pub write_buffer_bytes: usize,
 }
 
 impl Default for WalConfig {
@@ -180,6 +183,7 @@ impl Default for WalConfig {
         Self {
             checkpoint_every_n_entries: 100_000,
             checkpoint_every_n_bytes: 256 * 1024 * 1024,
+            write_buffer_bytes: 64 * 1024,
         }
     }
 }
@@ -234,8 +238,7 @@ impl WalManager {
         Self::open_with_config(dir, WalConfig::default())
     }
 
-    /// Open (or create) a data directory with custom auto-checkpoint
-    /// thresholds.
+    /// Open (or create) a data directory with custom WAL settings.
     pub fn open_with_config(dir: &Path, config: WalConfig) -> Result<Self, PersistError> {
         std::fs::create_dir_all(dir).map_err(PersistError::Io)?;
 
@@ -267,7 +270,8 @@ impl WalManager {
         }
 
         // 3. Open WAL for appending.
-        let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        let wal = WalWriter::open_append(&wal_path, config.write_buffer_bytes)
+            .map_err(PersistError::Io)?;
 
         Ok(Self {
             inner,
@@ -327,7 +331,8 @@ impl WalManager {
                 Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
         }
 
-        let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        let wal = WalWriter::open_append(&wal_path, config.write_buffer_bytes)
+            .map_err(PersistError::Io)?;
         Ok(Self {
             inner,
             wal,
@@ -491,7 +496,7 @@ impl WalManager {
         // Write kept entries to tmp file.
         {
             let file = File::create(&tmp_path).map_err(PersistError::Io)?;
-            let mut writer = BufWriter::new(file);
+            let mut writer = BufWriter::with_capacity(self.config.write_buffer_bytes, file);
             for entry in &entries_to_keep {
                 let payload = bincode_opts()
                     .serialize(entry)
@@ -504,7 +509,8 @@ impl WalManager {
 
         // Atomic rename then reopen.
         std::fs::rename(&tmp_path, &wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(&wal_path, self.config.write_buffer_bytes)
+            .map_err(PersistError::Io)?;
         self.wal_entries = entries_to_keep.len() as u64;
         self.entries_since_checkpoint = entries_to_keep
             .iter()
@@ -808,9 +814,54 @@ impl WalManager {
 
         // Truncate WAL and reopen for appending.
         WalWriter::truncate(&wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(&wal_path, self.config.write_buffer_bytes)
+            .map_err(PersistError::Io)?;
         self.wal_entries = 0;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WalConfig, WalManager};
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "likhadb-{name}-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn wal_write_buffer_defaults_to_64_kib() {
+        assert_eq!(WalConfig::default().write_buffer_bytes, 64 * 1024);
+    }
+
+    #[test]
+    fn custom_wal_write_buffer_capacity_survives_checkpoint() {
+        let dir = TestDir::new("wal-write-buffer");
+        let config = WalConfig {
+            write_buffer_bytes: 32 * 1024,
+            ..WalConfig::default()
+        };
+        let mut manager = WalManager::open_with_config(&dir.0, config).unwrap();
+
+        assert_eq!(manager.wal.file.capacity(), 32 * 1024);
+        manager.checkpoint().unwrap();
+        assert_eq!(manager.wal.file.capacity(), 32 * 1024);
     }
 }
