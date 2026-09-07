@@ -1,6 +1,10 @@
 use likhadb_core::Metric;
-use likhadb_persist::{Compression, PersistError, WalConfig, WalManager};
+use likhadb_persist::{
+    wal::{WalEntry, WalOp, CURRENT_WAL_VERSION},
+    Compression, PersistError, WalConfig, WalManager,
+};
 use serde_json::json;
+use xxhash_rust::xxh64::xxh64;
 
 fn tmp_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("likhadb_wal_{label}_{}", std::process::id()));
@@ -15,6 +19,72 @@ fn open_empty_dir_succeeds() {
     let dir = tmp_dir("open_empty");
     let mgr = WalManager::open(&dir).unwrap();
     assert!(mgr.list().is_empty());
+    assert_eq!(
+        mgr.stats(),
+        likhadb_persist::WalStats {
+            entries_written: 0,
+            entries_since_checkpoint: 0,
+            wal_bytes: 0,
+            last_lsn: 0,
+            snapshot_lsn: 0,
+        }
+    );
+}
+
+#[test]
+fn wal_stats_track_writes_checkpoints_and_recovery() {
+    let dir = tmp_dir("stats");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        mgr.delete("col", 1).unwrap();
+
+        let stats = mgr.stats();
+        assert_eq!(stats.entries_written, 3);
+        assert_eq!(stats.entries_since_checkpoint, 3);
+        assert_eq!(stats.last_lsn, 3);
+        assert_eq!(stats.snapshot_lsn, 0);
+        assert_eq!(
+            stats.wal_bytes,
+            std::fs::metadata(dir.join("wal.log")).unwrap().len()
+        );
+        assert!(stats.wal_bytes > 0);
+
+        mgr.checkpoint().unwrap();
+        assert_eq!(
+            mgr.stats(),
+            likhadb_persist::WalStats {
+                entries_written: 3,
+                entries_since_checkpoint: 0,
+                wal_bytes: 0,
+                last_lsn: 3,
+                snapshot_lsn: 3,
+            }
+        );
+
+        mgr.insert("col", 2, vec![2.0, 0.0, 0.0, 0.0], None)
+            .unwrap();
+        let stats = mgr.stats();
+        assert_eq!(stats.entries_written, 4);
+        assert_eq!(stats.entries_since_checkpoint, 1);
+        assert_eq!(stats.last_lsn, 4);
+        assert_eq!(stats.snapshot_lsn, 3);
+        assert!(stats.wal_bytes > 0);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let stats = mgr.stats();
+    assert_eq!(stats.entries_written, 0);
+    assert_eq!(stats.entries_since_checkpoint, 1);
+    assert_eq!(stats.last_lsn, 4);
+    assert_eq!(stats.snapshot_lsn, 3);
+    assert_eq!(
+        stats.wal_bytes,
+        std::fs::metadata(dir.join("wal.log")).unwrap().len()
+    );
 }
 
 #[test]
@@ -32,6 +102,7 @@ fn uncompressed_frames_include_a_clear_flags_byte() {
         checkpoint_every_n_entries: 0,
         checkpoint_every_n_bytes: 0,
         compression: Compression::None,
+        ..WalConfig::default()
     };
 
     {
@@ -40,8 +111,8 @@ fn uncompressed_frames_include_a_clear_flags_byte() {
     }
 
     let wal = std::fs::read(dir.join("wal.log")).unwrap();
-    assert!(wal.len() > 8);
-    assert_eq!(wal[8], 0, "raw frames must clear all compression flags");
+    assert!(wal.len() > 12);
+    assert_eq!(wal[12], 0, "raw frames must clear all compression flags");
 }
 
 #[cfg(feature = "zstd")]
@@ -52,6 +123,7 @@ fn zstd_frames_are_smaller_and_recover_across_mixed_write_settings() {
             checkpoint_every_n_entries: 0,
             checkpoint_every_n_bytes: 0,
             compression,
+            ..WalConfig::default()
         };
         let mut mgr = WalManager::open_with_config(dir, config).unwrap();
         mgr.create_collection("col", 384, Metric::L2).unwrap();
@@ -74,8 +146,8 @@ fn zstd_frames_are_smaller_and_recover_across_mixed_write_settings() {
             let payload_len =
                 u32::from_le_bytes(wal[offset..offset + 4].try_into().unwrap()) as usize;
             assert!(payload_len >= 1);
-            flags.push(wal[offset + 8]);
-            offset += 8 + payload_len;
+            flags.push(wal[offset + 12]);
+            offset += 12 + payload_len;
         }
         assert_eq!(offset, wal.len());
         flags
@@ -109,6 +181,7 @@ fn zstd_frames_are_smaller_and_recover_across_mixed_write_settings() {
             checkpoint_every_n_entries: 0,
             checkpoint_every_n_bytes: 0,
             compression: Compression::None,
+            ..WalConfig::default()
         };
         let mut mgr = WalManager::open_with_config(&compressed_dir, config).unwrap();
         mgr.insert("col", 99, vec![0.5; 384], None).unwrap();
@@ -143,6 +216,7 @@ fn zstd_frames_survive_iceberg_wal_rewrite() {
         checkpoint_every_n_entries: 0,
         checkpoint_every_n_bytes: 0,
         compression: Compression::Zstd { level: 1 },
+        ..WalConfig::default()
     };
 
     {
@@ -163,6 +237,85 @@ fn zstd_frames_survive_iceberg_wal_rewrite() {
         .search(&vec![0.125; 128], 16, None, false)
         .unwrap();
     assert_eq!(results.len(), 8);
+}
+
+#[test]
+fn wal_entry_starts_with_current_format_version() {
+    let dir = tmp_dir("format_version");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+    }
+
+    let wal = std::fs::read(dir.join("wal.log")).unwrap();
+    assert!(wal.len() > 12, "WAL must contain a complete frame");
+    assert_eq!(wal[12], 0, "default compression must write clear flags");
+    assert_eq!(wal[13], CURRENT_WAL_VERSION);
+
+    let payload_len = u32::from_le_bytes(wal[0..4].try_into().unwrap()) as usize;
+    let stored_hash = u64::from_le_bytes(wal[4..12].try_into().unwrap());
+    assert_eq!(wal.len(), 12 + payload_len);
+    assert_eq!(stored_hash, xxh64(&wal[12..], 0));
+}
+
+#[test]
+fn unsupported_wal_version_is_reported_before_entry_decode() {
+    let dir = tmp_dir("unsupported_version");
+    let future_version = CURRENT_WAL_VERSION.checked_add(1).unwrap();
+    let payload = [0, future_version];
+    let checksum = xxh64(&payload, 0);
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&checksum.to_le_bytes());
+    frame.extend_from_slice(&payload);
+    std::fs::write(dir.join("wal.log"), frame).unwrap();
+
+    let result = WalManager::open(&dir);
+    assert!(
+        matches!(
+            result,
+            Err(PersistError::UnsupportedVersion { found, max })
+                if found == future_version && max == CURRENT_WAL_VERSION
+        ),
+        "future WAL format should surface PersistError::UnsupportedVersion"
+    );
+}
+
+#[test]
+fn legacy_crc32_frame_is_rejected_instead_of_ignored_as_a_crash_tail() {
+    use bincode::Options as _;
+
+    let dir = tmp_dir("legacy_crc32_frame");
+    let entry = WalEntry {
+        version: 1,
+        lsn: 1,
+        op: WalOp::CreateCollection {
+            name: "col".into(),
+            dim: 4,
+            metric: Metric::L2,
+            kind: likhadb_persist::wal::IndexKind::Flat,
+        },
+    };
+    let payload = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialize(&entry)
+        .unwrap();
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&[0u8; 4]);
+    frame.extend_from_slice(&payload);
+    std::fs::write(dir.join("wal.log"), frame).unwrap();
+
+    let result = WalManager::open(&dir);
+    assert!(
+        matches!(
+            result,
+            Err(PersistError::UnsupportedVersion { found: 1, max })
+                if max == CURRENT_WAL_VERSION
+        ),
+        "legacy frame format should be rejected explicitly"
+    );
 }
 
 // ── Insert survives restart ────────────────────────────────────────────────
@@ -187,6 +340,174 @@ fn insert_survives_restart() {
         .search(&[0.0; 4], 10, None, false)
         .unwrap();
     assert_eq!(results.len(), 10);
+}
+
+// ── Batch insert uses one group commit and survives restart ────────────────
+
+#[test]
+fn batch_insert_survives_restart() {
+    let dir = tmp_dir("batch_insert_restart");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+        let inserted = mgr
+            .insert_batch(
+                "col",
+                [
+                    (1, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"tag": "first"}))),
+                    (2, vec![2.0, 0.0, 0.0, 0.0], None),
+                    (3, vec![3.0, 0.0, 0.0, 0.0], Some(json!({"tag": "third"}))),
+                ],
+            )
+            .unwrap();
+        assert_eq!(inserted, 3);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let col = mgr.get("col").unwrap();
+    assert_eq!(col.len(), 3);
+    assert_eq!(col.get(1).unwrap().unwrap().1.unwrap()["tag"], "first");
+    assert_eq!(col.get(3).unwrap().unwrap().1.unwrap()["tag"], "third");
+}
+
+#[test]
+fn empty_batch_does_not_write_to_wal() {
+    let dir = tmp_dir("empty_batch");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    let wal_path = dir.join("wal.log");
+    let len_before = std::fs::metadata(&wal_path).unwrap().len();
+
+    let inserted = mgr
+        .insert_batch(
+            "col",
+            std::iter::empty::<(u64, Vec<f32>, Option<serde_json::Value>)>(),
+        )
+        .unwrap();
+
+    assert_eq!(inserted, 0);
+    assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), len_before);
+    assert!(mgr.get("col").unwrap().is_empty());
+}
+
+#[test]
+fn invalid_batch_is_rejected_before_wal_write() {
+    let dir = tmp_dir("invalid_batch");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    let wal_path = dir.join("wal.log");
+    let len_before = std::fs::metadata(&wal_path).unwrap().len();
+
+    let result = mgr.insert_batch(
+        "col",
+        [
+            (1, vec![1.0, 0.0, 0.0, 0.0], None),
+            (2, vec![2.0, 0.0, 0.0], None),
+        ],
+    );
+
+    assert!(matches!(
+        result,
+        Err(PersistError::Apply(
+            likhadb_core::LikhaDbError::DimMismatch {
+                expected: 4,
+                got: 3
+            }
+        ))
+    ));
+    assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), len_before);
+    assert!(mgr.get("col").unwrap().is_empty());
+}
+
+#[test]
+fn batch_insert_preserves_duplicate_input_order() {
+    let dir = tmp_dir("batch_duplicate_ids");
+
+    {
+        let mut mgr = WalManager::open(&dir).unwrap();
+        mgr.create_hnsw_collection("col", 4, Metric::L2, 4, 8, 4)
+            .unwrap();
+        mgr.insert_batch(
+            "col",
+            [
+                (7, vec![1.0, 0.0, 0.0, 0.0], Some(json!({"v": 1}))),
+                (7, vec![2.0, 0.0, 0.0, 0.0], Some(json!({"v": 2}))),
+            ],
+        )
+        .unwrap();
+
+        let (vector, payload) = mgr.get("col").unwrap().get(7).unwrap().unwrap();
+        assert_eq!(vector, vec![2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(payload.unwrap()["v"], 2);
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let (vector, payload) = mgr.get("col").unwrap().get(7).unwrap().unwrap();
+    assert_eq!(vector, vec![2.0, 0.0, 0.0, 0.0]);
+    assert_eq!(payload.unwrap()["v"], 2);
+}
+
+#[cfg(feature = "fts")]
+#[test]
+fn batch_insert_indexes_every_payload_for_fts() {
+    let dir = tmp_dir("batch_fts");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("docs", 4, Metric::L2).unwrap();
+    mgr.enable_fts("docs").unwrap();
+
+    mgr.insert_batch(
+        "docs",
+        [
+            (
+                1,
+                vec![1.0, 0.0, 0.0, 0.0],
+                Some(json!({"body": "alpha canary"})),
+            ),
+            (
+                2,
+                vec![2.0, 0.0, 0.0, 0.0],
+                Some(json!({"body": "beta canary"})),
+            ),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        mgr.get("docs").unwrap().fts_search("alpha", 5).unwrap()[0].id,
+        1
+    );
+    assert_eq!(
+        mgr.get("docs").unwrap().fts_search("beta", 5).unwrap()[0].id,
+        2
+    );
+}
+
+#[cfg(feature = "iceberg-recovery")]
+#[test]
+fn batch_insert_tracks_each_unflushed_entry() {
+    let dir = tmp_dir("batch_unflushed");
+    let mut mgr = WalManager::open(&dir).unwrap();
+    mgr.create_collection("col", 4, Metric::L2).unwrap();
+    mgr.set_iceberg_watermark(1);
+
+    mgr.insert_batch(
+        "col",
+        [
+            (1, vec![1.0, 0.0, 0.0, 0.0], None),
+            (2, vec![2.0, 0.0, 0.0, 0.0], None),
+        ],
+    )
+    .unwrap();
+
+    let unflushed = mgr.collect_unflushed();
+    assert_eq!(
+        unflushed.iter().map(|entry| entry.lsn).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(unflushed
+        .iter()
+        .all(|entry| matches!(&entry.op, likhadb_persist::wal::WalOp::Insert { .. })));
 }
 
 // ── Delete survives restart ────────────────────────────────────────────────
@@ -345,11 +666,16 @@ fn auto_checkpoint_after_entry_threshold() {
         let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
         mgr.create_collection("col", 4, Metric::L2).unwrap();
         assert!(!dir.join("snapshot.bin").exists());
+        assert_eq!(mgr.stats().entries_since_checkpoint, 1);
 
         mgr.insert("col", 1, vec![1.0, 0.0, 0.0, 0.0], None)
             .unwrap();
         assert!(dir.join("snapshot.bin").exists());
         assert_eq!(std::fs::metadata(dir.join("wal.log")).unwrap().len(), 0);
+        assert_eq!(mgr.stats().entries_written, 2);
+        assert_eq!(mgr.stats().entries_since_checkpoint, 0);
+        assert_eq!(mgr.stats().last_lsn, 2);
+        assert_eq!(mgr.stats().snapshot_lsn, 2);
     }
 
     let mgr = WalManager::open(&dir).unwrap();
@@ -491,7 +817,7 @@ fn truncated_wal_tail_is_ignored() {
     );
 }
 
-// ── Mid-log CRC corruption returns an error ────────────────────────────────
+// ── Mid-log checksum corruption returns an error ───────────────────────────
 
 #[test]
 fn mid_log_corruption_is_error() {
@@ -516,7 +842,7 @@ fn mid_log_corruption_is_error() {
     let result = WalManager::open(&dir);
     assert!(
         matches!(result, Err(PersistError::Crc { .. })),
-        "mid-log CRC corruption should surface as PersistError::Crc"
+        "mid-log checksum corruption should surface as PersistError::Crc"
     );
 }
 
@@ -546,8 +872,8 @@ fn second_frame_mid_log_corruption_is_error() {
     let wal_path = dir.join("wal.log");
     let mut data = std::fs::read(&wal_path).unwrap();
     let first_frame_payload_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let second_frame_start = 4 + 4 + first_frame_payload_len;
-    data[second_frame_start + 8 + 1] ^= 0xFF;
+    let second_frame_start = 4 + 8 + first_frame_payload_len;
+    data[second_frame_start + 12 + 1] ^= 0xFF;
     std::fs::write(&wal_path, &data).unwrap();
 
     let result = WalManager::open(&dir);
