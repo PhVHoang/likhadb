@@ -1,7 +1,7 @@
 use likhadb_core::Metric;
 use likhadb_persist::{
     wal::{WalEntry, WalOp, CURRENT_WAL_VERSION},
-    PersistError, WalConfig, WalManager,
+    Compression, PersistError, WalConfig, WalManager,
 };
 use serde_json::json;
 use xxhash_rust::xxh64::xxh64;
@@ -92,6 +92,151 @@ fn wal_config_has_bounded_defaults() {
     let config = WalConfig::default();
     assert_eq!(config.checkpoint_every_n_entries, 100_000);
     assert_eq!(config.checkpoint_every_n_bytes, 256 * 1024 * 1024);
+    assert_eq!(config.compression, Compression::None);
+}
+
+#[test]
+fn uncompressed_frames_include_a_clear_flags_byte() {
+    let dir = tmp_dir("raw_frame_flags");
+    let config = WalConfig {
+        checkpoint_every_n_entries: 0,
+        checkpoint_every_n_bytes: 0,
+        compression: Compression::None,
+        ..WalConfig::default()
+    };
+
+    {
+        let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
+        mgr.create_collection("col", 4, Metric::L2).unwrap();
+    }
+
+    let wal = std::fs::read(dir.join("wal.log")).unwrap();
+    assert!(wal.len() > 12);
+    assert_eq!(wal[12], 0, "raw frames must clear all compression flags");
+}
+
+#[cfg(feature = "zstd")]
+#[test]
+fn zstd_frames_are_smaller_and_recover_across_mixed_write_settings() {
+    fn write_compressible_wal(dir: &std::path::Path, compression: Compression) {
+        let config = WalConfig {
+            checkpoint_every_n_entries: 0,
+            checkpoint_every_n_bytes: 0,
+            compression,
+            ..WalConfig::default()
+        };
+        let mut mgr = WalManager::open_with_config(dir, config).unwrap();
+        mgr.create_collection("col", 384, Metric::L2).unwrap();
+        for id in 0..16 {
+            mgr.insert(
+                "col",
+                id,
+                vec![0.25; 384],
+                Some(json!({"text": "repeated payload ".repeat(128)})),
+            )
+            .unwrap();
+        }
+    }
+
+    fn frame_flags(path: &std::path::Path) -> Vec<u8> {
+        let wal = std::fs::read(path).unwrap();
+        let mut flags = Vec::new();
+        let mut offset = 0usize;
+        while offset < wal.len() {
+            let payload_len =
+                u32::from_le_bytes(wal[offset..offset + 4].try_into().unwrap()) as usize;
+            assert!(payload_len >= 1);
+            flags.push(wal[offset + 12]);
+            offset += 12 + payload_len;
+        }
+        assert_eq!(offset, wal.len());
+        flags
+    }
+
+    let raw_dir = tmp_dir("zstd_size_raw");
+    let compressed_dir = tmp_dir("zstd_size_compressed");
+    write_compressible_wal(&raw_dir, Compression::None);
+    write_compressible_wal(&compressed_dir, Compression::Zstd { level: 1 });
+
+    let raw_path = raw_dir.join("wal.log");
+    let compressed_path = compressed_dir.join("wal.log");
+    let raw_size = std::fs::metadata(&raw_path).unwrap().len();
+    let compressed_size = std::fs::metadata(&compressed_path).unwrap().len();
+    assert!(
+        compressed_size * 2 < raw_size,
+        "expected zstd WAL ({compressed_size} bytes) to be less than half the raw WAL ({raw_size} bytes)"
+    );
+    assert!(frame_flags(&raw_path).iter().all(|flag| *flag == 0));
+    assert!(
+        frame_flags(&compressed_path)
+            .iter()
+            .any(|flag| flag & 0x01 != 0),
+        "at least one compressible frame should carry the zstd flag"
+    );
+
+    // The frame flag, rather than the current write configuration, controls
+    // recovery. Reopen with compression disabled and append a raw frame.
+    {
+        let config = WalConfig {
+            checkpoint_every_n_entries: 0,
+            checkpoint_every_n_bytes: 0,
+            compression: Compression::None,
+            ..WalConfig::default()
+        };
+        let mut mgr = WalManager::open_with_config(&compressed_dir, config).unwrap();
+        mgr.insert("col", 99, vec![0.5; 384], None).unwrap();
+    }
+
+    let mixed_flags = frame_flags(&compressed_path);
+    assert_eq!(mixed_flags.last(), Some(&0));
+    let mgr = WalManager::open(&compressed_dir).unwrap();
+    let results = mgr
+        .get("col")
+        .unwrap()
+        .search(&vec![0.25; 384], 32, None, true)
+        .unwrap();
+    assert_eq!(results.len(), 17);
+    assert_eq!(
+        results
+            .iter()
+            .find(|result| result.id == 0)
+            .unwrap()
+            .payload
+            .as_ref()
+            .unwrap()["text"],
+        json!("repeated payload ".repeat(128))
+    );
+}
+
+#[cfg(all(feature = "iceberg-recovery", feature = "zstd"))]
+#[test]
+fn zstd_frames_survive_iceberg_wal_rewrite() {
+    let dir = tmp_dir("zstd_iceberg_rewrite");
+    let config = WalConfig {
+        checkpoint_every_n_entries: 0,
+        checkpoint_every_n_bytes: 0,
+        compression: Compression::Zstd { level: 1 },
+        ..WalConfig::default()
+    };
+
+    {
+        let mut mgr = WalManager::open_with_config(&dir, config).unwrap();
+        mgr.create_collection("col", 128, Metric::L2).unwrap();
+        for id in 0..8 {
+            mgr.insert("col", id, vec![0.125; 128], None).unwrap();
+        }
+        // Keeping every entry still exercises the decode/re-encode path used
+        // when Iceberg advances its durable watermark.
+        mgr.truncate_wal_up_to(0).unwrap();
+    }
+
+    let mgr = WalManager::open(&dir).unwrap();
+    let results = mgr
+        .get("col")
+        .unwrap()
+        .search(&vec![0.125; 128], 16, None, false)
+        .unwrap();
+    assert_eq!(results.len(), 8);
 }
 
 #[test]
@@ -105,7 +250,8 @@ fn wal_entry_starts_with_current_format_version() {
 
     let wal = std::fs::read(dir.join("wal.log")).unwrap();
     assert!(wal.len() > 12, "WAL must contain a complete frame");
-    assert_eq!(wal[12], CURRENT_WAL_VERSION);
+    assert_eq!(wal[12], 0, "default compression must write clear flags");
+    assert_eq!(wal[13], CURRENT_WAL_VERSION);
 
     let payload_len = u32::from_le_bytes(wal[0..4].try_into().unwrap()) as usize;
     let stored_hash = u64::from_le_bytes(wal[4..12].try_into().unwrap());
@@ -117,7 +263,7 @@ fn wal_entry_starts_with_current_format_version() {
 fn unsupported_wal_version_is_reported_before_entry_decode() {
     let dir = tmp_dir("unsupported_version");
     let future_version = CURRENT_WAL_VERSION.checked_add(1).unwrap();
-    let payload = [future_version];
+    let payload = [0, future_version];
     let checksum = xxh64(&payload, 0);
     let mut frame = Vec::new();
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());

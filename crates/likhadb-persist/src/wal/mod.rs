@@ -14,12 +14,22 @@ use likhadb_store::{Collection, CollectionManager};
 use serde_json::Value;
 
 use crate::{bincode_opts, PersistError};
-use frame::{checksum, write_frame, FrameIter};
+use frame::{checksum, decode_payload, encode_payload, write_frame, FrameIter};
 use recovery::apply_op;
 
 const LEGACY_CRC_FRAME_HEADER_BYTES: u64 = 8;
 
 fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
+    // Accept unflagged v2 payloads written before per-frame compression was
+    // introduced, then use the flags byte for all newly written frames.
+    let decoded;
+    let payload = if payload.first() == Some(&CURRENT_WAL_VERSION) {
+        payload
+    } else {
+        decoded = decode_payload(payload).map_err(PersistError::Io)?;
+        &decoded
+    };
+
     // `version` is deliberately the first serialized field, and bincode
     // encodes a u8 as one byte. Inspect it before decoding `WalOp` so future
     // variants produce a useful version error instead of a generic decode
@@ -36,6 +46,20 @@ fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
     bincode_opts()
         .deserialize(payload)
         .map_err(PersistError::Decode)
+}
+
+/// Compression used for newly appended WAL frames.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum Compression {
+    /// Store serialized WAL entries without compression.
+    #[default]
+    None,
+    /// Compress entries with zstd at the supplied compression level.
+    ///
+    /// Requires the `zstd` crate feature. Frames that do not become smaller
+    /// are stored raw even when this option is selected.
+    #[cfg(feature = "zstd")]
+    Zstd { level: i32 },
 }
 
 /// Reject a complete v1 frame before its narrower checksum header can make it
@@ -88,15 +112,21 @@ fn reject_legacy_frame_format(file: &mut File) -> Result<(), PersistError> {
 struct WalWriter {
     file: BufWriter<File>,
     bytes_written: u64,
+    compression: Compression,
 }
 
 impl WalWriter {
-    fn open_append(path: &Path, write_buffer_bytes: usize) -> std::io::Result<Self> {
+    fn open_append(
+        path: &Path,
+        write_buffer_bytes: usize,
+        compression: Compression,
+    ) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let bytes_written = file.metadata()?.len();
         Ok(Self {
             file: BufWriter::with_capacity(write_buffer_bytes, file),
             bytes_written,
+            compression,
         })
     }
 
@@ -120,9 +150,10 @@ impl WalWriter {
 
         let mut frame_bytes = 0u64;
         for payload in &payloads {
-            write_frame(&mut self.file, payload).map_err(PersistError::Io)?;
-            // Frame layout: 4-byte length + 8-byte xxHash64 + payload.
-            frame_bytes += frame::HEADER_BYTES + payload.len() as u64;
+            let encoded = encode_payload(payload, &self.compression).map_err(PersistError::Io)?;
+            write_frame(&mut self.file, &encoded).map_err(PersistError::Io)?;
+            // Frame layout: 4-byte length + 8-byte xxHash64 + flags + payload.
+            frame_bytes += frame::HEADER_BYTES + encoded.len() as u64;
         }
         self.file.flush().map_err(PersistError::Io)?;
         self.file.get_mut().sync_data().map_err(PersistError::Io)?;
@@ -176,6 +207,8 @@ pub struct WalConfig {
     /// Capacity of the buffered writer for `wal.log`, in bytes (`0` disables
     /// buffering).
     pub write_buffer_bytes: usize,
+    /// Compression used for newly appended frames.
+    pub compression: Compression,
 }
 
 impl Default for WalConfig {
@@ -184,6 +217,7 @@ impl Default for WalConfig {
             checkpoint_every_n_entries: 100_000,
             checkpoint_every_n_bytes: 256 * 1024 * 1024,
             write_buffer_bytes: 64 * 1024,
+            compression: Compression::None,
         }
     }
 }
@@ -270,8 +304,12 @@ impl WalManager {
         }
 
         // 3. Open WAL for appending.
-        let wal = WalWriter::open_append(&wal_path, config.write_buffer_bytes)
-            .map_err(PersistError::Io)?;
+        let wal = WalWriter::open_append(
+            &wal_path,
+            config.write_buffer_bytes,
+            config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
 
         Ok(Self {
             inner,
@@ -331,8 +369,12 @@ impl WalManager {
                 Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
         }
 
-        let wal = WalWriter::open_append(&wal_path, config.write_buffer_bytes)
-            .map_err(PersistError::Io)?;
+        let wal = WalWriter::open_append(
+            &wal_path,
+            config.write_buffer_bytes,
+            config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
         Ok(Self {
             inner,
             wal,
@@ -501,7 +543,9 @@ impl WalManager {
                 let payload = bincode_opts()
                     .serialize(entry)
                     .map_err(PersistError::Encode)?;
-                frame::write_frame(&mut writer, &payload).map_err(PersistError::Io)?;
+                let encoded = frame::encode_payload(&payload, &self.config.compression)
+                    .map_err(PersistError::Io)?;
+                frame::write_frame(&mut writer, &encoded).map_err(PersistError::Io)?;
             }
             writer.flush().map_err(PersistError::Io)?;
             writer.get_mut().sync_all().map_err(PersistError::Io)?;
@@ -509,8 +553,12 @@ impl WalManager {
 
         // Atomic rename then reopen.
         std::fs::rename(&tmp_path, &wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path, self.config.write_buffer_bytes)
-            .map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(
+            &wal_path,
+            self.config.write_buffer_bytes,
+            self.config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
         self.wal_entries = entries_to_keep.len() as u64;
         self.entries_since_checkpoint = entries_to_keep
             .iter()
@@ -814,8 +862,12 @@ impl WalManager {
 
         // Truncate WAL and reopen for appending.
         WalWriter::truncate(&wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path, self.config.write_buffer_bytes)
-            .map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(
+            &wal_path,
+            self.config.write_buffer_bytes,
+            self.config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
         self.wal_entries = 0;
 
         Ok(())
