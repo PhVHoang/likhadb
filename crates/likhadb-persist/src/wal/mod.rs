@@ -3,11 +3,11 @@ mod frame;
 mod reader;
 mod recovery;
 
-pub use entry::{IndexKind, WalEntry, WalOp};
+pub use entry::{IndexKind, WalEntry, WalOp, CURRENT_WAL_VERSION};
 pub use reader::WalReader;
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use bincode::Options as _;
@@ -16,39 +16,161 @@ use likhadb_store::{Collection, CollectionManager};
 use serde_json::Value;
 
 use crate::{bincode_opts, PersistError};
-use frame::write_frame;
+use frame::{checksum, decode_payload, encode_payload, write_frame};
 use recovery::apply_op;
+
+const LEGACY_CRC_FRAME_HEADER_BYTES: u64 = 8;
+
+fn decode_entry(payload: &[u8]) -> Result<WalEntry, PersistError> {
+    // Accept unflagged v2 payloads written before per-frame compression was
+    // introduced, then use the flags byte for all newly written frames.
+    let decoded;
+    let payload = if payload.first() == Some(&CURRENT_WAL_VERSION) {
+        payload
+    } else {
+        decoded = decode_payload(payload).map_err(PersistError::Io)?;
+        &decoded
+    };
+
+    // `version` is deliberately the first serialized field, and bincode
+    // encodes a u8 as one byte. Inspect it before decoding `WalOp` so future
+    // variants produce a useful version error instead of a generic decode
+    // failure.
+    if let Some(&found) = payload.first() {
+        if found != CURRENT_WAL_VERSION {
+            return Err(PersistError::UnsupportedVersion {
+                found,
+                max: CURRENT_WAL_VERSION,
+            });
+        }
+    }
+
+    bincode_opts()
+        .deserialize(payload)
+        .map_err(PersistError::Decode)
+}
+
+/// Compression used for newly appended WAL frames.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum Compression {
+    /// Store serialized WAL entries without compression.
+    #[default]
+    None,
+    /// Compress entries with zstd at the supplied compression level.
+    ///
+    /// Requires the `zstd` crate feature. Frames that do not become smaller
+    /// are stored raw even when this option is selected.
+    #[cfg(feature = "zstd")]
+    Zstd { level: i32 },
+}
+
+/// Reject a complete v1 frame before its narrower checksum header can make it
+/// look like an incomplete v2 crash tail. A WAL uses one frame format, so the
+/// first complete entry identifies the whole file.
+fn reject_legacy_frame_format(file: &mut File) -> Result<(), PersistError> {
+    let file_len = file.metadata().map_err(PersistError::Io)?.len();
+    if file_len < 4 {
+        return Ok(());
+    }
+
+    let mut len_buf = [0u8; 4];
+    file.read_exact(&mut len_buf).map_err(PersistError::Io)?;
+    let payload_len = u32::from_le_bytes(len_buf) as u64;
+
+    // A valid current frame is authoritative, even if bytes within its hash
+    // happen to resemble a legacy entry prefix.
+    if file_len >= frame::HEADER_BYTES.saturating_add(payload_len) {
+        let mut hash_buf = [0u8; 8];
+        file.read_exact(&mut hash_buf).map_err(PersistError::Io)?;
+        let mut payload = vec![0u8; payload_len as usize];
+        file.read_exact(&mut payload).map_err(PersistError::Io)?;
+        if checksum(&payload) == u64::from_le_bytes(hash_buf) {
+            file.rewind().map_err(PersistError::Io)?;
+            return Ok(());
+        }
+    }
+
+    if file_len >= LEGACY_CRC_FRAME_HEADER_BYTES.saturating_add(payload_len) {
+        file.seek(SeekFrom::Start(LEGACY_CRC_FRAME_HEADER_BYTES))
+            .map_err(PersistError::Io)?;
+        let mut payload = vec![0u8; payload_len as usize];
+        file.read_exact(&mut payload).map_err(PersistError::Io)?;
+        if let Ok(entry) = bincode_opts().deserialize::<WalEntry>(&payload) {
+            if entry.version < CURRENT_WAL_VERSION {
+                return Err(PersistError::UnsupportedVersion {
+                    found: entry.version,
+                    max: CURRENT_WAL_VERSION,
+                });
+            }
+        }
+    }
+
+    file.rewind().map_err(PersistError::Io)?;
+    Ok(())
+}
 
 // ── WalWriter ──────────────────────────────────────────────────────────────
 
 struct WalWriter {
     file: BufWriter<File>,
     bytes_written: u64,
+    compression: Compression,
 }
 
 impl WalWriter {
-    fn open_append(path: &Path) -> std::io::Result<Self> {
+    fn open_append(
+        path: &Path,
+        write_buffer_bytes: usize,
+        compression: Compression,
+    ) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let bytes_written = file.metadata()?.len();
         Ok(Self {
-            file: BufWriter::new(file),
+            file: BufWriter::with_capacity(write_buffer_bytes, file),
             bytes_written,
+            compression,
         })
     }
 
     fn append(&mut self, entry: &WalEntry) -> Result<(), PersistError> {
-        let payload = bincode_opts()
-            .serialize(entry)
-            .map_err(PersistError::Encode)?;
-        // Frame layout: 4-byte length prefix + 4-byte CRC + payload
-        let frame_bytes = 8u64 + payload.len() as u64;
-        write_frame(&mut self.file, &payload).map_err(PersistError::Io)?;
+        self.append_batch(std::slice::from_ref(entry)).map(|_| ())
+    }
+
+    /// Serialize and durably append a group of entries with one flush/fsync.
+    ///
+    /// Serialization finishes before the first frame is written, so an encode
+    /// failure cannot leave a partially-written batch in the WAL.
+    fn append_batch(&mut self, entries: &[WalEntry]) -> Result<Vec<Vec<u8>>, PersistError> {
+        let payloads: Vec<Vec<u8>> = entries
+            .iter()
+            .map(|entry| {
+                bincode_opts()
+                    .serialize(entry)
+                    .map_err(PersistError::Encode)
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut frame_bytes = 0u64;
+        for payload in &payloads {
+            let encoded = encode_payload(payload, &self.compression).map_err(PersistError::Io)?;
+            write_frame(&mut self.file, &encoded).map_err(PersistError::Io)?;
+            // Frame layout: 4-byte length + 8-byte xxHash64 + flags + payload.
+            frame_bytes += frame::HEADER_BYTES + encoded.len() as u64;
+        }
         self.file.flush().map_err(PersistError::Io)?;
         self.file.get_mut().sync_data().map_err(PersistError::Io)?;
         self.bytes_written = self.bytes_written.saturating_add(frame_bytes);
         metrics::counter!("likhadb_wal_bytes_written_total").increment(frame_bytes);
-        metrics::counter!("likhadb_wal_appends_total").increment(1);
-        Ok(())
+        metrics::counter!("likhadb_wal_appends_total").increment(entries.len() as u64);
+        Ok(payloads)
+    }
+
+    fn bytes_on_disk(&self) -> u64 {
+        self.file
+            .get_ref()
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(self.bytes_written)
     }
 
     fn truncate(path: &Path) -> std::io::Result<()> {
@@ -59,7 +181,22 @@ impl WalWriter {
 
 // ── WalManager ─────────────────────────────────────────────────────────────
 
-/// Thresholds that control automatic WAL checkpoints.
+/// Point-in-time statistics for a [`WalManager`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WalStats {
+    /// Total entries written since this `WalManager` was opened.
+    pub entries_written: u64,
+    /// Entries newer than the most recent snapshot and pending replay.
+    pub entries_since_checkpoint: u64,
+    /// Approximate byte size of `wal.log` on disk.
+    pub wal_bytes: u64,
+    /// LSN of the last committed entry.
+    pub last_lsn: u64,
+    /// LSN captured in the most recent snapshot (`0` if none exists).
+    pub snapshot_lsn: u64,
+}
+
+/// Settings that control WAL buffering and automatic checkpoints.
 ///
 /// A threshold of zero disables that trigger. When both thresholds are
 /// enabled, a checkpoint runs as soon as either one is reached.
@@ -69,6 +206,11 @@ pub struct WalConfig {
     pub checkpoint_every_n_entries: u64,
     /// Trigger a checkpoint after `wal.log` reaches this size (`0` = disabled).
     pub checkpoint_every_n_bytes: u64,
+    /// Capacity of the buffered writer for `wal.log`, in bytes (`0` disables
+    /// buffering).
+    pub write_buffer_bytes: usize,
+    /// Compression used for newly appended frames.
+    pub compression: Compression,
 }
 
 impl Default for WalConfig {
@@ -76,6 +218,8 @@ impl Default for WalConfig {
         Self {
             checkpoint_every_n_entries: 100_000,
             checkpoint_every_n_bytes: 256 * 1024 * 1024,
+            write_buffer_bytes: 64 * 1024,
+            compression: Compression::None,
         }
     }
 }
@@ -93,7 +237,7 @@ impl Default for WalConfig {
 /// # Recovery
 /// On [`WalManager::open`], if a snapshot exists it is loaded first.  Then any
 /// WAL entries with LSN greater than the snapshot's `last_lsn` are replayed in
-/// order.  A truncated or CRC-corrupt tail frame (crash mid-write) is silently
+/// order.  A truncated or checksum-corrupt tail frame (crash mid-write) is silently
 /// discarded — it was never committed.
 ///
 /// # Error type
@@ -106,6 +250,9 @@ pub struct WalManager {
     config: WalConfig,
     wal_entries: u64,
     next_lsn: u64,
+    entries_written: u64,
+    entries_since_checkpoint: u64,
+    snapshot_lsn: u64,
     dir: PathBuf,
     /// Highest LSN already represented by the durable recovery baseline.
     /// This is the snapshot LSN for normal recovery and the supplied
@@ -131,8 +278,7 @@ impl WalManager {
         Self::open_with_config(dir, WalConfig::default())
     }
 
-    /// Open (or create) a data directory with custom auto-checkpoint
-    /// thresholds.
+    /// Open (or create) a data directory with custom WAL settings.
     pub fn open_with_config(dir: &Path, config: WalConfig) -> Result<Self, PersistError> {
         std::fs::create_dir_all(dir).map_err(PersistError::Io)?;
 
@@ -157,12 +303,19 @@ impl WalManager {
         // 2. Replay WAL entries newer than the snapshot.
         let mut next_lsn = snapshot_lsn + 1;
         let mut wal_entries = 0;
+        let mut entries_since_checkpoint = 0;
         if wal_path.exists() {
-            (next_lsn, wal_entries) = Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
+            (next_lsn, wal_entries, entries_since_checkpoint) =
+                Self::replay_wal(&wal_path, &mut inner, snapshot_lsn, dir)?;
         }
 
         // 3. Open WAL for appending.
-        let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        let wal = WalWriter::open_append(
+            &wal_path,
+            config.write_buffer_bytes,
+            config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
 
         Ok(Self {
             inner,
@@ -170,6 +323,9 @@ impl WalManager {
             config,
             wal_entries,
             next_lsn,
+            entries_written: 0,
+            entries_since_checkpoint,
+            snapshot_lsn,
             dir: dir.to_path_buf(),
             durable_lsn: snapshot_lsn,
             #[cfg(feature = "iceberg-recovery")]
@@ -214,18 +370,27 @@ impl WalManager {
         let mut inner = inner;
         let mut next_lsn = iceberg_watermark + 1;
         let mut wal_entries = 0;
+        let mut entries_since_checkpoint = 0;
         if wal_path.exists() {
-            (next_lsn, wal_entries) =
+            (next_lsn, wal_entries, entries_since_checkpoint) =
                 Self::replay_wal(&wal_path, &mut inner, iceberg_watermark, dir)?;
         }
 
-        let wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        let wal = WalWriter::open_append(
+            &wal_path,
+            config.write_buffer_bytes,
+            config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
         Ok(Self {
             inner,
             wal,
             config,
             wal_entries,
             next_lsn,
+            entries_written: 0,
+            entries_since_checkpoint,
+            snapshot_lsn: 0,
             dir: dir.to_path_buf(),
             durable_lsn: iceberg_watermark,
             iceberg_watermark,
@@ -233,16 +398,18 @@ impl WalManager {
         })
     }
 
-    /// Replay WAL entries with LSN > `snapshot_lsn`. Returns the `next_lsn`
-    /// and number of valid entries currently occupying the WAL.
+    /// Replay WAL entries with LSN > `snapshot_lsn`. Returns the `next_lsn`,
+    /// the number of valid entries occupying the WAL, and the number of
+    /// replayable entries newer than the snapshot.
     fn replay_wal(
         path: &Path,
         mgr: &mut CollectionManager,
         snapshot_lsn: u64,
         data_dir: &Path,
-    ) -> Result<(u64, u64), PersistError> {
+    ) -> Result<(u64, u64, u64), PersistError> {
         let mut last_lsn = snapshot_lsn;
         let mut wal_entries = 0u64;
+        let mut entries_since_checkpoint = 0u64;
 
         for item in WalReader::open_file(path)? {
             let entry = item?;
@@ -254,9 +421,21 @@ impl WalManager {
 
             apply_op(mgr, entry.op, entry.lsn, Some(data_dir))?;
             last_lsn = entry.lsn;
+            entries_since_checkpoint = entries_since_checkpoint.saturating_add(1);
         }
 
-        Ok((last_lsn + 1, wal_entries))
+        Ok((last_lsn + 1, wal_entries, entries_since_checkpoint))
+    }
+
+    fn record_append(&mut self, _entry: &WalEntry) {
+        self.wal_entries = self.wal_entries.saturating_add(1);
+        self.entries_written = self.entries_written.saturating_add(1);
+        self.entries_since_checkpoint = self.entries_since_checkpoint.saturating_add(1);
+        #[cfg(feature = "iceberg-recovery")]
+        if let Ok(payload) = bincode_opts().serialize(_entry) {
+            self.unflushed.push((_entry.lsn, payload));
+        }
+        self.next_lsn += 1;
     }
 
     /// Append a WAL entry then apply `f` to the inner manager.
@@ -265,17 +444,9 @@ impl WalManager {
         F: FnOnce(&mut CollectionManager) -> likhadb_core::Result<T>,
     {
         let _span = tracing::debug_span!("wal_append", lsn = self.next_lsn).entered();
-        let entry = WalEntry {
-            lsn: self.next_lsn,
-            op,
-        };
+        let entry = WalEntry::new(self.next_lsn, op);
         self.wal.append(&entry)?;
-        self.wal_entries = self.wal_entries.saturating_add(1);
-        #[cfg(feature = "iceberg-recovery")]
-        if let Ok(payload) = bincode_opts().serialize(&entry) {
-            self.unflushed.push((entry.lsn, payload));
-        }
-        self.next_lsn += 1;
+        self.record_append(&entry);
         let result = f(&mut self.inner).map_err(PersistError::Apply)?;
         self.maybe_checkpoint()?;
         Ok(result)
@@ -337,13 +508,11 @@ impl WalManager {
             let mut iter = frame::FrameIter::new(reader);
             let mut kept = Vec::new();
             for item in &mut iter {
-                let (payload, stored_crc) = item.map_err(PersistError::Io)?;
-                if frame::checksum(&payload) != stored_crc {
+                let (payload, stored_hash) = item.map_err(PersistError::Io)?;
+                if frame::checksum(&payload) != stored_hash {
                     break; // Treat corrupt tail as end of log.
                 }
-                let entry: WalEntry = bincode_opts()
-                    .deserialize(&payload)
-                    .map_err(PersistError::Decode)?;
+                let entry = decode_entry(&payload)?;
                 if entry.lsn > watermark {
                     kept.push(entry);
                 }
@@ -356,12 +525,14 @@ impl WalManager {
         // Write kept entries to tmp file.
         {
             let file = File::create(&tmp_path).map_err(PersistError::Io)?;
-            let mut writer = BufWriter::new(file);
+            let mut writer = BufWriter::with_capacity(self.config.write_buffer_bytes, file);
             for entry in &entries_to_keep {
                 let payload = bincode_opts()
                     .serialize(entry)
                     .map_err(PersistError::Encode)?;
-                frame::write_frame(&mut writer, &payload).map_err(PersistError::Io)?;
+                let encoded = frame::encode_payload(&payload, &self.config.compression)
+                    .map_err(PersistError::Io)?;
+                frame::write_frame(&mut writer, &encoded).map_err(PersistError::Io)?;
             }
             writer.flush().map_err(PersistError::Io)?;
             writer.get_mut().sync_all().map_err(PersistError::Io)?;
@@ -369,8 +540,17 @@ impl WalManager {
 
         // Atomic rename then reopen.
         std::fs::rename(&tmp_path, &wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(
+            &wal_path,
+            self.config.write_buffer_bytes,
+            self.config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
         self.wal_entries = entries_to_keep.len() as u64;
+        self.entries_since_checkpoint = entries_to_keep
+            .iter()
+            .filter(|entry| entry.lsn > self.snapshot_lsn)
+            .count() as u64;
 
         Ok(())
     }
@@ -489,6 +669,95 @@ impl WalManager {
         )
     }
 
+    /// Durably insert a group of vectors using a single WAL flush and fsync.
+    ///
+    /// The entire batch is validated and serialized before any WAL frame is
+    /// written. Each row still receives its own LSN, preserving replay order,
+    /// while the collection can use its optimized bulk-index construction path.
+    pub fn insert_batch(
+        &mut self,
+        collection: &str,
+        items: impl IntoIterator<Item = (VecId, Vector, Option<Value>)>,
+    ) -> Result<usize, PersistError> {
+        let rows: Vec<_> = items.into_iter().collect();
+        let expected_dim = self.inner.get(collection)?.dim;
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        // Validate before logging so a bad row cannot make an otherwise
+        // rejected batch durable and break recovery on the next restart.
+        if let Some((_, vector, _)) = rows
+            .iter()
+            .find(|(_, vector, _)| vector.len() != expected_dim)
+        {
+            return Err(PersistError::Apply(
+                likhadb_core::LikhaDbError::DimMismatch {
+                    expected: expected_dim,
+                    got: vector.len(),
+                },
+            ));
+        }
+
+        let count = rows.len();
+        let count_u64 = u64::try_from(count).map_err(|_| {
+            PersistError::Apply(likhadb_core::LikhaDbError::InvalidArgument(
+                "WAL batch length exceeds u64".to_owned(),
+            ))
+        })?;
+        let next_lsn = self.next_lsn.checked_add(count_u64).ok_or_else(|| {
+            PersistError::Apply(likhadb_core::LikhaDbError::InvalidArgument(
+                "WAL LSN overflow".to_owned(),
+            ))
+        })?;
+        let col = collection.to_owned();
+        let entries: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .map(|(offset, (id, vector, payload))| {
+                WalEntry::new(
+                    self.next_lsn + offset as u64,
+                    WalOp::Insert {
+                        collection: col.clone(),
+                        id: *id,
+                        vector: vector.clone(),
+                        payload: payload.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        let _span = tracing::debug_span!(
+            "wal_append_batch",
+            first_lsn = self.next_lsn,
+            entries = count
+        )
+        .entered();
+        let serialized = self.wal.append_batch(&entries)?;
+        #[cfg(feature = "iceberg-recovery")]
+        self.unflushed.extend(
+            entries
+                .iter()
+                .zip(serialized)
+                .map(|(entry, payload)| (entry.lsn, payload)),
+        );
+        #[cfg(not(feature = "iceberg-recovery"))]
+        drop(serialized);
+        self.next_lsn = next_lsn;
+
+        let rows_with_lsns = rows
+            .into_iter()
+            .enumerate()
+            .map(|(offset, (id, vector, payload))| (id, vector, payload, entries[offset].lsn))
+            .collect();
+        self.inner
+            .get_mut(&col)?
+            .insert_batch_with_lsns(rows_with_lsns)
+            .map_err(PersistError::Apply)?;
+
+        Ok(count)
+    }
+
     pub fn delete(&mut self, collection: &str, id: VecId) -> Result<bool, PersistError> {
         let col = collection.to_owned();
         let lsn = self.next_lsn;
@@ -546,6 +815,17 @@ impl WalManager {
         WalReader::open_after(&self.dir, self.durable_lsn)
     }
 
+    /// Return a point-in-time view of WAL activity and checkpoint progress.
+    pub fn stats(&self) -> WalStats {
+        WalStats {
+            entries_written: self.entries_written,
+            entries_since_checkpoint: self.entries_since_checkpoint,
+            wal_bytes: self.wal.bytes_on_disk(),
+            last_lsn: self.next_lsn.saturating_sub(1),
+            snapshot_lsn: self.snapshot_lsn,
+        }
+    }
+
     // ── Checkpoint ─────────────────────────────────────────────────────────
 
     /// Write a snapshot capturing the current state (including `last_lsn`),
@@ -571,12 +851,63 @@ impl WalManager {
         }
         std::fs::rename(&tmp_path, &snapshot_path).map_err(PersistError::Io)?;
         self.durable_lsn = last_lsn;
+        self.snapshot_lsn = last_lsn;
+        self.entries_since_checkpoint = 0;
 
         // Truncate WAL and reopen for appending.
         WalWriter::truncate(&wal_path).map_err(PersistError::Io)?;
-        self.wal = WalWriter::open_append(&wal_path).map_err(PersistError::Io)?;
+        self.wal = WalWriter::open_append(
+            &wal_path,
+            self.config.write_buffer_bytes,
+            self.config.compression.clone(),
+        )
+        .map_err(PersistError::Io)?;
         self.wal_entries = 0;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WalConfig, WalManager};
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "likhadb-{name}-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn wal_write_buffer_defaults_to_64_kib() {
+        assert_eq!(WalConfig::default().write_buffer_bytes, 64 * 1024);
+    }
+
+    #[test]
+    fn custom_wal_write_buffer_capacity_survives_checkpoint() {
+        let dir = TestDir::new("wal-write-buffer");
+        let config = WalConfig {
+            write_buffer_bytes: 32 * 1024,
+            ..WalConfig::default()
+        };
+        let mut manager = WalManager::open_with_config(&dir.0, config).unwrap();
+
+        assert_eq!(manager.wal.file.capacity(), 32 * 1024);
+        manager.checkpoint().unwrap();
+        assert_eq!(manager.wal.file.capacity(), 32 * 1024);
     }
 }

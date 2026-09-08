@@ -2,17 +2,16 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use bincode::Options as _;
-
-use crate::{bincode_opts, PersistError};
+use crate::PersistError;
 
 use super::entry::WalEntry;
 use super::frame::{checksum, FrameIter};
+use super::{decode_entry, reject_legacy_frame_format};
 
 /// A read-only iterator over entries in `wal.log`.
 ///
 /// Opening a reader never creates or modifies files and does not replay any
-/// operations. A crash-truncated or CRC-mismatched final frame is treated as
+/// operations. A crash-truncated or checksum-mismatched final frame is treated as
 /// an uncommitted tail and ignored, matching [`super::WalManager`] recovery.
 /// Corruption before the final frame is returned as an error.
 pub struct WalReader {
@@ -36,7 +35,8 @@ impl WalReader {
     }
 
     fn open_path(path: &Path, after_lsn: Option<u64>) -> Result<Self, PersistError> {
-        let file = File::open(path).map_err(PersistError::Io)?;
+        let mut file = File::open(path).map_err(PersistError::Io)?;
+        reject_legacy_frame_format(&mut file)?;
         Ok(Self {
             iter: FrameIter::new(BufReader::new(file)),
             after_lsn,
@@ -59,13 +59,13 @@ impl Iterator for WalReader {
         }
 
         loop {
-            let (payload, stored_crc) = match self.iter.next()? {
+            let (payload, stored_hash) = match self.iter.next()? {
                 Ok(frame) => frame,
                 Err(error) => return self.fail(PersistError::Io(error)),
             };
 
-            let computed_crc = checksum(&payload);
-            if computed_crc != stored_crc {
+            let computed_hash = checksum(&payload);
+            if computed_hash != stored_hash {
                 return match self.iter.has_remaining_bytes() {
                     // The final frame was not durably committed.
                     Ok(false) => {
@@ -73,16 +73,16 @@ impl Iterator for WalReader {
                         None
                     }
                     Ok(true) => self.fail(PersistError::Crc {
-                        expected: stored_crc,
-                        got: computed_crc,
+                        expected: stored_hash,
+                        got: computed_hash,
                     }),
                     Err(error) => self.fail(PersistError::Io(error)),
                 };
             }
 
-            let entry: WalEntry = match bincode_opts().deserialize(&payload) {
+            let entry = match decode_entry(&payload) {
                 Ok(entry) => entry,
-                Err(error) => return self.fail(PersistError::Decode(error)),
+                Err(error) => return self.fail(error),
             };
 
             if self

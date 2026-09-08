@@ -101,8 +101,8 @@ fn reader_reports_mid_log_crc_corruption_and_stops() {
     let wal_path = dir.join("wal.log");
     let mut data = std::fs::read(&wal_path).unwrap();
     let first_payload_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let second_frame_start = 8 + first_payload_len;
-    data[second_frame_start + 8] ^= 0xff;
+    let second_frame_start = 12 + first_payload_len;
+    data[second_frame_start + 12] ^= 0xff;
     std::fs::write(&wal_path, data).unwrap();
 
     let mut reader = WalReader::open(&dir).unwrap();

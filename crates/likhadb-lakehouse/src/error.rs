@@ -41,6 +41,14 @@ pub enum LakehouseError {
     #[error("iceberg error: {0}")]
     Iceberg(iceberg::Error),
 
+    #[cfg(feature = "iceberg")]
+    #[error("failed to load source table '{table}': {source}")]
+    SourceTableLoad {
+        table: String,
+        #[source]
+        source: Box<iceberg::Error>,
+    },
+
     #[cfg(feature = "iceberg-recovery")]
     #[error("index snapshot encode/decode error: {0}")]
     IndexBlob(String),
