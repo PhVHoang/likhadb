@@ -1,22 +1,85 @@
 use std::io::{self, Read, Write};
 
-use crc32fast::Hasher;
+use xxhash_rust::xxh64::xxh64;
 
-/// Write a length-prefixed, CRC32-checksummed frame.
+use super::Compression;
+
+pub const HEADER_BYTES: u64 = 12;
+const FLAG_ZSTD: u8 = 0x01;
+const KNOWN_FLAGS: u8 = FLAG_ZSTD;
+
+/// Add the per-frame flags byte and optionally compress the serialized entry.
 ///
-/// Format: `[payload_len: u32 LE][crc32: u32 LE][payload: payload_len bytes]`
+/// Compression is kept only when it makes the frame smaller, so enabling zstd
+/// cannot inflate small WAL operations such as collection creation or deletes.
+pub fn encode_payload(payload: &[u8], compression: &Compression) -> io::Result<Vec<u8>> {
+    let (flags, encoded) = match compression {
+        Compression::None => (0, payload.to_vec()),
+        #[cfg(feature = "zstd")]
+        Compression::Zstd { level } => {
+            let compressed = zstd::stream::encode_all(payload, *level)?;
+            if compressed.len() < payload.len() {
+                (FLAG_ZSTD, compressed)
+            } else {
+                (0, payload.to_vec())
+            }
+        }
+    };
+
+    let mut framed = Vec::with_capacity(1 + encoded.len());
+    framed.push(flags);
+    framed.extend_from_slice(&encoded);
+    Ok(framed)
+}
+
+/// Remove the flags byte and decompress a frame payload when required.
+pub fn decode_payload(payload: &[u8]) -> io::Result<Vec<u8>> {
+    let Some((&flags, encoded)) = payload.split_first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WAL frame payload is missing its flags byte",
+        ));
+    };
+
+    if flags & !KNOWN_FLAGS != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("WAL frame uses unsupported flags {flags:#04x}"),
+        ));
+    }
+
+    if flags & FLAG_ZSTD != 0 {
+        #[cfg(feature = "zstd")]
+        {
+            return zstd::stream::decode_all(encoded);
+        }
+        #[cfg(not(feature = "zstd"))]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "WAL frame is zstd-compressed but likhadb-persist was built without the `zstd` feature",
+            ));
+        }
+    }
+
+    Ok(encoded.to_vec())
+}
+
+/// Write a length-prefixed, xxHash64-checksummed frame.
+///
+/// Format: `[payload_len: u32 LE][xxhash64: u64 LE][flags: u8][payload bytes]`.
+/// The length and hash cover the flags byte plus the encoded payload.
 pub fn write_frame(w: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     let len = payload.len() as u32;
-    let crc = checksum(payload);
+    let hash = checksum(payload);
     w.write_all(&len.to_le_bytes())?;
-    w.write_all(&crc.to_le_bytes())?;
+    w.write_all(&hash.to_le_bytes())?;
     w.write_all(payload)
 }
 
 /// Read one frame.  Returns `None` when the stream ends cleanly at a frame
-/// boundary *or* when the last frame is truncated / CRC-mismatched (crash at
-/// tail).  Returns `Some(Err(_))` only for genuine mid-log I/O or CRC errors.
-pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(Vec<u8>, u32)>> {
+/// boundary *or* when the last frame is truncated (crash at tail).
+pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(Vec<u8>, u64)>> {
     // Read the 4-byte length prefix.
     let mut len_buf = [0u8; 4];
     match r.read_exact(&mut len_buf) {
@@ -26,14 +89,14 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(Vec<u8>, u32)>> {
     }
     let payload_len = u32::from_le_bytes(len_buf) as usize;
 
-    // Read the 4-byte stored CRC.
-    let mut crc_buf = [0u8; 4];
-    match r.read_exact(&mut crc_buf) {
+    // Read the 8-byte stored xxHash64 checksum.
+    let mut hash_buf = [0u8; 8];
+    match r.read_exact(&mut hash_buf) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
-    let stored_crc = u32::from_le_bytes(crc_buf);
+    let stored_hash = u64::from_le_bytes(hash_buf);
 
     // Read the payload.
     let mut payload = vec![0u8; payload_len];
@@ -43,13 +106,11 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(Vec<u8>, u32)>> {
         Err(e) => return Err(e),
     }
 
-    Ok(Some((payload, stored_crc)))
+    Ok(Some((payload, stored_hash)))
 }
 
-pub fn checksum(data: &[u8]) -> u32 {
-    let mut h = Hasher::new();
-    h.update(data);
-    h.finalize()
+pub fn checksum(data: &[u8]) -> u64 {
+    xxh64(data, 0)
 }
 
 /// Iterator over frames in a WAL file.  Stops at the first truncated/corrupt
@@ -79,8 +140,8 @@ impl<R: std::io::BufRead> FrameIter<R> {
 }
 
 impl<R: Read> Iterator for FrameIter<R> {
-    /// `(raw_payload_bytes, stored_crc)`
-    type Item = io::Result<(Vec<u8>, u32)>;
+    /// `(raw_payload_bytes, stored_xxhash64)`
+    type Item = io::Result<(Vec<u8>, u64)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
@@ -97,5 +158,15 @@ impl<R: Read> Iterator for FrameIter<R> {
                 Some(Err(e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checksum;
+
+    #[test]
+    fn checksum_matches_xxhash64_seed_zero_test_vector() {
+        assert_eq!(checksum(b""), 0xef46_db37_51d8_e999);
     }
 }
