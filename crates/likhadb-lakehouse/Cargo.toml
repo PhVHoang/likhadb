@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 persist = ["dep:likhadb-persist"]
 minio   = ["dep:object_store", "dep:bytes"]
-iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:futures-util", "dep:tokio"]
+iceberg = ["dep:iceberg", "dep:iceberg-catalog-rest", "dep:iceberg-storage-opendal", "dep:futures-util", "dep:tokio"]
 iceberg-recovery = ["iceberg", "dep:bincode", "dep:bytes", "likhadb-store/persist", "dep:likhadb-persist", "dep:metrics", "dep:tracing", "likhadb-persist/iceberg-recovery"]
 
 [dependencies]
@@ -27,10 +27,13 @@ metrics         = { version = "0.23", optional = true }
 tracing         = { version = "0.1", optional = true }
 iceberg              = { version = "0.9.1", optional = true }
 iceberg-catalog-rest = { version = "0.9.1", optional = true }
+iceberg-storage-opendal = { version = "0.9.1", optional = true, default-features = false, features = ["opendal-s3"] }
 futures-util         = { version = "0.3", optional = true }
 tokio                = { version = "1", features = ["rt", "time", "sync"], optional = true }
 
 [dev-dependencies]
+bytes    = "1"
+reqwest  = { version = "0.12", features = ["json"] }
 tempfile = "3"
 tokio    = { version = "1", features = ["rt", "macros"] }
 toml     = "0.8"
