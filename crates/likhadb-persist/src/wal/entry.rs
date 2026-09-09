@@ -10,7 +10,7 @@ pub const CURRENT_WAL_VERSION: u8 = 2;
 
 /// Index configuration captured at collection-creation time so WAL replay can
 /// reconstruct the right index type without touching the store layer.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum IndexKind {
     Flat,
     Ivf {
@@ -28,7 +28,7 @@ pub enum IndexKind {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum WalOp {
     CreateCollection {
         name: String,
@@ -59,7 +59,7 @@ pub enum WalOp {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WalEntry {
     pub version: u8,
     pub lsn: u64,

@@ -1,8 +1,10 @@
 mod entry;
 mod frame;
+mod reader;
 mod recovery;
 
 pub use entry::{IndexKind, WalEntry, WalOp, CURRENT_WAL_VERSION};
+pub use reader::WalReader;
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -14,7 +16,7 @@ use likhadb_store::{Collection, CollectionManager};
 use serde_json::Value;
 
 use crate::{bincode_opts, PersistError};
-use frame::{checksum, decode_payload, encode_payload, write_frame, FrameIter};
+use frame::{checksum, decode_payload, encode_payload, write_frame};
 use recovery::apply_op;
 
 const LEGACY_CRC_FRAME_HEADER_BYTES: u64 = 8;
@@ -252,6 +254,10 @@ pub struct WalManager {
     entries_since_checkpoint: u64,
     snapshot_lsn: u64,
     dir: PathBuf,
+    /// Highest LSN already represented by the durable recovery baseline.
+    /// This is the snapshot LSN for normal recovery and the supplied
+    /// watermark for Iceberg recovery.
+    durable_lsn: u64,
     /// Highest LSN confirmed durably committed to Iceberg staging.  Zero means
     /// none.  Only meaningful when the `iceberg-recovery` feature is active.
     #[cfg(feature = "iceberg-recovery")]
@@ -264,7 +270,7 @@ pub struct WalManager {
 
 impl WalManager {
     const SNAPSHOT_FILE: &'static str = "snapshot.bin";
-    const WAL_FILE: &'static str = "wal.log";
+    pub(super) const WAL_FILE: &'static str = "wal.log";
 
     /// Open (or create) a data directory, recovering from any existing
     /// snapshot + WAL using [`WalConfig::default`].
@@ -321,6 +327,7 @@ impl WalManager {
             entries_since_checkpoint,
             snapshot_lsn,
             dir: dir.to_path_buf(),
+            durable_lsn: snapshot_lsn,
             #[cfg(feature = "iceberg-recovery")]
             iceberg_watermark: 0,
             #[cfg(feature = "iceberg-recovery")]
@@ -385,6 +392,7 @@ impl WalManager {
             entries_since_checkpoint,
             snapshot_lsn: 0,
             dir: dir.to_path_buf(),
+            durable_lsn: iceberg_watermark,
             iceberg_watermark,
             unflushed: Vec::new(),
         })
@@ -399,34 +407,12 @@ impl WalManager {
         snapshot_lsn: u64,
         data_dir: &Path,
     ) -> Result<(u64, u64, u64), PersistError> {
-        let mut file = File::open(path).map_err(PersistError::Io)?;
-        reject_legacy_frame_format(&mut file)?;
-        let reader = BufReader::new(file);
-        let mut iter = FrameIter::new(reader);
         let mut last_lsn = snapshot_lsn;
         let mut wal_entries = 0u64;
         let mut entries_since_checkpoint = 0u64;
 
-        for item in &mut iter {
-            let (payload, stored_hash) = item.map_err(PersistError::Io)?;
-
-            let computed = checksum(&payload);
-            if computed != stored_hash {
-                // If no bytes follow this frame it is a crash-truncated tail
-                // (the last write never completed); discard it and stop replay.
-                // If bytes remain after it, the corruption is mid-log and must
-                // be surfaced as a hard error.
-                let more = iter.has_remaining_bytes().map_err(PersistError::Io)?;
-                if !more {
-                    break;
-                }
-                return Err(PersistError::Crc {
-                    expected: stored_hash,
-                    got: computed,
-                });
-            }
-
-            let entry = decode_entry(&payload)?;
+        for item in WalReader::open_file(path)? {
+            let entry = item?;
             wal_entries = wal_entries.saturating_add(1);
 
             if entry.lsn <= snapshot_lsn {
@@ -489,6 +475,7 @@ impl WalManager {
     pub fn set_iceberg_watermark(&mut self, lsn: u64) {
         if lsn > self.iceberg_watermark {
             self.iceberg_watermark = lsn;
+            self.durable_lsn = self.durable_lsn.max(lsn);
             self.unflushed.retain(|(entry_lsn, _)| *entry_lsn > lsn);
         }
     }
@@ -822,6 +809,12 @@ impl WalManager {
         self.inner.list()
     }
 
+    /// Open a side-effect-free iterator over WAL entries newer than the
+    /// durable recovery baseline (normally the latest snapshot).
+    pub fn pending_entries(&self) -> Result<WalReader, PersistError> {
+        WalReader::open_after(&self.dir, self.durable_lsn)
+    }
+
     /// Return a point-in-time view of WAL activity and checkpoint progress.
     pub fn stats(&self) -> WalStats {
         WalStats {
@@ -857,6 +850,7 @@ impl WalManager {
             writer.get_mut().sync_all().map_err(PersistError::Io)?;
         }
         std::fs::rename(&tmp_path, &snapshot_path).map_err(PersistError::Io)?;
+        self.durable_lsn = last_lsn;
         self.snapshot_lsn = last_lsn;
         self.entries_since_checkpoint = 0;
 
