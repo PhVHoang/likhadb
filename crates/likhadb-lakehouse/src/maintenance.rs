@@ -1,8 +1,8 @@
 //! Configuration and per-tick backpressure for source-table maintenance.
 //!
-//! The catalog polling loop is introduced separately. Keeping the row budget
-//! here makes the opt-in/disabled behavior and carry-over semantics independent
-//! of the source used by that loop.
+//! The catalog polling loop lives in `index_maintenance_task`. Keeping the row
+//! budget here makes the opt-in/disabled behavior and carry-over semantics
+//! independent of the source used by that loop.
 
 use std::collections::VecDeque;
 use std::time::Duration;

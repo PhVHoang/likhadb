@@ -34,6 +34,8 @@ pub mod iceberg_flusher;
 #[cfg(feature = "iceberg-recovery")]
 pub mod iceberg_recovery;
 #[cfg(feature = "iceberg-recovery")]
+pub mod index_maintenance_task;
+#[cfg(feature = "iceberg-recovery")]
 pub mod index_snapshot_io;
 #[cfg(feature = "iceberg-recovery")]
 pub mod staging_io;
@@ -44,6 +46,8 @@ pub use iceberg::NamespaceIdent;
 pub use iceberg_flusher::IcebergFlusher;
 #[cfg(feature = "iceberg-recovery")]
 pub use iceberg_recovery::{open_with_iceberg, RecoveryError};
+#[cfg(feature = "iceberg-recovery")]
+pub use index_maintenance_task::IndexMaintenanceTask;
 #[cfg(feature = "iceberg-recovery")]
 pub use index_snapshot_io::{load_collection_snapshots, write_collection_snapshot};
 #[cfg(feature = "iceberg-recovery")]
