@@ -6,6 +6,7 @@ use std::time::Duration;
 use iceberg::Catalog;
 use likhadb_core::SourceBinding;
 use likhadb_persist::WalManager;
+use likhadb_store::DeltaRow;
 use tokio::sync::RwLock;
 
 use crate::{load_source_table, scan_delta, LakehouseError, MaintenanceConfig, SnapshotDelta};
@@ -17,6 +18,72 @@ struct BoundCollection {
     name: String,
     binding: SourceBinding,
     source_snapshot_id: Option<i64>,
+    tombstone_ratio: f32,
+}
+
+fn initialize_metrics(collection: &BoundCollection) {
+    let name = collection.name.clone();
+    metrics::gauge!("likhadb_source_snapshot_lag", "collection" => name.clone()).set(f64::NAN);
+    metrics::gauge!("likhadb_index_tombstone_ratio", "collection" => name.clone())
+        .set(collection.tombstone_ratio as f64);
+    for op in ["upsert", "delete"] {
+        metrics::counter!(
+            "likhadb_delta_rows_applied_total",
+            "collection" => name.clone(),
+            "op" => op
+        )
+        .increment(0);
+    }
+    for result in ["success", "failure", "stale"] {
+        metrics::counter!(
+            "likhadb_index_compactions_total",
+            "collection" => name.clone(),
+            "result" => result
+        )
+        .increment(0);
+    }
+    metrics::counter!("likhadb_source_full_rescan_total", "collection" => name.clone())
+        .increment(0);
+    metrics::counter!(
+        "likhadb_unresolved_delete_files_total",
+        "collection" => name
+    )
+    .increment(0);
+}
+
+fn snapshot_lag_seconds(
+    table: &iceberg::table::Table,
+    from_snapshot_id: Option<i64>,
+    to_snapshot_id: i64,
+) -> f64 {
+    let metadata = table.metadata();
+    let Some(from) = from_snapshot_id.and_then(|id| metadata.snapshot_by_id(id)) else {
+        return f64::NAN;
+    };
+    let Some(to) = metadata.snapshot_by_id(to_snapshot_id) else {
+        return f64::NAN;
+    };
+    // Iceberg stores snapshot timestamps in milliseconds. Expose their
+    // non-negative age difference in seconds while retaining the RFC's metric
+    // name for compatibility.
+    to.timestamp_ms().saturating_sub(from.timestamp_ms()).max(0) as f64 / 1_000.0
+}
+
+fn row_counts(rows: &[DeltaRow]) -> (u64, u64) {
+    rows.iter()
+        .fold((0, 0), |(upserts, deletes), row| match row {
+            DeltaRow::Upsert { .. } => (upserts + 1, deletes),
+            DeltaRow::Delete { .. } => (upserts, deletes + 1),
+        })
+}
+
+fn record_compaction(collection: &str, result: &'static str) {
+    metrics::counter!(
+        "likhadb_index_compactions_total",
+        "collection" => collection.to_owned(),
+        "result" => result
+    )
+    .increment(1);
 }
 
 /// Polls source Iceberg tables and applies committed snapshot deltas to the
@@ -73,6 +140,7 @@ impl IndexMaintenanceTask {
     pub async fn run_once(&self) {
         let collections = self.bound_collections().await;
         for collection in collections {
+            initialize_metrics(&collection);
             if let Err(error) = self.maintain_collection(&collection).await {
                 tracing::warn!(
                     collection = %collection.name,
@@ -94,6 +162,7 @@ impl IndexMaintenanceTask {
                     name: name.to_owned(),
                     binding: collection.source_binding.clone()?,
                     source_snapshot_id: collection.source_snapshot_id,
+                    tombstone_ratio: collection.tombstone_ratio(),
                 })
             })
             .collect()
@@ -109,7 +178,21 @@ impl IndexMaintenanceTask {
             return Ok(());
         };
         let from_snapshot_id = collection.source_snapshot_id;
+        metrics::gauge!(
+            "likhadb_source_snapshot_lag",
+            "collection" => collection.name.clone()
+        )
+        .set(snapshot_lag_seconds(
+            &table,
+            from_snapshot_id,
+            to_snapshot_id,
+        ));
         if from_snapshot_id == Some(to_snapshot_id) {
+            metrics::gauge!(
+                "likhadb_source_snapshot_lag",
+                "collection" => collection.name.clone()
+            )
+            .set(0.0);
             return Ok(());
         }
 
@@ -154,16 +237,27 @@ impl IndexMaintenanceTask {
             Err(error) => return Err(error),
         };
         let row_count = result.rows.len();
+        let (upserts, deletes) = row_counts(&result.rows);
+        let unresolved_delete_files = result.unresolved_delete_files;
 
         // Revalidate the state observed before the scan while holding the same
         // write lock used to apply every row and advance the watermark.
-        let applied = self.wal.write().await.apply_source_delta(
-            &collection.name,
-            &collection.binding,
-            from_snapshot_id,
-            to_snapshot_id,
-            result.rows,
-        )?;
+        let (applied, tombstone_ratio) = {
+            let mut wal = self.wal.write().await;
+            let applied = wal.apply_source_delta(
+                &collection.name,
+                &collection.binding,
+                from_snapshot_id,
+                to_snapshot_id,
+                result.rows,
+            )?;
+            let tombstone_ratio = if applied {
+                wal.get(&collection.name)?.tombstone_ratio()
+            } else {
+                collection.tombstone_ratio
+            };
+            (applied, tombstone_ratio)
+        };
         if !applied {
             tracing::debug!(
                 collection = %collection.name,
@@ -174,12 +268,47 @@ impl IndexMaintenanceTask {
             return Ok(());
         }
 
+        metrics::counter!(
+            "likhadb_delta_rows_applied_total",
+            "collection" => collection.name.clone(),
+            "op" => "upsert"
+        )
+        .increment(upserts);
+        metrics::counter!(
+            "likhadb_delta_rows_applied_total",
+            "collection" => collection.name.clone(),
+            "op" => "delete"
+        )
+        .increment(deletes);
+        metrics::counter!(
+            "likhadb_unresolved_delete_files_total",
+            "collection" => collection.name.clone()
+        )
+        .increment(unresolved_delete_files as u64);
+        if full_rescan {
+            metrics::counter!(
+                "likhadb_source_full_rescan_total",
+                "collection" => collection.name.clone()
+            )
+            .increment(1);
+        }
+        metrics::gauge!(
+            "likhadb_source_snapshot_lag",
+            "collection" => collection.name.clone()
+        )
+        .set(0.0);
+        metrics::gauge!(
+            "likhadb_index_tombstone_ratio",
+            "collection" => collection.name.clone()
+        )
+        .set(tombstone_ratio as f64);
+
         tracing::info!(
             collection = %collection.name,
             ?from_snapshot_id,
             to_snapshot_id,
             rows_applied = row_count,
-            unresolved_delete_files = result.unresolved_delete_files,
+            unresolved_delete_files,
             full_rescan,
             "source snapshot maintenance applied"
         );
@@ -194,11 +323,18 @@ impl IndexMaintenanceTask {
         &self,
         collection: &str,
     ) -> Result<Option<tokio::task::JoinHandle<()>>, LakehouseError> {
-        let prepared = self
+        let prepared = match self
             .wal
             .write()
             .await
-            .prepare_index_compaction(collection, self.hnsw_compaction_tombstone_ratio)?;
+            .prepare_index_compaction(collection, self.hnsw_compaction_tombstone_ratio)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                record_compaction(collection, "failure");
+                return Err(error.into());
+            }
+        };
         let Some(prepared) = prepared else {
             return Ok(None);
         };
@@ -215,26 +351,51 @@ impl IndexMaintenanceTask {
         Ok(Some(tokio::spawn(async move {
             let build = tokio::task::spawn_blocking(move || prepared.build()).await;
             match build {
-                Ok(Ok(built)) => match wal
-                    .write()
-                    .await
-                    .finish_index_compaction(&collection, built)
-                {
-                    Ok(true) => tracing::info!(
-                        collection = %collection,
-                        "HNSW index compaction completed"
-                    ),
-                    Ok(false) => tracing::debug!(
-                        collection = %collection,
-                        "discarding stale HNSW index compaction"
-                    ),
-                    Err(error) => tracing::warn!(
-                        collection = %collection,
-                        error = %error,
-                        "HNSW index compaction swap failed"
-                    ),
-                },
+                Ok(Ok(built)) => {
+                    let finish = wal
+                        .write()
+                        .await
+                        .finish_index_compaction(&collection, built);
+                    match finish {
+                        Ok(true) => {
+                            record_compaction(&collection, "success");
+                            let tombstone_ratio = wal
+                                .read()
+                                .await
+                                .get(&collection)
+                                .map(|value| value.tombstone_ratio())
+                                .ok();
+                            if let Some(tombstone_ratio) = tombstone_ratio {
+                                metrics::gauge!(
+                                    "likhadb_index_tombstone_ratio",
+                                    "collection" => collection.clone()
+                                )
+                                .set(tombstone_ratio as f64);
+                            }
+                            tracing::info!(
+                                collection = %collection,
+                                "HNSW index compaction completed"
+                            );
+                        }
+                        Ok(false) => {
+                            record_compaction(&collection, "stale");
+                            tracing::debug!(
+                                collection = %collection,
+                                "discarding stale HNSW index compaction"
+                            );
+                        }
+                        Err(error) => {
+                            record_compaction(&collection, "failure");
+                            tracing::warn!(
+                                collection = %collection,
+                                error = %error,
+                                "HNSW index compaction swap failed"
+                            );
+                        }
+                    }
+                }
                 Ok(Err(error)) => {
+                    record_compaction(&collection, "failure");
                     let cancel_error = wal.write().await.cancel_index_compaction(&collection);
                     tracing::warn!(
                         collection = %collection,
@@ -244,6 +405,7 @@ impl IndexMaintenanceTask {
                     );
                 }
                 Err(error) => {
+                    record_compaction(&collection, "failure");
                     let cancel_error = wal.write().await.cancel_index_compaction(&collection);
                     tracing::warn!(
                         collection = %collection,
