@@ -178,10 +178,10 @@ pub async fn scan_delta(
                     .and_then(|pid| metadata.snapshot_by_id(pid).cloned());
             }
             if !reached {
-                return Err(LakehouseError::Schema(format!(
-                    "from-snapshot {from} is not an ancestor of {}; full rescan required",
-                    delta.to_snapshot_id
-                )));
+                return Err(LakehouseError::NonAncestorSnapshot {
+                    from,
+                    to: delta.to_snapshot_id,
+                });
             }
             ids.reverse();
             commit_order.extend(
