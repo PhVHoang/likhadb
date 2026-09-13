@@ -95,34 +95,56 @@ impl IndexMaintenanceTask {
         &self,
         collection: &BoundCollection,
     ) -> Result<(), LakehouseError> {
-        // First-bind full scans are deliberately handled by issue #105. Until
-        // then, do not silently establish a baseline that omits existing rows.
-        let Some(from_snapshot_id) = collection.source_snapshot_id else {
-            tracing::debug!(
-                collection = %collection.name,
-                "source snapshot watermark is unset; waiting for first-bind scan"
-            );
-            return Ok(());
-        };
-
         // Catalog and file I/O happen without holding the store lock.
         let table = load_source_table(self.catalog.as_ref(), &collection.binding).await?;
         let Some(to_snapshot_id) = table.metadata().current_snapshot_id() else {
             return Ok(());
         };
-        if to_snapshot_id == from_snapshot_id {
+        let from_snapshot_id = collection.source_snapshot_id;
+        if from_snapshot_id == Some(to_snapshot_id) {
             return Ok(());
         }
 
-        let result = scan_delta(
+        if from_snapshot_id.is_none() {
+            tracing::info!(
+                collection = %collection.name,
+                to_snapshot_id,
+                "source snapshot watermark is unset; running first-bind full scan"
+            );
+        }
+
+        let mut full_rescan = from_snapshot_id.is_none();
+        let result = match scan_delta(
             &table,
             SnapshotDelta {
-                from_snapshot_id: Some(from_snapshot_id),
+                from_snapshot_id,
                 to_snapshot_id,
             },
             &collection.binding,
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(LakehouseError::NonAncestorSnapshot { from, to }) => {
+                full_rescan = true;
+                tracing::warn!(
+                    collection = %collection.name,
+                    from_snapshot_id = from,
+                    to_snapshot_id = to,
+                    "source snapshot watermark is not an ancestor; falling back to full scan"
+                );
+                scan_delta(
+                    &table,
+                    SnapshotDelta {
+                        from_snapshot_id: None,
+                        to_snapshot_id,
+                    },
+                    &collection.binding,
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
         let row_count = result.rows.len();
 
         // Revalidate the state observed before the scan while holding the same
@@ -130,14 +152,14 @@ impl IndexMaintenanceTask {
         let applied = self.wal.write().await.apply_source_delta(
             &collection.name,
             &collection.binding,
-            Some(from_snapshot_id),
+            from_snapshot_id,
             to_snapshot_id,
             result.rows,
         )?;
         if !applied {
             tracing::debug!(
                 collection = %collection.name,
-                from_snapshot_id,
+                ?from_snapshot_id,
                 to_snapshot_id,
                 "discarding stale source snapshot scan"
             );
@@ -146,11 +168,12 @@ impl IndexMaintenanceTask {
 
         tracing::info!(
             collection = %collection.name,
-            from_snapshot_id,
+            ?from_snapshot_id,
             to_snapshot_id,
             rows_applied = row_count,
             unresolved_delete_files = result.unresolved_delete_files,
-            "source snapshot delta applied"
+            full_rescan,
+            "source snapshot maintenance applied"
         );
         Ok(())
     }
@@ -252,6 +275,109 @@ mod tests {
             .apply(tx)
             .unwrap();
         tx.commit(catalog).await.unwrap()
+    }
+
+    async fn source_fixture(
+        file_name: &str,
+        id: i64,
+        vector: [f32; 2],
+    ) -> (
+        TempDir,
+        Arc<dyn Catalog>,
+        SourceBinding,
+        iceberg::table::Table,
+    ) {
+        let warehouse = TempDir::new().unwrap();
+        let catalog: Arc<dyn Catalog> = Arc::new(
+            MemoryCatalogBuilder::default()
+                .load(
+                    "maintenance-test",
+                    HashMap::from([(
+                        MEMORY_CATALOG_WAREHOUSE.to_string(),
+                        format!("file://{}", warehouse.path().display()),
+                    )]),
+                )
+                .await
+                .unwrap(),
+        );
+        let namespace = NamespaceIdent::new("source".to_string());
+        catalog
+            .create_namespace(&namespace, HashMap::new())
+            .await
+            .unwrap();
+        let table_ident = TableIdent::new(namespace.clone(), "vectors".to_string());
+        let table = catalog
+            .create_table(
+                &namespace,
+                TableCreation::builder()
+                    .name(table_ident.name().to_string())
+                    .schema(arrow_schema_to_schema(arrow_schema().as_ref()).unwrap())
+                    .build(),
+            )
+            .await
+            .unwrap();
+        let table = append_row(catalog.as_ref(), &table, file_name, id, vector).await;
+        let binding = SourceBinding {
+            source_namespace: namespace.as_ref().clone(),
+            source_table: table_ident.name().to_string(),
+            id_column: "id".to_string(),
+            vector_column: "embedding".to_string(),
+            payload_columns: vec![],
+        };
+        (warehouse, catalog, binding, table)
+    }
+
+    #[tokio::test]
+    async fn first_bind_full_scan_ingests_current_source_snapshot() {
+        let (_warehouse, catalog, binding, table) = source_fixture("baseline", 1, [1.0, 0.0]).await;
+        let current_snapshot = table.metadata().current_snapshot_id().unwrap();
+
+        let data_dir = TempDir::new().unwrap();
+        let mut wal = WalManager::open(data_dir.path()).unwrap();
+        wal.create_hnsw_collection("documents", 2, Metric::L2, 4, 8, 10)
+            .unwrap();
+        wal.set_source_binding("documents", binding).unwrap();
+
+        let wal = Arc::new(RwLock::new(wal));
+        let task = IndexMaintenanceTask::new(wal.clone(), catalog);
+        task.run_once().await;
+
+        let guard = wal.read().await;
+        let collection = guard.get("documents").unwrap();
+        assert_eq!(collection.source_snapshot_id, Some(current_snapshot));
+        assert_eq!(
+            collection.search(&[1.0, 0.0], 1, None, false).unwrap()[0].id,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn non_ancestor_watermark_falls_back_to_full_scan() {
+        let (_warehouse, catalog, binding, table) =
+            source_fixture("replacement", 7, [0.0, 1.0]).await;
+        let current_snapshot = table.metadata().current_snapshot_id().unwrap();
+        let expired_snapshot = i64::MAX;
+
+        let data_dir = TempDir::new().unwrap();
+        let mut wal = WalManager::open(data_dir.path()).unwrap();
+        wal.create_hnsw_collection("documents", 2, Metric::L2, 4, 8, 10)
+            .unwrap();
+        wal.set_source_binding("documents", binding.clone())
+            .unwrap();
+        wal.apply_source_delta("documents", &binding, None, expired_snapshot, [])
+            .unwrap();
+
+        let wal = Arc::new(RwLock::new(wal));
+        let task = IndexMaintenanceTask::new(wal.clone(), catalog);
+        task.run_once().await;
+
+        let guard = wal.read().await;
+        let collection = guard.get("documents").unwrap();
+        assert_eq!(collection.source_snapshot_id, Some(current_snapshot));
+        assert_eq!(
+            collection.search(&[0.0, 1.0], 1, None, false).unwrap()[0].id,
+            7
+        );
     }
 
     #[tokio::test]

@@ -405,7 +405,13 @@ async fn scan_delta_tracks_live_append_and_data_file_drop() -> Result<(), Box<dy
         Err(error) => error,
     };
     assert!(
-        matches!(error, LakehouseError::Schema(ref message) if message.contains("not an ancestor")),
+        matches!(
+            error,
+            LakehouseError::NonAncestorSnapshot {
+                from,
+                to
+            } if from == i64::MAX && to == s2
+        ),
         "unexpected non-ancestor error: {error}"
     );
 

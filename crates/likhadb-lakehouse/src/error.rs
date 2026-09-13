@@ -20,6 +20,10 @@ pub enum LakehouseError {
     #[error("schema error: {0}")]
     Schema(String),
 
+    #[cfg(feature = "iceberg")]
+    #[error("from-snapshot {from} is not an ancestor of {to}; full rescan required")]
+    NonAncestorSnapshot { from: i64, to: i64 },
+
     #[error("dimension mismatch: collection expects {expected}, Parquet vector has {got}")]
     DimMismatch { expected: usize, got: usize },
 
