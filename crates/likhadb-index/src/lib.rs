@@ -10,4 +10,4 @@ pub use hnsw::HnswIndex;
 pub use ivf::IvfIndex;
 #[cfg(feature = "serde")]
 pub use snapshot::IndexSnapshot;
-pub use traits::VectorIndex;
+pub use traits::{PreparedIndexCompaction, VectorIndex};

@@ -1,13 +1,38 @@
 use std::path::Path;
 
 use likhadb_core::{Metric, Result, ScoredResult, SourceBinding, VecId, Vector};
-use likhadb_index::{FlatIndex, VectorIndex};
+use likhadb_index::{FlatIndex, PreparedIndexCompaction, VectorIndex};
 use serde_json::Value;
 
 use crate::delta::DeltaRow;
 use crate::meta::MetaStore;
 
 pub type VectorWithPayload = (Vector, Option<Value>);
+
+enum IndexMutation {
+    Upsert { id: VecId, vector: Vector },
+    Delete { id: VecId },
+}
+
+/// An HNSW rebuild captured from a collection's live vectors. Building it is
+/// CPU-intensive but does not access the live collection.
+pub struct PreparedCollectionCompaction {
+    inner: PreparedIndexCompaction,
+}
+
+/// A replacement index ready to receive mutations that arrived during its
+/// rebuild and then be swapped into the collection.
+pub struct BuiltCollectionCompaction {
+    replacement: Box<dyn VectorIndex>,
+}
+
+impl PreparedCollectionCompaction {
+    pub fn build(self) -> Result<BuiltCollectionCompaction> {
+        Ok(BuiltCollectionCompaction {
+            replacement: self.inner.build()?,
+        })
+    }
+}
 
 #[cfg(feature = "fts")]
 fn extract_text_fields(value: &Value) -> String {
@@ -55,6 +80,9 @@ pub struct Collection {
     /// `None` until a source delta has been applied. Held in memory in this
     /// phase; durable persistence arrives with the Puffin checkpoint work.
     pub source_snapshot_id: Option<i64>,
+    /// Mutations made after an off-thread compaction snapshot was captured.
+    /// This is transient coordination state and is never persisted.
+    compaction_journal: Option<Vec<IndexMutation>>,
 }
 
 impl Collection {
@@ -81,6 +109,7 @@ impl Collection {
             fts_index: None,
             source_binding: None,
             source_snapshot_id: None,
+            compaction_journal: None,
         }
     }
 
@@ -174,7 +203,12 @@ impl Collection {
         payload: Option<Value>,
         lsn: u64,
     ) -> Result<()> {
-        self.index.insert(id, vec)?;
+        if let Some(journal) = &mut self.compaction_journal {
+            self.index.insert(id, vec.clone())?;
+            journal.push(IndexMutation::Upsert { id, vector: vec });
+        } else {
+            self.index.insert(id, vec)?;
+        }
         self.apply_insert_payload(id, payload, lsn)
     }
 
@@ -205,6 +239,12 @@ impl Collection {
             .map(|(id, vector, _, _)| (*id, vector.clone()))
             .collect();
         self.index.insert_batch(&index_rows)?;
+        if let Some(journal) = &mut self.compaction_journal {
+            journal.extend(index_rows.iter().map(|(id, vector)| IndexMutation::Upsert {
+                id: *id,
+                vector: vector.clone(),
+            }));
+        }
         for (id, _, payload, lsn) in rows {
             self.apply_insert_payload(id, payload, lsn)?;
         }
@@ -233,6 +273,11 @@ impl Collection {
 
     pub fn delete(&mut self, id: VecId, lsn: u64) -> Result<bool> {
         let existed = self.index.delete(id);
+        if existed {
+            if let Some(journal) = &mut self.compaction_journal {
+                journal.push(IndexMutation::Delete { id });
+            }
+        }
         self.meta.remove(id);
         #[cfg(feature = "fts")]
         if let Some(fts) = &mut self.fts_index {
@@ -310,11 +355,63 @@ impl Collection {
     pub fn index_type(&self) -> &'static str {
         self.index.index_type()
     }
+
+    /// Fraction of physical index entries that are no longer live.
+    pub fn tombstone_ratio(&self) -> f32 {
+        self.index.tombstone_ratio()
+    }
+
+    /// Capture an HNSW compaction plan and begin journaling subsequent index
+    /// mutations. The expensive graph build happens later via
+    /// [`PreparedCollectionCompaction::build`].
+    pub fn prepare_index_compaction(
+        &mut self,
+        tombstone_threshold: f32,
+    ) -> Option<PreparedCollectionCompaction> {
+        if self.compaction_journal.is_some() || self.index.tombstone_ratio() <= tombstone_threshold
+        {
+            return None;
+        }
+
+        let inner = self.index.prepare_compaction()?;
+        self.compaction_journal = Some(Vec::new());
+        Some(PreparedCollectionCompaction { inner })
+    }
+
+    /// Replay mutations that landed during a rebuild and atomically replace the
+    /// live index. Returns `false` if this collection no longer owns the plan.
+    pub fn finish_index_compaction(
+        &mut self,
+        mut built: BuiltCollectionCompaction,
+    ) -> Result<bool> {
+        let Some(journal) = self.compaction_journal.take() else {
+            return Ok(false);
+        };
+
+        for mutation in journal {
+            match mutation {
+                IndexMutation::Upsert { id, vector } => {
+                    built.replacement.insert(id, vector)?;
+                }
+                IndexMutation::Delete { id } => {
+                    built.replacement.delete(id);
+                }
+            }
+        }
+        self.index = built.replacement;
+        Ok(true)
+    }
+
+    /// Stop journaling after a rebuild failure, leaving the live index intact.
+    pub fn cancel_index_compaction(&mut self) {
+        self.compaction_journal = None;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use likhadb_index::HnswIndex;
     use serde_json::json;
 
     fn make_collection() -> Collection {
@@ -420,6 +517,49 @@ mod tests {
         c.apply_delta_row(DeltaRow::Delete { id: 7 }, u64::MAX)
             .unwrap();
         assert!(c.get(7).unwrap().is_none());
+    }
+
+    #[test]
+    fn compaction_replays_mutations_before_swapping() {
+        let index = HnswIndex::new(2, Metric::L2, 4, 8, 10).unwrap();
+        let mut collection =
+            Collection::with_index("compacting".to_string(), 2, Metric::L2, Box::new(index));
+        for id in 0..10 {
+            collection
+                .insert(id, vec![id as f32, 0.0], None, u64::MAX)
+                .unwrap();
+        }
+        for id in 0..3 {
+            collection.delete(id, u64::MAX).unwrap();
+        }
+        assert!(collection.tombstone_ratio() > 0.2);
+
+        let prepared = collection
+            .prepare_index_compaction(0.2)
+            .expect("tombstone threshold should trigger a rebuild");
+        assert!(
+            collection.prepare_index_compaction(0.2).is_none(),
+            "only one rebuild may journal mutations at a time"
+        );
+
+        collection
+            .insert(20, vec![20.0, 0.0], None, u64::MAX)
+            .unwrap();
+        collection
+            .insert(4, vec![40.0, 0.0], None, u64::MAX)
+            .unwrap();
+        collection.delete(3, u64::MAX).unwrap();
+
+        let built = prepared.build().unwrap();
+        assert!(collection.finish_index_compaction(built).unwrap());
+        assert!(
+            collection.tombstone_ratio() < 0.3,
+            "replayed churn should still leave fewer tombstones than the original index"
+        );
+        assert!(collection.get(3).unwrap().is_none());
+        assert_eq!(collection.get(4).unwrap().unwrap().0, vec![40.0, 0.0]);
+        assert_eq!(collection.get(20).unwrap().unwrap().0, vec![20.0, 0.0]);
+        assert_eq!(collection.len(), 7);
     }
 
     #[test]

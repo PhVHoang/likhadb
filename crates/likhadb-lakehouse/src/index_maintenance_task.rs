@@ -8,7 +8,7 @@ use likhadb_core::SourceBinding;
 use likhadb_persist::WalManager;
 use tokio::sync::RwLock;
 
-use crate::{load_source_table, scan_delta, LakehouseError, SnapshotDelta};
+use crate::{load_source_table, scan_delta, LakehouseError, MaintenanceConfig, SnapshotDelta};
 
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -25,19 +25,27 @@ pub struct IndexMaintenanceTask {
     wal: Arc<RwLock<WalManager>>,
     catalog: Arc<dyn Catalog>,
     interval: Duration,
+    hnsw_compaction_tombstone_ratio: f32,
 }
 
 impl IndexMaintenanceTask {
     pub fn new(wal: Arc<RwLock<WalManager>>, catalog: Arc<dyn Catalog>) -> Self {
+        let config = MaintenanceConfig::default();
         Self {
             wal,
             catalog,
             interval: DEFAULT_INTERVAL,
+            hnsw_compaction_tombstone_ratio: config.hnsw_compaction_tombstone_ratio,
         }
     }
 
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
+        self
+    }
+
+    pub fn with_hnsw_compaction_tombstone_ratio(mut self, threshold: f32) -> Self {
+        self.hnsw_compaction_tombstone_ratio = threshold;
         self
     }
 
@@ -175,7 +183,77 @@ impl IndexMaintenanceTask {
             full_rescan,
             "source snapshot maintenance applied"
         );
+        drop(self.enqueue_hnsw_compaction(&collection.name).await?);
         Ok(())
+    }
+
+    /// Capture a compaction plan under the store lock, then rebuild on a
+    /// blocking worker. The worker reacquires the lock only to replay mutations
+    /// recorded since the snapshot and swap the index pointer.
+    async fn enqueue_hnsw_compaction(
+        &self,
+        collection: &str,
+    ) -> Result<Option<tokio::task::JoinHandle<()>>, LakehouseError> {
+        let prepared = self
+            .wal
+            .write()
+            .await
+            .prepare_index_compaction(collection, self.hnsw_compaction_tombstone_ratio)?;
+        let Some(prepared) = prepared else {
+            return Ok(None);
+        };
+
+        let wal = self.wal.clone();
+        let collection = collection.to_owned();
+        let threshold = self.hnsw_compaction_tombstone_ratio;
+        tracing::info!(
+            collection = %collection,
+            tombstone_threshold = threshold,
+            "HNSW index compaction started"
+        );
+
+        Ok(Some(tokio::spawn(async move {
+            let build = tokio::task::spawn_blocking(move || prepared.build()).await;
+            match build {
+                Ok(Ok(built)) => match wal
+                    .write()
+                    .await
+                    .finish_index_compaction(&collection, built)
+                {
+                    Ok(true) => tracing::info!(
+                        collection = %collection,
+                        "HNSW index compaction completed"
+                    ),
+                    Ok(false) => tracing::debug!(
+                        collection = %collection,
+                        "discarding stale HNSW index compaction"
+                    ),
+                    Err(error) => tracing::warn!(
+                        collection = %collection,
+                        error = %error,
+                        "HNSW index compaction swap failed"
+                    ),
+                },
+                Ok(Err(error)) => {
+                    let cancel_error = wal.write().await.cancel_index_compaction(&collection);
+                    tracing::warn!(
+                        collection = %collection,
+                        error = %error,
+                        cancel_error = ?cancel_error.err(),
+                        "HNSW index compaction build failed"
+                    );
+                }
+                Err(error) => {
+                    let cancel_error = wal.write().await.cancel_index_compaction(&collection);
+                    tracing::warn!(
+                        collection = %collection,
+                        error = %error,
+                        cancel_error = ?cancel_error.err(),
+                        "HNSW index compaction worker failed"
+                    );
+                }
+            }
+        })))
     }
 }
 
@@ -381,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tick_applies_external_append_and_advances_watermark() {
+    async fn tick_applies_external_append_and_compacts_hnsw() {
         let warehouse = TempDir::new().unwrap();
         let catalog = Arc::new(
             MemoryCatalogBuilder::default()
@@ -429,6 +507,14 @@ mod tests {
             .unwrap();
         wal.apply_source_delta("documents", &binding, None, baseline_snapshot, [])
             .unwrap();
+        for id in 10..20 {
+            wal.insert("documents", id, vec![id as f32, 0.0], None)
+                .unwrap();
+        }
+        for id in 10..13 {
+            wal.delete("documents", id).unwrap();
+        }
+        assert!(wal.get("documents").unwrap().tombstone_ratio() > 0.2);
 
         // Reloading before the append models a writer independent from the
         // maintenance task's later catalog read.
@@ -441,13 +527,31 @@ mod tests {
         let task = IndexMaintenanceTask::new(wal.clone(), catalog);
         task.run_once().await;
 
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if wal.read().await.get("documents").unwrap().tombstone_ratio() == 0.0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("HNSW compaction should finish without holding the store lock");
+
         let guard = wal.read().await;
         let collection = guard.get("documents").unwrap();
         assert_eq!(collection.source_snapshot_id, Some(external_snapshot));
+        assert_eq!(collection.tombstone_ratio(), 0.0);
         assert_eq!(
             collection.search(&[2.0, 0.0], 1, None, false).unwrap()[0].id,
             2
         );
         assert!(collection.get(1).unwrap().is_none());
+        for id in 10..13 {
+            assert!(collection.get(id).unwrap().is_none());
+        }
+        for id in 13..20 {
+            assert!(collection.get(id).unwrap().is_some());
+        }
     }
 }

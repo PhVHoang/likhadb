@@ -1,5 +1,30 @@
 use likhadb_core::{FilterFn, Result, ScoredResult, VecId, Vector};
 
+/// A lightweight snapshot of the data and configuration needed to rebuild an
+/// index away from the live collection lock.
+pub struct PreparedIndexCompaction {
+    replacement: Box<dyn VectorIndex>,
+    live_vectors: Vec<(VecId, Vector)>,
+}
+
+impl PreparedIndexCompaction {
+    pub(crate) fn new(
+        replacement: Box<dyn VectorIndex>,
+        live_vectors: Vec<(VecId, Vector)>,
+    ) -> Self {
+        Self {
+            replacement,
+            live_vectors,
+        }
+    }
+
+    /// Build the replacement index from the captured live vectors.
+    pub fn build(mut self) -> Result<Box<dyn VectorIndex>> {
+        self.replacement.insert_batch(&self.live_vectors)?;
+        Ok(self.replacement)
+    }
+}
+
 /// The sole coupling point between collections and any index implementation.
 /// Flat, IVF, and HNSW indexes implement the same contract.
 pub trait VectorIndex: Send + Sync {
@@ -52,6 +77,13 @@ pub trait VectorIndex: Send + Sync {
     /// compaction trigger.
     fn tombstone_ratio(&self) -> f32 {
         0.0
+    }
+
+    /// Capture the live vectors and index configuration needed for an
+    /// off-thread compaction. The returned plan performs the expensive rebuild
+    /// only when [`PreparedIndexCompaction::build`] is called.
+    fn prepare_compaction(&self) -> Option<PreparedIndexCompaction> {
+        None
     }
 
     /// Rebuild compactly from live entries, dropping tombstones and refreshing

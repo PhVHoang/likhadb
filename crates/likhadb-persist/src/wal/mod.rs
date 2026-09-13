@@ -12,7 +12,10 @@ use std::path::{Path, PathBuf};
 
 use bincode::Options as _;
 use likhadb_core::{Metric, SourceBinding, VecId, Vector};
-use likhadb_store::{Collection, CollectionManager, DeltaRow};
+use likhadb_store::{
+    BuiltCollectionCompaction, Collection, CollectionManager, DeltaRow,
+    PreparedCollectionCompaction,
+};
 use serde_json::Value;
 
 use crate::{bincode_opts, PersistError};
@@ -890,6 +893,36 @@ impl WalManager {
     }
 
     // ── Read-through ────────────────────────────────────────────────────────
+
+    /// Capture a collection's live HNSW vectors and start journaling mutations
+    /// that must be replayed before the rebuilt index is swapped in.
+    pub fn prepare_index_compaction(
+        &mut self,
+        collection: &str,
+        tombstone_threshold: f32,
+    ) -> likhadb_core::Result<Option<PreparedCollectionCompaction>> {
+        self.inner
+            .get_mut(collection)
+            .map(|col| col.prepare_index_compaction(tombstone_threshold))
+    }
+
+    /// Replay mutations made during the off-thread rebuild and swap in the
+    /// replacement index.
+    pub fn finish_index_compaction(
+        &mut self,
+        collection: &str,
+        built: BuiltCollectionCompaction,
+    ) -> likhadb_core::Result<bool> {
+        self.inner
+            .get_mut(collection)?
+            .finish_index_compaction(built)
+    }
+
+    /// Leave the existing index in place after a compaction build failure.
+    pub fn cancel_index_compaction(&mut self, collection: &str) -> likhadb_core::Result<()> {
+        self.inner.get_mut(collection)?.cancel_index_compaction();
+        Ok(())
+    }
 
     pub fn get(&self, name: &str) -> likhadb_core::Result<&Collection> {
         self.inner.get(name)

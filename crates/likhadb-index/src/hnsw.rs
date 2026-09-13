@@ -16,7 +16,7 @@ use rayon::prelude::*;
 use likhadb_core::{FilterFn, LikhaDbError, Metric, Result, ScoredResult, VecId, Vector};
 
 use crate::flat::simd_distance;
-use crate::traits::VectorIndex;
+use crate::traits::{PreparedIndexCompaction, VectorIndex};
 
 const MAX_LEVEL: usize = 16;
 
@@ -607,31 +607,41 @@ impl VectorIndex for HnswIndex {
         dead as f32 / physical as f32
     }
 
-    /// Rebuild a fresh graph containing only the live nodes, dropping all
-    /// tombstones and overwrite ghosts. Live nodes are re-inserted in their
-    /// original insertion order (canonical node per id) via the normal `insert`
-    /// path, so graph quality matches a from-scratch build.
-    fn compact(&self) -> Option<Box<dyn VectorIndex>> {
-        let mut fresh = HnswIndex::new(
+    fn prepare_compaction(&self) -> Option<PreparedIndexCompaction> {
+        let replacement = HnswIndex::new(
             self.dim,
             self.metric,
             self.m,
             self.ef_construction,
             self.ef_search,
         )
-        .expect("compact reuses already-validated parameters")
+        .expect("compaction reuses already-validated parameters")
         .with_heuristic(self.use_heuristic);
-        for (i, node) in self.nodes.iter().enumerate() {
-            // Skip ghosts (id remapped to a newer node) and tombstoned deletes.
-            if self.id_to_node.get(&node.id) != Some(&i) || self.deleted.contains(&node.id) {
-                continue;
-            }
-            let vec = self.vec_of(i).to_vec();
-            fresh
-                .insert(node.id, vec)
-                .expect("live vectors already satisfy the dimension invariant");
-        }
-        Some(Box::new(fresh))
+        let live_vectors = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(index, node)| {
+                self.id_to_node.get(&node.id) == Some(index) && !self.deleted.contains(&node.id)
+            })
+            .map(|(index, node)| (node.id, self.vec_of(index).to_vec()))
+            .collect();
+        Some(PreparedIndexCompaction::new(
+            Box::new(replacement),
+            live_vectors,
+        ))
+    }
+
+    /// Rebuild a fresh graph containing only the live nodes, dropping all
+    /// tombstones and overwrite ghosts. Live nodes are captured in their
+    /// original insertion order (canonical node per id) and passed through the
+    /// normal bulk-build path, so graph quality matches a from-scratch build.
+    fn compact(&self) -> Option<Box<dyn VectorIndex>> {
+        Some(
+            self.prepare_compaction()?
+                .build()
+                .expect("live vectors already satisfy the dimension invariant"),
+        )
     }
 
     #[cfg(feature = "serde")]
