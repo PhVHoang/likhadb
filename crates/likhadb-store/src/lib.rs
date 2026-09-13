@@ -5,7 +5,7 @@ pub mod meta;
 #[cfg(feature = "persist")]
 pub mod snapshot;
 
-pub use collection::Collection;
+pub use collection::{BuiltCollectionCompaction, Collection, PreparedCollectionCompaction};
 pub use delta::DeltaRow;
 pub use manager::CollectionManager;
 pub use meta::MetaStore;
