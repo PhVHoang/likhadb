@@ -38,4 +38,7 @@ http                         = "1"
 tonic-build = "0.12"
 
 [dev-dependencies]
+arrow    = "57.1"
+iceberg  = "0.9.1"
+parquet  = { version = "57.1", features = ["arrow"] }
 tempfile = "3"
