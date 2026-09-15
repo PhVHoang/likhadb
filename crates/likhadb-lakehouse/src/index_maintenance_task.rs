@@ -1,5 +1,6 @@
 //! Background synchronization of bound collections from Iceberg snapshot deltas.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use iceberg::Catalog;
 use likhadb_core::SourceBinding;
 use likhadb_persist::WalManager;
 use likhadb_store::DeltaRow;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{load_source_table, scan_delta, LakehouseError, MaintenanceConfig, SnapshotDelta};
 
@@ -93,6 +94,14 @@ pub struct IndexMaintenanceTask {
     catalog: Arc<dyn Catalog>,
     interval: Duration,
     hnsw_compaction_tombstone_ratio: f32,
+    ivf_compaction_every_n_rows: u64,
+    ivf_compaction_state: Mutex<HashMap<String, IvfCompactionState>>,
+}
+
+#[derive(Default)]
+struct IvfCompactionState {
+    rows_since_compaction: u64,
+    completed_compactions: u64,
 }
 
 impl IndexMaintenanceTask {
@@ -103,6 +112,8 @@ impl IndexMaintenanceTask {
             catalog,
             interval: DEFAULT_INTERVAL,
             hnsw_compaction_tombstone_ratio: config.hnsw_compaction_tombstone_ratio,
+            ivf_compaction_every_n_rows: config.ivf_compaction_every_n_rows,
+            ivf_compaction_state: Mutex::new(HashMap::new()),
         }
     }
 
@@ -113,6 +124,13 @@ impl IndexMaintenanceTask {
 
     pub fn with_hnsw_compaction_tombstone_ratio(mut self, threshold: f32) -> Self {
         self.hnsw_compaction_tombstone_ratio = threshold;
+        self
+    }
+
+    /// Set the number of successfully applied source rows between IVF
+    /// centroid retraining passes. Zero disables IVF compaction.
+    pub fn with_ivf_compaction_every_n_rows(mut self, rows: u64) -> Self {
+        self.ivf_compaction_every_n_rows = rows;
         self
     }
 
@@ -312,6 +330,7 @@ impl IndexMaintenanceTask {
             full_rescan,
             "source snapshot maintenance applied"
         );
+        self.maybe_compact_ivf(&collection.name, row_count).await?;
         drop(self.enqueue_hnsw_compaction(&collection.name).await?);
         Ok(())
     }
@@ -416,6 +435,67 @@ impl IndexMaintenanceTask {
                 }
             }
         })))
+    }
+
+    async fn maybe_compact_ivf(
+        &self,
+        collection_name: &str,
+        applied_rows: usize,
+    ) -> Result<bool, LakehouseError> {
+        if self.ivf_compaction_every_n_rows == 0 || applied_rows == 0 {
+            return Ok(false);
+        }
+
+        let is_ivf = {
+            let guard = self.wal.read().await;
+            guard.get(collection_name)?.index_type() == "IvfIndex"
+        };
+        if !is_ivf {
+            self.ivf_compaction_state
+                .lock()
+                .await
+                .remove(collection_name);
+            return Ok(false);
+        }
+
+        let mut states = self.ivf_compaction_state.lock().await;
+        let state = states.entry(collection_name.to_owned()).or_default();
+        state.rows_since_compaction = state
+            .rows_since_compaction
+            .saturating_add(u64::try_from(applied_rows).unwrap_or(u64::MAX));
+        if state.rows_since_compaction < self.ivf_compaction_every_n_rows {
+            return Ok(false);
+        }
+
+        let compacted = match self
+            .wal
+            .write()
+            .await
+            .compact_ivf_collection(collection_name)
+        {
+            Ok(compacted) => compacted,
+            Err(error) => {
+                record_compaction(collection_name, "failure");
+                return Err(error.into());
+            }
+        };
+        if !compacted {
+            return Ok(false);
+        }
+
+        let rows_since_compaction = state.rows_since_compaction;
+        state.rows_since_compaction = state
+            .rows_since_compaction
+            .saturating_sub(self.ivf_compaction_every_n_rows);
+        state.completed_compactions = state.completed_compactions.saturating_add(1);
+        record_compaction(collection_name, "success");
+        tracing::info!(
+            collection = collection_name,
+            rows_since_compaction,
+            compactions_completed = state.completed_compactions,
+            "IVF index compacted after applied source rows"
+        );
+        Ok(true)
     }
 }
 
@@ -715,5 +795,122 @@ mod tests {
         for id in 13..20 {
             assert!(collection.get(id).unwrap().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn ivf_compacts_once_per_configured_applied_rows() {
+        let warehouse = TempDir::new().unwrap();
+        let catalog = Arc::new(
+            MemoryCatalogBuilder::default()
+                .load(
+                    "maintenance-test",
+                    HashMap::from([(
+                        MEMORY_CATALOG_WAREHOUSE.to_string(),
+                        format!("file://{}", warehouse.path().display()),
+                    )]),
+                )
+                .await
+                .unwrap(),
+        );
+        let namespace = NamespaceIdent::new("source".to_string());
+        catalog
+            .create_namespace(&namespace, HashMap::new())
+            .await
+            .unwrap();
+        let table_ident = TableIdent::new(namespace.clone(), "vectors".to_string());
+        let table = catalog
+            .create_table(
+                &namespace,
+                TableCreation::builder()
+                    .name(table_ident.name().to_string())
+                    .schema(arrow_schema_to_schema(arrow_schema().as_ref()).unwrap())
+                    .build(),
+            )
+            .await
+            .unwrap();
+        let table = append_row(catalog.as_ref(), &table, "baseline", 1, [1.0, 0.0]).await;
+        let baseline_snapshot = table.metadata().current_snapshot_id().unwrap();
+
+        let data_dir = TempDir::new().unwrap();
+        let mut wal = WalManager::open(data_dir.path()).unwrap();
+        wal.create_ivf_collection("documents", 2, Metric::L2, 2, 2)
+            .unwrap();
+        wal.insert("documents", 100, vec![-100.0, 0.0], None)
+            .unwrap();
+        wal.insert("documents", 101, vec![100.0, 0.0], None)
+            .unwrap();
+        let binding = SourceBinding {
+            source_namespace: namespace.as_ref().clone(),
+            source_table: table_ident.name().to_string(),
+            id_column: "id".to_string(),
+            vector_column: "embedding".to_string(),
+            payload_columns: vec![],
+        };
+        wal.set_source_binding("documents", binding.clone())
+            .unwrap();
+        wal.apply_source_delta("documents", &binding, None, baseline_snapshot, [])
+            .unwrap();
+
+        let wal = Arc::new(RwLock::new(wal));
+        let task = IndexMaintenanceTask::new(wal.clone(), catalog.clone())
+            .with_ivf_compaction_every_n_rows(2);
+
+        let writer_table = catalog.load_table(&table_ident).await.unwrap();
+        let writer_table = append_row(
+            catalog.as_ref(),
+            &writer_table,
+            "external-1",
+            10,
+            [10.0, 0.0],
+        )
+        .await;
+        task.run_once().await;
+        {
+            let states = task.ivf_compaction_state.lock().await;
+            let state = states.get("documents").unwrap();
+            assert_eq!(state.rows_since_compaction, 1);
+            assert_eq!(state.completed_compactions, 0);
+        }
+
+        let writer_table = append_row(
+            catalog.as_ref(),
+            &writer_table,
+            "external-2",
+            11,
+            [11.0, 0.0],
+        )
+        .await;
+        task.run_once().await;
+        {
+            let states = task.ivf_compaction_state.lock().await;
+            let state = states.get("documents").unwrap();
+            assert_eq!(state.rows_since_compaction, 0);
+            assert_eq!(state.completed_compactions, 1);
+        }
+
+        append_row(
+            catalog.as_ref(),
+            &writer_table,
+            "external-3",
+            12,
+            [12.0, 0.0],
+        )
+        .await;
+        task.run_once().await;
+        {
+            let states = task.ivf_compaction_state.lock().await;
+            let state = states.get("documents").unwrap();
+            assert_eq!(state.rows_since_compaction, 1);
+            assert_eq!(state.completed_compactions, 1);
+        }
+
+        let guard = wal.read().await;
+        let collection = guard.get("documents").unwrap();
+        assert_eq!(collection.len(), 5, "compaction preserves the live set");
+        assert_eq!(
+            collection.search(&[11.0, 0.0], 1, None, false).unwrap()[0].id,
+            11,
+            "retrained IVF preserves exact-search results"
+        );
     }
 }
