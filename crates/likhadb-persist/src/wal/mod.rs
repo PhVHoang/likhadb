@@ -892,6 +892,14 @@ impl WalManager {
         Ok(true)
     }
 
+    /// Rebuild and replace a collection's vector index without recording a WAL
+    /// entry. Compaction is derived entirely from the current live index state.
+    pub fn compact_ivf_collection(&mut self, collection: &str) -> likhadb_core::Result<bool> {
+        self.inner
+            .get_mut(collection)
+            .map(|col| col.compact_ivf_index())
+    }
+
     // ── Read-through ────────────────────────────────────────────────────────
 
     /// Capture a collection's live HNSW vectors and start journaling mutations

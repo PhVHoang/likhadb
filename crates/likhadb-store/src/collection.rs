@@ -406,6 +406,21 @@ impl Collection {
     pub fn cancel_index_compaction(&mut self) {
         self.compaction_journal = None;
     }
+
+    /// Rebuild the backing vector index and replace it on success.
+    ///
+    /// Returns `false` when the index has no applicable compaction yet (for
+    /// example, an IVF index that is still in its pre-training staging phase).
+    pub fn compact_ivf_index(&mut self) -> bool {
+        if self.index.index_type() != "IvfIndex" {
+            return false;
+        }
+        let Some(compacted) = self.index.compact() else {
+            return false;
+        };
+        self.index = compacted;
+        true
+    }
 }
 
 #[cfg(test)]
