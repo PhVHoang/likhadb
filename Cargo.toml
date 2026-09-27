@@ -16,6 +16,15 @@ resolver = "2"
 [workspace.package]
 license = "Apache-2.0"
 
+# Full debug information is expensive for this workspace's large dependency graph
+# (Arrow, Parquet, Iceberg, and Tantivy). Line tables retain useful backtraces
+# while making routine development and test builds substantially smaller.
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
+
 [workspace.dependencies]
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
