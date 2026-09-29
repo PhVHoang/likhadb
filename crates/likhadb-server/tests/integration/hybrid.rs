@@ -1,3 +1,4 @@
+// Hybrid-search route coverage.
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use likhadb_persist::WalManager;
