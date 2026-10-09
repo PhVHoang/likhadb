@@ -41,6 +41,16 @@ IndexConfig = Annotated[
     Field(discriminator="type"),
 ]
 
+
+class SourceBinding(BaseModel):
+    """Mapping from an external Iceberg source table to a collection."""
+
+    source_namespace: list[str]
+    source_table: str
+    id_column: str
+    vector_column: str
+    payload_columns: list[str] = Field(default_factory=list)
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -52,6 +62,7 @@ class CreateCollectionRequest(BaseModel):
     metric: Literal["l2", "cosine", "dot"]
     index: IndexConfig = Field(default_factory=FlatIndex)
     enable_fts: bool = False
+    source_binding: Optional[SourceBinding] = None
 
 
 class InsertRequest(BaseModel):
@@ -62,7 +73,7 @@ class InsertRequest(BaseModel):
 
 class QueryRequest(BaseModel):
     vector: Vector
-    k: int
+    k: int = Field(ge=1, le=1024)
     filter: Optional[Any] = None
     include_payload: bool = False
     allowed_teams: list[str] = Field(default_factory=list)
@@ -72,7 +83,7 @@ class QueryRequest(BaseModel):
 class HybridQueryRequest(BaseModel):
     vector: Vector
     text: str
-    k: int
+    k: int = Field(ge=1, le=1024)
     rrf_k: int = 60
     filter: Optional[Any] = None
     include_payload: bool = False

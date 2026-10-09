@@ -13,7 +13,7 @@ pip install likhadb
 ```python
 from likhadb import LikhaDB
 
-with LikhaDB("http://localhost:8080") as db:
+with LikhaDB("http://localhost:8080", api_token="your-token") as db:
     db.create_collection("docs", dim=384, metric="cosine")
 
     col = db.collection("docs")
@@ -38,6 +38,26 @@ async def main():
         results = await col.search([0.1] * 384, k=5)
 
 asyncio.run(main())
+```
+
+`api_token` is optional when the server does not set `LIKHADB_API_TOKEN`.
+
+## Iceberg source binding
+
+Collections can follow an externally written Iceberg table:
+
+```python
+db.create_collection(
+    "docs",
+    dim=384,
+    source_binding={
+        "source_namespace": ["lake", "embeddings"],
+        "source_table": "documents",
+        "id_column": "id",
+        "vector_column": "embedding",
+        "payload_columns": ["title", "body"],
+    },
+)
 ```
 
 ## Index types

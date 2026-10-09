@@ -12,6 +12,7 @@ from likhadb.models import (
     IvfSq8Index,
     QueryRequest,
     ScoredResult,
+    SourceBinding,
     VectorRecord,
 )
 
@@ -66,6 +67,26 @@ def test_create_collection_with_hnsw():
     assert d["index"]["m"] == 16
 
 
+def test_create_collection_with_source_binding():
+    binding = SourceBinding(
+        source_namespace=["lake", "embeddings"],
+        source_table="documents",
+        id_column="id",
+        vector_column="embedding",
+        payload_columns=["title"],
+    )
+    req = CreateCollectionRequest(
+        name="docs", dim=384, metric="cosine", source_binding=binding
+    )
+    assert req.model_dump()["source_binding"] == {
+        "source_namespace": ["lake", "embeddings"],
+        "source_table": "documents",
+        "id_column": "id",
+        "vector_column": "embedding",
+        "payload_columns": ["title"],
+    }
+
+
 def test_create_collection_invalid_metric():
     with pytest.raises(ValidationError):
         CreateCollectionRequest(name="docs", dim=384, metric="euclidean")  # type: ignore[arg-type]
@@ -89,6 +110,12 @@ def test_query_request_with_filter():
     d = req.model_dump(exclude_none=True)
     assert d["filter"] == f
     assert d["include_payload"] is True
+
+
+@pytest.mark.parametrize("k", [0, 1025])
+def test_query_request_rejects_server_out_of_range_k(k):
+    with pytest.raises(ValidationError):
+        QueryRequest(vector=[0.1], k=k)
 
 
 # ---------------------------------------------------------------------------
