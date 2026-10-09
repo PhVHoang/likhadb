@@ -51,6 +51,7 @@ class SourceBinding(BaseModel):
     vector_column: str
     payload_columns: list[str] = Field(default_factory=list)
 
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
