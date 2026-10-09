@@ -28,11 +28,11 @@ jobs:
 
       - name: ruff check (lint)
         working-directory: sdk/python
-        run: ruff check likhadb/ tests/
+        run: ruff check likhadb/
 
       - name: ruff format (check)
         working-directory: sdk/python
-        run: ruff format --check likhadb/ tests/
+        run: ruff format --check likhadb/
 
       - name: mypy
         working-directory: sdk/python

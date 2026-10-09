@@ -13,6 +13,7 @@ from .models import (
     HnswIndex,
     IvfIndex,
     IvfSq8Index,
+    SourceBinding,
 )
 
 _DEFAULT_URL = "http://localhost:8080"
@@ -38,6 +39,14 @@ def _parse_index(index: dict[str, Any] | None) -> _IndexConfig:
     raise ValueError(f"Unknown index type {t!r}. Expected flat, ivf, ivf_sq8, or hnsw.")
 
 
+def _parse_source_binding(
+    source_binding: SourceBinding | dict[str, Any] | None,
+) -> SourceBinding | None:
+    if source_binding is None or isinstance(source_binding, SourceBinding):
+        return source_binding
+    return SourceBinding.model_validate(source_binding)
+
+
 class LikhaDB:
     """Synchronous client for the LikhaDB REST API.
 
@@ -54,8 +63,9 @@ class LikhaDB:
         self,
         url: str = _DEFAULT_URL,
         timeout: float = _DEFAULT_TIMEOUT,
+        api_token: str | None = None,
     ) -> None:
-        self._http = HttpClient(base_url=url, timeout=timeout)
+        self._http = HttpClient(base_url=url, timeout=timeout, api_token=api_token)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -87,6 +97,7 @@ class LikhaDB:
         metric: Literal["l2", "cosine", "dot"] = "cosine",
         index: dict[str, Any] | None = None,
         enable_fts: bool = False,
+        source_binding: SourceBinding | dict[str, Any] | None = None,
     ) -> None:
         """Create a new collection.
 
@@ -103,6 +114,7 @@ class LikhaDB:
                        {"type": "ivf_sq8", "nlist": 1024, "nprobe": 16}
 
             enable_fts: Activate Tantivy BM25 full-text index on payload string fields.
+            source_binding: Optional mapping to an externally managed Iceberg table.
         """
         req = CreateCollectionRequest(
             name=name,
@@ -110,8 +122,9 @@ class LikhaDB:
             metric=metric,
             index=_parse_index(index),
             enable_fts=enable_fts,
+            source_binding=_parse_source_binding(source_binding),
         )
-        self._http.post("/collections", json=req.model_dump())
+        self._http.post("/collections", json=req.model_dump(exclude_none=True))
 
     def get_collection(self, name: str) -> CollectionInfo:
         """Return metadata for a collection."""
@@ -143,8 +156,9 @@ class AsyncLikhaDB:
         self,
         url: str = _DEFAULT_URL,
         timeout: float = _DEFAULT_TIMEOUT,
+        api_token: str | None = None,
     ) -> None:
-        self._http = AsyncHttpClient(base_url=url, timeout=timeout)
+        self._http = AsyncHttpClient(base_url=url, timeout=timeout, api_token=api_token)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -176,6 +190,7 @@ class AsyncLikhaDB:
         metric: Literal["l2", "cosine", "dot"] = "cosine",
         index: dict[str, Any] | None = None,
         enable_fts: bool = False,
+        source_binding: SourceBinding | dict[str, Any] | None = None,
     ) -> None:
         req = CreateCollectionRequest(
             name=name,
@@ -183,8 +198,9 @@ class AsyncLikhaDB:
             metric=metric,
             index=_parse_index(index),
             enable_fts=enable_fts,
+            source_binding=_parse_source_binding(source_binding),
         )
-        await self._http.post("/collections", json=req.model_dump())
+        await self._http.post("/collections", json=req.model_dump(exclude_none=True))
 
     async def get_collection(self, name: str) -> CollectionInfo:
         r = await self._http.get(f"/collections/{name}")

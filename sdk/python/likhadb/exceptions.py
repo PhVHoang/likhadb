@@ -18,5 +18,13 @@ class LikhaDBBadRequestError(LikhaDBError):
     """The server rejected the request as invalid (400)."""
 
 
+class LikhaDBUnauthorizedError(LikhaDBError):
+    """Authentication is missing or invalid (401)."""
+
+
+class LikhaDBForbiddenError(LikhaDBError):
+    """The requested operation is not permitted (403)."""
+
+
 class LikhaDBServerError(LikhaDBError):
     """The server returned an unexpected error (5xx)."""

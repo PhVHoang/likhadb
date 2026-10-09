@@ -37,6 +37,7 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

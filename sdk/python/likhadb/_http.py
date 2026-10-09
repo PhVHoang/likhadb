@@ -10,8 +10,10 @@ from .exceptions import (
     LikhaDBBadRequestError,
     LikhaDBConflictError,
     LikhaDBConnectionError,
+    LikhaDBForbiddenError,
     LikhaDBNotFoundError,
     LikhaDBServerError,
+    LikhaDBUnauthorizedError,
 )
 
 
@@ -25,6 +27,10 @@ def _raise_for_status(response: httpx.Response) -> None:
     status = response.status_code
     if status == 400:
         raise LikhaDBBadRequestError(detail)
+    if status == 401:
+        raise LikhaDBUnauthorizedError(detail or "missing or invalid bearer token")
+    if status == 403:
+        raise LikhaDBForbiddenError(detail)
     if status == 404:
         raise LikhaDBNotFoundError(detail)
     if status == 409:
@@ -35,8 +41,9 @@ def _raise_for_status(response: httpx.Response) -> None:
 
 
 class HttpClient:
-    def __init__(self, base_url: str, timeout: float) -> None:
-        self._client = httpx.Client(base_url=base_url, timeout=timeout)
+    def __init__(self, base_url: str, timeout: float, api_token: str | None = None) -> None:
+        headers = {"Authorization": f"Bearer {api_token}"} if api_token else None
+        self._client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
 
     def get(self, path: str) -> httpx.Response:
         try:
@@ -73,8 +80,9 @@ class HttpClient:
 
 
 class AsyncHttpClient:
-    def __init__(self, base_url: str, timeout: float) -> None:
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+    def __init__(self, base_url: str, timeout: float, api_token: str | None = None) -> None:
+        headers = {"Authorization": f"Bearer {api_token}"} if api_token else None
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, headers=headers)
 
     async def get(self, path: str) -> httpx.Response:
         try:

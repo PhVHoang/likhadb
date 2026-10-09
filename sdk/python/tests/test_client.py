@@ -10,6 +10,7 @@ from likhadb import (
     LikhaDBBadRequestError,
     LikhaDBConflictError,
     LikhaDBNotFoundError,
+    LikhaDBUnauthorizedError,
 )
 
 BASE = "http://localhost:8080"
@@ -80,6 +81,41 @@ def test_create_collection_hnsw():
 
     payload = json.loads(route.calls[0].request.content)
     assert payload["index"] == {"type": "hnsw", "m": 16, "ef_construction": 200, "ef_search": 50}
+
+
+@respx.mock
+def test_create_collection_source_binding():
+    route = respx.post(f"{BASE}/collections").mock(return_value=httpx.Response(201))
+    binding = {
+        "source_namespace": ["lake", "embeddings"],
+        "source_table": "documents",
+        "id_column": "id",
+        "vector_column": "embedding",
+        "payload_columns": ["title"],
+    }
+    with LikhaDB(BASE) as db:
+        db.create_collection("docs", dim=128, source_binding=binding)
+    import json
+
+    assert json.loads(route.calls[0].request.content)["source_binding"] == binding
+
+
+@respx.mock
+def test_api_token_is_sent_as_bearer_header():
+    route = respx.get(f"{BASE}/collections").mock(
+        return_value=httpx.Response(200, json={"collections": []})
+    )
+    with LikhaDB(BASE, api_token="secret") as db:
+        db.list_collections()
+    assert route.calls[0].request.headers["Authorization"] == "Bearer secret"
+
+
+@respx.mock
+def test_unauthorized_raises_sdk_error():
+    respx.get(f"{BASE}/collections").mock(return_value=httpx.Response(401))
+    with LikhaDB(BASE) as db:
+        with pytest.raises(LikhaDBUnauthorizedError, match="bearer token"):
+            db.list_collections()
 
 
 @respx.mock

@@ -7,8 +7,10 @@ from .exceptions import (
     LikhaDBConflictError,
     LikhaDBConnectionError,
     LikhaDBError,
+    LikhaDBForbiddenError,
     LikhaDBNotFoundError,
     LikhaDBServerError,
+    LikhaDBUnauthorizedError,
 )
 from .models import (
     CollectionInfo,
@@ -18,6 +20,7 @@ from .models import (
     IvfSq8Index,
     PipelineResult,
     ScoredResult,
+    SourceBinding,
     VectorRecord,
 )
 
@@ -33,6 +36,7 @@ __all__ = [
     "PipelineResult",
     "ScoredResult",
     "VectorRecord",
+    "SourceBinding",
     # Index config models
     "FlatIndex",
     "IvfIndex",
@@ -44,5 +48,7 @@ __all__ = [
     "LikhaDBNotFoundError",
     "LikhaDBConflictError",
     "LikhaDBBadRequestError",
+    "LikhaDBUnauthorizedError",
+    "LikhaDBForbiddenError",
     "LikhaDBServerError",
 ]
