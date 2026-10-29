@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: likhadb-dev
+
+resources:
+  - ../../base
+  - namespace.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: dev
+    includeSelectors: true
+    includeTemplates: true
+
+images:
+  - name: ghcr.io/phvhoang/likhadb
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

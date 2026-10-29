@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: likhadb
+spec:
+  template:
+    spec:
+      containers:
+        - name: likhadb
+          env:
+            - name: LIKHADB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: likhadb-secrets
+                  key: api-token
+                  optional: false
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "4"
+              memory: 2Gi
+
