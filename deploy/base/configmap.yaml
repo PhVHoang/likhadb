@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: likhadb-config
+data:
+  HTTP_ADDR: 0.0.0.0:8080
+  GRPC_ADDR: 0.0.0.0:50051
+  RUST_LOG: info
