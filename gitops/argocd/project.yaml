@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: likhadb
+  namespace: argocd
+spec:
+  description: LikhaDB environment deployments managed through Kargo promotion
+  sourceRepos:
+    - https://github.com/PhVHoang/likhadb.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: likhadb-dev
+    - server: https://kubernetes.default.svc
+      namespace: likhadb-staging
+    - server: https://kubernetes.default.svc
+      namespace: likhadb-production
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment

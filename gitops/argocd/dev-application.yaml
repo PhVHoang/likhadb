@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: likhadb-dev
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: likhadb
+    app.kubernetes.io/part-of: likhadb
+    app.kubernetes.io/environment: dev
+spec:
+  project: likhadb
+  source:
+    repoURL: https://github.com/PhVHoang/likhadb.git
+    targetRevision: env/dev
+    path: deploy/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: likhadb-dev
+  syncPolicy:
+    automated:
+      enabled: true
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - ApplyOutOfSyncOnly=true
+      - CreateNamespace=true
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - Validate=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
