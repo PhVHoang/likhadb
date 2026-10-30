@@ -13,9 +13,12 @@ kustomize build deploy/overlays/production
 ```
 
 The committed image digest is intentionally all zeroes and cannot be pulled. It
-prevents an accidental deployment of a mutable image before image publishing and
-Kargo promotion are implemented. To test an overlay manually, replace the
-`digest` value in its `kustomization.yaml` with a published LikhaDB digest.
+prevents an accidental deployment before Kargo promotion is implemented. Merges
+to `main` that affect the image publish a multi-architecture image to
+`ghcr.io/phvhoang/likhadb` using the immutable-style tag
+`sha-<full-git-commit>`. Deployments must use the digest reported by the publish
+workflow, not that tag. To test an overlay manually, replace the `digest` value
+in its `kustomization.yaml` with a published LikhaDB digest.
 
 Development can start without an API token. Staging and production require a
 Secret named `likhadb-secrets` with an `api-token` key. Create it through the
