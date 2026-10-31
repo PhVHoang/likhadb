@@ -13,8 +13,8 @@ spec:
   project: likhadb
   source:
     repoURL: https://github.com/PhVHoang/likhadb.git
-    targetRevision: env/staging
-    path: .
+    targetRevision: main
+    path: environments/staging
   destination:
     server: https://kubernetes.default.svc
     namespace: likhadb-staging

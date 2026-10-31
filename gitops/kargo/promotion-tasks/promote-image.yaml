@@ -10,7 +10,9 @@ spec:
     - name: imageRepo
       value: ghcr.io/phvhoang/likhadb
     - name: targetBranch
+      value: main
     - name: overlayPath
+    - name: environmentPath
     - name: argoCDApp
   steps:
     - uses: git-clone
@@ -23,12 +25,7 @@ spec:
           - commit: ${{ commitFrom(vars.gitRepo).ID }}
             path: ./src
           - branch: ${{ vars.targetBranch }}
-            create: true
             path: ./out
-
-    - uses: git-clear
-      config:
-        path: ./out
 
     - uses: kustomize-set-image
       as: update-image
@@ -41,7 +38,9 @@ spec:
     - uses: kustomize-build
       config:
         path: ./src/${{ vars.overlayPath }}
-        outPath: ./out
+        # A single generated file makes each promotion an idempotent
+        # replacement and cannot leave stale resources in the environment.
+        outPath: ./out/${{ vars.environmentPath }}/manifests.yaml
 
     - uses: git-commit
       as: commit

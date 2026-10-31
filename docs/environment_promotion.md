@@ -47,16 +47,17 @@ flowchart TD
     Freight --> Dev["dev<br/>automatic promotion"]
     Dev --> Staging["staging<br/>manual approval"]
     Staging --> Production["production<br/>manual approval"]
-    Dev --> DevBranch["env/dev"]
-    Staging --> StagingBranch["env/staging"]
-    Production --> ProductionBranch["env/production"]
-    DevBranch --> Argo["Argo CD Applications"]
-    StagingBranch --> Argo
-    ProductionBranch --> Argo
+    Dev --> DevDir["environments/dev"]
+    Staging --> StagingDir["environments/staging"]
+    Production --> ProductionDir["environments/production"]
+    DevDir --> MainState["main branch desired state"]
+    StagingDir --> MainState
+    ProductionDir --> MainState
+    MainState --> Argo["Argo CD Applications"]
     Argo --> Cluster["Kubernetes namespaces"]
 ```
 
-Kargo selects and promotes immutable image digests. A promotion renders and validates the target environment, commits the desired state to its environment branch, and requests an Argo CD refresh. Argo CD reconciles that desired state into Kubernetes. Kargo does not directly deploy the LikhaDB workload.
+Kargo selects and promotes immutable image digests. A promotion renders and validates the target environment, commits its desired state under `environments/` on `main`, and requests an Argo CD refresh. Argo CD reconciles that desired state into Kubernetes. Kargo does not directly deploy the LikhaDB workload.
 
 ## Repository layout
 
@@ -166,14 +167,14 @@ A dedicated Argo CD `AppProject` will constrain:
 
 There will be one Argo CD `Application` per environment. Each application will:
 
-- Track its corresponding `env/<environment>` branch.
-- Read rendered manifests from the root of its `env/<environment>` branch.
+- Track `main`.
+- Read rendered manifests from `environments/<environment>`.
 - Deploy only to its environment namespace.
 - Enable automated synchronization, pruning, and self-healing.
 - Create its destination namespace when necessary.
 - Report health and synchronization status back to Kargo.
 
-Automated Argo CD sync is safe in this design because promotion approval occurs before Kargo changes the environment branch. Once a promotion is approved, Argo
+Automated Argo CD sync is safe in this design because promotion approval occurs before Kargo changes the environment directory. Once a promotion is approved, Argo
 CD should reconcile it without a second manual deployment action.
 
 ## Kargo design
@@ -206,37 +207,36 @@ Staging and production must not independently discover a newer image during a pr
 The promotion task will:
 
 1. Clone the Git repository.
-2. Check out or create the destination `env/<environment>` branch from the appropriate source revision.
+2. Check out the current `main` branch as the destination working tree.
 3. Update the target Kustomize overlay to use the Freight image digest.
 4. Render the overlay.
 5. Validate the rendered Kubernetes resources.
 6. Commit the generated desired state with Freight metadata in the message.
-7. Push the environment branch.
+7. Push the generated environment manifest to `main`.
 8. Refresh or update the corresponding Argo CD application.
 9. Wait for Argo CD to report the application synchronized and healthy.
 
 Promotion fails if rendering, validation, Git push, Argo CD synchronization, or application health fails. A failed promotion must not be marked verified.
 
-### Environment branches
+### Environment directories
 
 Kargo will write desired state to:
 
-- `env/dev`
-- `env/staging`
-- `env/production`
+- `environments/dev/manifests.yaml`
+- `environments/staging/manifests.yaml`
+- `environments/production/manifests.yaml`
 
-This avoids promotion commits competing on `main`, gives each environment an independent and auditable history, and lets Argo CD reconcile an unambiguous desired revision.
-
-Branch creation and update behavior must be idempotent. Each promotion renders
-the selected overlay from the Freight's exact `main` commit, replaces the
-environment branch contents while preserving its Git history, and writes the
-Freight image digest into the rendered manifests.
+Each promotion changes only one environment file, giving every environment an
+auditable history within the normal `main` log. Rendering to a single file makes
+updates idempotent and prevents stale resources from surviving a promotion.
+The selected overlay comes from the Freight's exact source commit, while Git
+push retry/rebase integrates the generated change with the latest `main`.
 
 ## Credentials and secrets
 
 The implementation requires credentials for:
 
-- Kargo to push environment branches to GitHub.
+- Kargo to push generated environment commits to `main` on GitHub.
 - Kargo and the cluster to read GHCR if the image package is private.
 - Kargo to interact with the intended Argo CD applications.
 - Clients to authenticate to LikhaDB through `LIKHADB_API_TOKEN`.
@@ -280,7 +280,7 @@ End-to-end validation will cover:
 1. Build and publish a SHA-tagged image.
 2. Confirm the Warehouse discovers it as Freight.
 3. Promote it automatically to `dev`.
-4. Confirm Kargo updates `env/dev` and Argo CD reports the application healthy.
+4. Confirm Kargo updates `environments/dev` and Argo CD reports the application healthy.
 5. Manually promote the same Freight to `staging` and then `production`.
 6. Confirm all environments reference the same image digest.
 7. Introduce reversible deployment drift and verify Argo CD repairs it.
@@ -288,7 +288,7 @@ End-to-end validation will cover:
 
 ## Rollback
 
-Rollback will use Kargo to promote an older verified Freight. Operators should not manually edit the live Deployment or environment branch as the normal rollback procedure. Re-promoting Freight preserves the audit trail and ensures Git, ArgoCD, Kargo, and the cluster agree on the desired release.
+Rollback will use Kargo to promote an older verified Freight. Operators should not manually edit the live Deployment or generated environment file as the normal rollback procedure. Re-promoting Freight preserves the audit trail and ensures Git, Argo CD, Kargo, and the cluster agree on the desired release.
 
 Application data rollback is separate from application image rollback. Because LikhaDB persists WAL and snapshot data, compatibility across versions must be considered before rolling back a release that changed the on-disk format.
 
@@ -309,7 +309,7 @@ Application data rollback is separate from application image rollback. Because L
 ### Phase 3: Argo CD
 
 - Add the project and three applications.
-- Configure environment branch tracking and automated reconciliation.
+- Configure environment directory tracking and automated reconciliation.
 - Verify namespace isolation and drift correction.
 
 ### Phase 4: Kargo
@@ -344,7 +344,7 @@ The implementation is complete when:
 - The target image name is `ghcr.io/phvhoang/likhadb`.
 - `kind` is the local reference cluster, not the production provisioning tool.
 - Development promotion is automatic; staging and production promotions require explicit approval.
-- Environment branches are preferable to having automation commit promotion changes directly to `main`.
+- Generated environment manifests are stored as directories on `main`.
 - Initial deployments use one replica and one persistent volume per environment.
 - Ingress and public exposure remain cluster-specific and outside the initial implementation.
 

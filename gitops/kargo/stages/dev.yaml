@@ -20,9 +20,9 @@ spec:
         - task:
             name: promote-image
           vars:
-            - name: targetBranch
-              value: env/dev
             - name: overlayPath
               value: deploy/overlays/dev
+            - name: environmentPath
+              value: environments/dev
             - name: argoCDApp
               value: likhadb-dev

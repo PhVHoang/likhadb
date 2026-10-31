@@ -2,8 +2,8 @@
 
 Kargo discovers a LikhaDB image and the exact Git commit that produced it, then
 promotes that Freight through `dev`, `staging`, and `production`. Kargo writes
-rendered Kubernetes manifests to environment branches; Argo CD remains the only
-controller that applies those manifests to a cluster.
+rendered Kubernetes manifests to environment directories on `main`; Argo CD
+remains the only controller that applies those manifests to a cluster.
 
 ```text
 Warehouse -> dev (automatic) -> staging (manual) -> production (manual)
@@ -24,22 +24,23 @@ Stage, so the exact digest verified upstream continues through the pipeline.
 
 The reusable `promote-image` task performs these operations:
 
-1. Check out the Freight source commit and the target environment branch.
-2. Clear the environment branch working tree while retaining its Git history.
-3. Set the selected image digest in the environment overlay.
-4. Render the overlay into the environment branch.
-5. Commit and push the rendered manifests.
-6. Ask Argo CD to synchronize and wait for application health.
+1. Check out the Freight source commit and the current `main` branch.
+2. Set the selected image digest in the environment overlay.
+3. Render the overlay to the environment's generated manifest on `main`.
+4. Commit and push the rendered manifests.
+5. Ask Argo CD to synchronize and wait for application health.
 
-The resulting branches are `env/dev`, `env/staging`, and `env/production`.
-They are generated deployment records and should not be edited manually.
+The generated files are `environments/dev/manifests.yaml`,
+`environments/staging/manifests.yaml`, and
+`environments/production/manifests.yaml`. They are deployment records and
+should not be edited manually.
 
 ## Prerequisites
 
 - Kargo and Argo CD are installed in the same management cluster.
 - The Argo CD resources in `gitops/argocd` have been applied.
 - Argo CD can read the Git repository.
-- Kargo has read/write Git credentials so it can create environment branches.
+- Kargo has read/write Git credentials so it can update `main`.
 - If the GHCR package is private, Kargo also has read access to the image
   repository.
 
@@ -60,8 +61,10 @@ kargo create repo-credentials \
   --username '<github-user>'
 ```
 
-The GitHub token needs repository contents read/write access. If the GHCR image
-is private, create a second repository credential for
+The GitHub token needs repository contents read/write access. If `main` is
+protected, the Kargo identity must be explicitly permitted to bypass the rule
+for these generated commits. If the GHCR image is private, create a second
+repository credential for
 `ghcr.io/phvhoang/likhadb` using the image credential type and a token with
 package read access, or provision the equivalent Secret through the selected
 secret manager.
@@ -80,8 +83,8 @@ kubectl apply --server-side --kustomize gitops/argocd
 ```
 
 Reapplying the Argo CD resources installs the Stage authorization annotations
-and configures the applications to read rendered manifests from the root of
-their environment branches.
+and configures the applications to read their rendered environment directories
+on `main`.
 
 ## Operating the pipeline
 
