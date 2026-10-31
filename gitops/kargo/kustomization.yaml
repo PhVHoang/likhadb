@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - project.yaml
+  - project-config.yaml
+  - warehouse.yaml
+  - promotion-tasks/promote-image.yaml
+  - stages/dev.yaml
+  - stages/staging.yaml
+  - stages/production.yaml

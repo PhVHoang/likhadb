@@ -1,0 +1,31 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  name: likhadb
+  namespace: likhadb
+spec:
+  interval: 5m
+  freightCreationPolicy: Automatic
+  subscriptions:
+    - name: application-image
+      image:
+        repoURL: ghcr.io/phvhoang/likhadb
+        imageSelectionStrategy: NewestBuild
+        allowTagsRegexes:
+          - ^sha-[0-9a-f]{40}$
+        # The publishing workflow never moves a sha-* tag to another digest.
+        cacheByTag: true
+        discoveryLimit: 20
+    - name: source
+      git:
+        repoURL: https://github.com/PhVHoang/likhadb.git
+        branch: main
+        commitSelectionStrategy: NewestFromBranch
+        discoveryLimit: 20
+  # Only pair an image with the exact source commit that built it. A main-branch
+  # change that does not publish an image therefore cannot create deployable
+  # Freight by borrowing the previous image.
+  freightCreationCriteria:
+    expression: |
+      imageFrom("ghcr.io/phvhoang/likhadb").Tag ==
+        "sha-" + commitFrom("https://github.com/PhVHoang/likhadb.git").ID

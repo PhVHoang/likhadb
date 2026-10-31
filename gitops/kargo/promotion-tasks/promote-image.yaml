@@ -1,0 +1,65 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: promote-image
+  namespace: likhadb
+spec:
+  vars:
+    - name: gitRepo
+      value: https://github.com/PhVHoang/likhadb.git
+    - name: imageRepo
+      value: ghcr.io/phvhoang/likhadb
+    - name: targetBranch
+    - name: overlayPath
+    - name: argoCDApp
+  steps:
+    - uses: git-clone
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        author:
+          name: Kargo
+          email: kargo@likhadb.local
+        checkout:
+          - commit: ${{ commitFrom(vars.gitRepo).ID }}
+            path: ./src
+          - branch: ${{ vars.targetBranch }}
+            create: true
+            path: ./out
+
+    - uses: git-clear
+      config:
+        path: ./out
+
+    - uses: kustomize-set-image
+      as: update-image
+      config:
+        path: ./src/${{ vars.overlayPath }}
+        images:
+          - image: ${{ vars.imageRepo }}
+            digest: ${{ imageFrom(vars.imageRepo).Digest }}
+
+    - uses: kustomize-build
+      config:
+        path: ./src/${{ vars.overlayPath }}
+        outPath: ./out
+
+    - uses: git-commit
+      as: commit
+      config:
+        path: ./out
+        message: |
+          ${{ ctx.stage }}: ${{ task.outputs['update-image'].commitMessage }}
+
+    - uses: git-push
+      config:
+        path: ./out
+        targetBranch: ${{ vars.targetBranch }}
+
+    - uses: argocd-update
+      config:
+        apps:
+          - name: ${{ vars.argoCDApp }}
+            namespace: argocd
+            sources:
+              - repoURL: ${{ vars.gitRepo }}
+                desiredRevision: ${{ task.outputs.commit.commit }}

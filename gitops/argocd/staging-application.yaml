@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: likhadb-staging
   namespace: argocd
+  annotations:
+    kargo.akuity.io/authorized-stage: likhadb:staging
   labels:
     app.kubernetes.io/name: likhadb
     app.kubernetes.io/part-of: likhadb
@@ -12,7 +14,7 @@ spec:
   source:
     repoURL: https://github.com/PhVHoang/likhadb.git
     targetRevision: env/staging
-    path: deploy/overlays/staging
+    path: .
   destination:
     server: https://kubernetes.default.svc
     namespace: likhadb-staging

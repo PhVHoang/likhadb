@@ -167,7 +167,7 @@ A dedicated Argo CD `AppProject` will constrain:
 There will be one Argo CD `Application` per environment. Each application will:
 
 - Track its corresponding `env/<environment>` branch.
-- Render `deploy/overlays/<environment>`.
+- Read rendered manifests from the root of its `env/<environment>` branch.
 - Deploy only to its environment namespace.
 - Enable automated synchronization, pruning, and self-healing.
 - Create its destination namespace when necessary.
@@ -227,7 +227,10 @@ Kargo will write desired state to:
 
 This avoids promotion commits competing on `main`, gives each environment an independent and auditable history, and lets Argo CD reconcile an unambiguous desired revision.
 
-Branch creation and update behavior must be idempotent. The implementation must also define how environment branches incorporate configuration changes from `main` without replacing their promoted image digest unintentionally.
+Branch creation and update behavior must be idempotent. Each promotion renders
+the selected overlay from the Freight's exact `main` commit, replaces the
+environment branch contents while preserving its Git history, and writes the
+Freight image digest into the rendered manifests.
 
 ## Credentials and secrets
 
