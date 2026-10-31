@@ -1,0 +1,12 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  name: likhadb
+  namespace: likhadb
+spec:
+  # Higher environments remain manual approval gates. Exact-name selection is
+  # intentional so a newly added Stage cannot inherit auto-promotion by label.
+  promotionPolicies:
+    - stageSelector:
+        name: dev
+      autoPromotionEnabled: true

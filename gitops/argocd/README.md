@@ -19,6 +19,10 @@ The applications intentionally track `env/dev`, `env/staging`, and
 Argo CD will report repository revision errors. Do not change the applications
 to track `main` to bypass that state.
 
+Kargo renders each selected environment overlay into the root of its environment
+branch, so each Application uses `path: .`. Source Kustomize configuration stays
+on `main`; environment branches contain only the rendered desired state.
+
 If the GitHub repository is private, register it with Argo CD before applying
 the applications. Keep repository credentials in Argo CD's credential store or
 an external secret manager, not in this directory.
@@ -32,7 +36,7 @@ isolates them with namespaces. Accordingly, the committed applications target
 For separate real clusters, register each cluster with Argo CD, replace each
 application's `spec.destination.server` with its registered API server (or use
 `spec.destination.name`), and update the matching `AppProject` destination. The
-overlay and environment branch mapping does not change.
+environment branch mapping does not change.
 
 ## Reconciliation behavior
 

@@ -1,0 +1,27 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: production
+  namespace: likhadb
+  labels:
+    app.kubernetes.io/environment: production
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: likhadb
+      sources:
+        stages:
+          - staging
+  promotionTemplate:
+    spec:
+      steps:
+        - task:
+            name: promote-image
+          vars:
+            - name: targetBranch
+              value: env/production
+            - name: overlayPath
+              value: deploy/overlays/production
+            - name: argoCDApp
+              value: likhadb-production
