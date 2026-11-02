@@ -320,7 +320,7 @@ Application data rollback is separate from application image rollback. Because L
 
 ### Phase 5: Local bootstrap and documentation
 
-- Add pinned `kind`, Argo CD, and Kargo bootstrap tooling.
+- Add pinned OrbStack Kubernetes, Argo CD, and Kargo bootstrap tooling.
 - Document credentials, common operations, rollback, and teardown.
 - Run the complete promotion path and record any platform prerequisites.
 

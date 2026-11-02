@@ -71,6 +71,32 @@ secret manager.
 
 ## Bootstrap
 
+The local reference stack uses OrbStack Kubernetes. Ensure Kubernetes is
+enabled in OrbStack and the current context is `orbstack`, then run:
+
+```sh
+./scripts/local/bootstrap-gitops.sh
+```
+
+This installs pinned Argo CD and Kargo releases plus Kargo's cert-manager
+dependency, waits for their controllers, and applies the resources in
+`gitops/argocd` and `gitops/kargo`. The Kargo admin password is generated and
+printed only during the first installation. It is not written to the
+repository. Re-running the script upgrades/reconciles the same Helm release
+without rotating that password.
+
+To remove the local controller stack:
+
+```sh
+./scripts/local/teardown-gitops.sh
+```
+
+The teardown keeps Kargo CRDs, following the chart's safety policy. Existing
+LikhaDB workload namespaces are also retained so persistent data is not deleted
+implicitly.
+
+### Manual resource bootstrap
+
 Creating a Kargo `Project` also creates its namespace and project boilerplate.
 Apply it first and wait for the namespace before applying the namespaced
 resources:
