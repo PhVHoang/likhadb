@@ -1,0 +1,15 @@
+controller:
+  argocd:
+    integrationEnabled: true
+    namespace: argocd
+    watchArgocdNamespaceOnly: true
+  rollouts:
+    integrationEnabled: false
+
+api:
+  argocd:
+    urls:
+      "": http://localhost:8080
+  rollouts:
+    integrationEnabled: false
+
