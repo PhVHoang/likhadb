@@ -1,0 +1,162 @@
+apiVersion: v1
+data:
+  GRPC_ADDR: 0.0.0.0:50051
+  HTTP_ADDR: 0.0.0.0:8080
+  RUST_LOG: info
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/environment: dev
+    app.kubernetes.io/name: likhadb
+    app.kubernetes.io/part-of: likhadb
+  name: likhadb-config
+  namespace: likhadb-dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/environment: dev
+    app.kubernetes.io/name: likhadb
+    app.kubernetes.io/part-of: likhadb
+  name: likhadb
+  namespace: likhadb-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/environment: dev
+      app.kubernetes.io/name: likhadb
+      app.kubernetes.io/part-of: likhadb
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/environment: dev
+        app.kubernetes.io/name: likhadb
+        app.kubernetes.io/part-of: likhadb
+    spec:
+      containers:
+      - env:
+        - name: LIKHADB_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: api-token
+              name: likhadb-secrets
+              optional: true
+        envFrom:
+        - configMapRef:
+            name: likhadb-config
+        image: ghcr.io/phvhoang/likhadb@sha256:99762df93203fbeb94671449baf58672ad1692b91fd9586b2b0f930cc34cb46f
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 2
+        name: likhadb
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 50051
+          name: grpc
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 2
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 2
+          timeoutSeconds: 1
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 45
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: likhadb-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/environment: dev
+    app.kubernetes.io/name: likhadb
+    app.kubernetes.io/part-of: likhadb
+  name: likhadb
+  namespace: likhadb-dev
+spec:
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: http
+  - name: grpc
+    port: 50051
+    protocol: TCP
+    targetPort: grpc
+  selector:
+    app.kubernetes.io/environment: dev
+    app.kubernetes.io/name: likhadb
+    app.kubernetes.io/part-of: likhadb
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=confirm
+  labels:
+    app.kubernetes.io/environment: dev
+    app.kubernetes.io/name: likhadb
+    app.kubernetes.io/part-of: likhadb
+  name: likhadb-data
+  namespace: likhadb-dev
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=confirm
+  labels:
+    app.kubernetes.io/environment: dev
+  name: likhadb-dev
