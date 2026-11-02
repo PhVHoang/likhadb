@@ -59,6 +59,9 @@ spec:
         apps:
           - name: ${{ vars.argoCDApp }}
             namespace: argocd
-            sources:
-              - repoURL: ${{ vars.gitRepo }}
-                desiredRevision: ${{ task.outputs.commit.commit }}
+            # Every environment is a directory on the same moving main branch.
+            # Do not register an ongoing exact-commit health check: a promotion
+            # of another environment advances main and therefore changes the
+            # revision reported by every Argo CD Application, even when this
+            # environment's directory is unchanged. The step still refreshes
+            # and syncs the Application and continuously checks its health.
