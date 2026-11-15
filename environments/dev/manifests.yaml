@@ -48,7 +48,7 @@ spec:
         envFrom:
         - configMapRef:
             name: likhadb-config
-        image: ghcr.io/phvhoang/likhadb@sha256:99762df93203fbeb94671449baf58672ad1692b91fd9586b2b0f930cc34cb46f
+        image: ghcr.io/phvhoang/likhadb@sha256:31f0ea69984292379a30a8f468006be834b7876635ebcad7ec10fe4aad234bef
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3
