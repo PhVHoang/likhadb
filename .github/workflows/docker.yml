@@ -49,19 +49,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  publish:
-    name: Publish immutable image
+  build-platform:
+    name: Build immutable image (${{ matrix.arch }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -73,36 +80,82 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: latest=false
-          tags: |
-            type=sha,format=long,prefix=sha-
-          labels: |
-            org.opencontainers.image.title=LikhaDB
-            org.opencontainers.image.description=Vector search native to Apache Iceberg
-            org.opencontainers.image.licenses=Apache-2.0
-
-      - name: Build and push image
+      - name: Build and push platform image
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=LikhaDB
+            org.opencontainers.image.description=Vector search native to Apache Iceberg
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
           provenance: mode=max
 
-      - name: Record published image
+      - name: Export image digest
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${IMAGE_DIGEST#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish immutable image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-platform
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-platform manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          refs=()
+          for digest_file in "${RUNNER_TEMP}"/digests/*; do
+            refs+=("${IMAGE}@sha256:$(basename "${digest_file}")")
+          done
+          docker buildx imagetools create --tag "${IMAGE}:${IMAGE_TAG}" "${refs[@]}"
+
+      - name: Record published image
+        run: |
+          IMAGE_DIGEST="$(docker buildx imagetools inspect \
+            "${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
           echo "### Published image" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           echo "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
