@@ -63,7 +63,6 @@ mod tests {
     #[test]
     fn cosine_distance_identical_vectors() {
         let a = [1.0_f32, 2.0, 3.0];
-        // cosine distance between identical vectors should be ~0
         let d = cosine_distance(&a, &a);
         assert!(d.abs() < 1e-5, "expected ~0.0, got {d}");
     }
@@ -73,7 +72,6 @@ mod tests {
         let a = [1.0_f32, 0.0];
         let b = [0.0_f32, 1.0];
         let d = cosine_distance(&a, &b);
-        // cosine_similarity = 0, so distance = 1
         assert!((d - 1.0).abs() < 1e-5, "expected 1.0, got {d}");
     }
 
@@ -81,7 +79,6 @@ mod tests {
     fn cosine_distance_zero_vector() {
         let a = [0.0_f32, 0.0, 0.0];
         let b = [1.0_f32, 2.0, 3.0];
-        // norm_a = 0, denominator = EPSILON, result should be finite
         let d = cosine_distance(&a, &b);
         assert!(d.is_finite());
     }

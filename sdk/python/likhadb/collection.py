@@ -1,5 +1,3 @@
-"""Collection handles — sync and async — for vector operations."""
-
 from __future__ import annotations
 
 from typing import Any, Union

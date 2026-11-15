@@ -20,10 +20,6 @@ use crate::traits::{PreparedIndexCompaction, VectorIndex};
 
 const MAX_LEVEL: usize = 16;
 
-// ---------------------------------------------------------------------------
-// Internal node type
-// ---------------------------------------------------------------------------
-
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct HnswNode {
@@ -39,10 +35,6 @@ struct InsertionPlan {
     level: usize,
     neighbours: Vec<Vec<usize>>,
 }
-
-// ---------------------------------------------------------------------------
-// HnswIndex
-// ---------------------------------------------------------------------------
 
 /// Approximate nearest-neighbour index using Hierarchical Navigable Small World
 /// (HNSW) graphs (Malkov & Yashunin, 2018).
@@ -60,19 +52,19 @@ struct InsertionPlan {
 pub struct HnswIndex {
     dim: usize,
     metric: Metric,
-    m: usize,               // max edges per node per layer (l > 0)
-    m0: usize,              // max edges at layer 0 = 2 * m
-    ef_construction: usize, // beam width during graph construction
-    ef_search: usize,       // beam width during query
-    use_heuristic: bool,    // diversify graph connections during construction
-    ml: f64,                // level multiplier = 1 / ln(m)
+    m: usize,
+    m0: usize,
+    ef_construction: usize,
+    ef_search: usize,
+    use_heuristic: bool,
+    ml: f64,
 
     nodes: Vec<HnswNode>,
-    data: Vec<f32>, // flat slab; nodes[i] → data[i*dim..(i+1)*dim]
+    data: Vec<f32>,
     id_to_node: HashMap<VecId, usize>,
     deleted: HashSet<VecId>,
 
-    entry_point: Option<usize>, // node index of the current highest-level entry point
+    entry_point: Option<usize>,
     max_level: usize,
 }
 
@@ -169,10 +161,6 @@ impl HnswIndex {
             self.m
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Core HNSW primitives
-    // -----------------------------------------------------------------------
 
     /// Beam search within a single graph layer.
     ///
@@ -461,10 +449,6 @@ impl HnswIndex {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VectorIndex implementation
-// ---------------------------------------------------------------------------
-
 impl VectorIndex for HnswIndex {
     fn get(&self, id: VecId) -> Option<Vector> {
         if self.deleted.contains(&id) {
@@ -650,10 +634,6 @@ impl VectorIndex for HnswIndex {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,8 +648,6 @@ mod tests {
             idx.insert(i, vec![i as f32, 0.0, 0.0, 0.0]).unwrap();
         }
     }
-
-    // --- Construction ---
 
     #[test]
     fn construction_invalid_params() {
@@ -747,8 +725,6 @@ mod tests {
         assert_eq!(idx.nodes[0].layers[0], vec![1, 3]);
     }
 
-    // --- Basic insert and search ---
-
     #[test]
     fn insert_and_search_basic() {
         let mut idx = make_hnsw(4, 8, 10);
@@ -768,15 +744,13 @@ mod tests {
     fn insert_overwrites() {
         let mut idx = make_hnsw(4, 8, 10);
         idx.insert(1, vec![100.0, 0.0, 0.0, 0.0]).unwrap();
-        idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap(); // overwrite
+        idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 1, "overwrite must not increase len");
 
         let res = idx.search(&[0.0_f32; 4], 1, None).unwrap();
         assert_eq!(res.len(), 1);
         assert!((res[0].score - 0.1).abs() < 0.5, "new value should win");
     }
-
-    // --- Delete ---
 
     #[test]
     fn delete_removes_from_results() {
@@ -816,17 +790,13 @@ mod tests {
         let mut idx = make_hnsw(4, 8, 10);
         insert_n(&mut idx, 10);
 
-        // Delete the entry point.
         let ep_id = idx.entry_point.map(|ep| idx.nodes[ep].id).unwrap();
         assert!(idx.delete(ep_id));
 
-        // Index must still be searchable.
         let res = idx.search(&[0.0_f32; 4], 5, None).unwrap();
         assert!(!res.is_empty());
         assert!(res.iter().all(|r| r.id != ep_id));
     }
-
-    // --- Edge cases ---
 
     #[test]
     fn search_k_zero() {
@@ -920,8 +890,6 @@ mod tests {
         ));
     }
 
-    // --- Filter ---
-
     #[test]
     fn filter_applied() {
         let mut idx = make_hnsw(4, 16, 20);
@@ -932,8 +900,6 @@ mod tests {
         assert!(!res.is_empty());
         assert!(res.iter().all(|r| r.id % 2 == 0), "filter not applied");
     }
-
-    // --- Recall ---
 
     #[test]
     fn high_recall() {
@@ -1036,8 +1002,6 @@ mod tests {
         );
     }
 
-    // --- All three metrics ---
-
     #[test]
     fn all_three_metrics() {
         for metric in [Metric::L2, Metric::Cosine, Metric::Dot] {
@@ -1056,8 +1020,6 @@ mod tests {
         }
     }
 
-    // --- Len invariant ---
-
     #[test]
     fn len_invariant() {
         let mut idx = make_hnsw(4, 8, 10);
@@ -1066,11 +1028,11 @@ mod tests {
         assert_eq!(idx.len(), 5);
         idx.insert(10, vec![10.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 6);
-        idx.insert(0, vec![0.5, 0.0, 0.0, 0.0]).unwrap(); // overwrite id=0
+        idx.insert(0, vec![0.5, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 6, "overwrite must not change len");
         idx.delete(1);
         assert_eq!(idx.len(), 5);
-        idx.delete(999); // nonexistent
+        idx.delete(999);
         assert_eq!(idx.len(), 5);
     }
 
@@ -1094,8 +1056,6 @@ mod tests {
         idx.delete(5);
         assert!(idx.get(5).is_none());
     }
-
-    // --- Compaction ---
 
     #[test]
     fn tombstone_ratio_tracks_deletes_and_overwrites() {

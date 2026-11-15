@@ -126,10 +126,8 @@ mod tests {
         let state = AppState::new(open_wal(&dir));
 
         let write_guard = state.write().await;
-        // try_read must fail while write guard is held
         assert!(state.inner.try_read().is_err());
         drop(write_guard);
-        // now read succeeds
         assert!(state.inner.try_read().is_ok());
     }
 }

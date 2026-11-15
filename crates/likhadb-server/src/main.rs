@@ -20,7 +20,6 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("data"));
 
-    // ── WAL / Iceberg startup ──────────────────────────────────────────────
     #[cfg(feature = "iceberg-recovery")]
     let (wal, iceberg_flusher_args) = {
         if let Ok(catalog_uri) = std::env::var("ICEBERG_CATALOG_URI") {
@@ -86,7 +85,6 @@ async fn main() {
         state
     };
 
-    // Spawn Iceberg background services when a catalog is configured.
     #[cfg(feature = "iceberg-recovery")]
     if let Some((config, namespace)) = iceberg_flusher_args {
         use likhadb_server::{IcebergFlusher, IndexMaintenanceTask};
@@ -110,7 +108,6 @@ async fn main() {
     // Shutdown channel: receivers become ready once true is sent.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // gRPC server on port 50051.
     let grpc_addr = std::env::var("GRPC_ADDR")
         .unwrap_or_else(|_| "[::]:50051".into())
         .parse()
@@ -119,7 +116,6 @@ async fn main() {
             std::process::exit(1);
         });
 
-    // REST server on port 8080.
     let rest_addr = std::env::var("HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&rest_addr)
         .await
@@ -193,10 +189,8 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // Cancel the periodic checkpoint to avoid racing with the final one.
     checkpoint_task.abort();
 
-    // Tell both servers to stop accepting connections.
     let _ = shutdown_tx.send(true);
 
     // Wait for in-flight requests to complete (30 s hard limit per server).
@@ -208,7 +202,6 @@ async fn main() {
         tracing::warn!("REST drain timed out after {drain:?}");
     }
 
-    // Write snapshot and truncate WAL so the next startup has nothing to replay.
     let t = Instant::now();
     match checkpoint_state.write().await.checkpoint() {
         Ok(()) => tracing::info!(elapsed = ?t.elapsed(), "final checkpoint complete"),

@@ -41,7 +41,6 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    # Skip upload on dry-run or if the build was not triggered by a tag.
     if: >
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && !inputs.dry_run)

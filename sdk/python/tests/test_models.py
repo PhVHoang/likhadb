@@ -1,5 +1,3 @@
-"""Unit tests for request/response models — no server required."""
-
 import pytest
 from pydantic import ValidationError
 
@@ -15,10 +13,6 @@ from likhadb.models import (
     SourceBinding,
     VectorRecord,
 )
-
-# ---------------------------------------------------------------------------
-# Index configs
-# ---------------------------------------------------------------------------
 
 
 def test_flat_index_default_type():
@@ -41,11 +35,6 @@ def test_ivf_index_round_trips():
 def test_ivf_sq8_index_round_trips():
     idx = IvfSq8Index(nlist=256, nprobe=8)
     assert idx.model_dump() == {"type": "ivf_sq8", "nlist": 256, "nprobe": 8}
-
-
-# ---------------------------------------------------------------------------
-# CreateCollectionRequest
-# ---------------------------------------------------------------------------
 
 
 def test_create_collection_defaults_to_flat():
@@ -75,9 +64,7 @@ def test_create_collection_with_source_binding():
         vector_column="embedding",
         payload_columns=["title"],
     )
-    req = CreateCollectionRequest(
-        name="docs", dim=384, metric="cosine", source_binding=binding
-    )
+    req = CreateCollectionRequest(name="docs", dim=384, metric="cosine", source_binding=binding)
     assert req.model_dump()["source_binding"] == {
         "source_namespace": ["lake", "embeddings"],
         "source_table": "documents",
@@ -89,12 +76,7 @@ def test_create_collection_with_source_binding():
 
 def test_create_collection_invalid_metric():
     with pytest.raises(ValidationError):
-        CreateCollectionRequest(name="docs", dim=384, metric="euclidean")  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# QueryRequest
-# ---------------------------------------------------------------------------
+        CreateCollectionRequest.model_validate({"name": "docs", "dim": 384, "metric": "euclidean"})
 
 
 def test_query_request_exclude_none():
@@ -116,11 +98,6 @@ def test_query_request_with_filter():
 def test_query_request_rejects_server_out_of_range_k(k):
     with pytest.raises(ValidationError):
         QueryRequest(vector=[0.1], k=k)
-
-
-# ---------------------------------------------------------------------------
-# Response models
-# ---------------------------------------------------------------------------
 
 
 def test_scored_result_parses():

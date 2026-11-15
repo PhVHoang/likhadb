@@ -141,8 +141,6 @@ fn reject_legacy_frame_format(file: &mut File) -> Result<(), PersistError> {
     Ok(())
 }
 
-// ── WalWriter ──────────────────────────────────────────────────────────────
-
 struct WalWriter {
     file: BufWriter<File>,
     bytes_written: u64,
@@ -212,8 +210,6 @@ impl WalWriter {
         Ok(())
     }
 }
-
-// ── WalManager ─────────────────────────────────────────────────────────────
 
 /// Point-in-time statistics for a [`WalManager`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,8 +374,6 @@ impl WalManager {
         })
     }
 
-    // ── open_from_iceberg_state ─────────────────────────────────────────────
-
     /// Construct a `WalManager` from a pre-built `CollectionManager` and a
     /// known watermark, then replay any WAL entries above `replay_above_lsn`.
     ///
@@ -525,8 +519,6 @@ impl WalManager {
         Ok(())
     }
 
-    // ── Iceberg recovery helpers ────────────────────────────────────────────
-
     #[cfg(feature = "iceberg-recovery")]
     pub fn iceberg_watermark(&self) -> u64 {
         self.iceberg_watermark
@@ -615,8 +607,6 @@ impl WalManager {
 
         Ok(())
     }
-
-    // ── Collection DDL ─────────────────────────────────────────────────────
 
     pub fn create_collection(
         &mut self,
@@ -707,8 +697,6 @@ impl WalManager {
             mgr.drop_collection(&name)
         })
     }
-
-    // ── Vector DML ─────────────────────────────────────────────────────────
 
     pub fn insert(
         &mut self,
@@ -831,8 +819,6 @@ impl WalManager {
         )
     }
 
-    // ── FTS ────────────────────────────────────────────────────────────────
-
     #[cfg(feature = "fts")]
     pub fn enable_fts(&mut self, name: &str) -> Result<(), PersistError> {
         let col = name.to_owned();
@@ -900,8 +886,6 @@ impl WalManager {
             .map(|col| col.compact_ivf_index())
     }
 
-    // ── Read-through ────────────────────────────────────────────────────────
-
     /// Capture a collection's live HNSW vectors and start journaling mutations
     /// that must be replayed before the rebuilt index is swapped in.
     pub fn prepare_index_compaction(
@@ -962,8 +946,6 @@ impl WalManager {
             snapshot_lsn: self.snapshot_lsn,
         }
     }
-
-    // ── Checkpoint ─────────────────────────────────────────────────────────
 
     /// Write a snapshot capturing the current state (including `last_lsn`),
     /// then truncate `wal.log`.  Call on graceful shutdown or periodically to

@@ -4,8 +4,6 @@ use serde_json::Value;
 
 use crate::error::ApiError;
 
-// ── Collection DDL ────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct CreateCollectionRequest {
     pub name: String,
@@ -50,8 +48,6 @@ pub struct CollectionInfo {
     pub index_type: String,
 }
 
-// ── Vector DML ────────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct InsertRequest {
     pub id: VecId,
@@ -66,8 +62,6 @@ pub struct VectorResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
 }
-
-// ── Query ─────────────────────────────────────────────────────────────────────
 
 /// Upper bound on `k` for any search. Caps result-set size so an open query
 /// endpoint can't be used to scan an entire collection in one request.
@@ -103,8 +97,6 @@ pub struct QueryResponse {
     pub results: Vec<ScoredResult>,
 }
 
-// ── Hybrid Query ─────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct HybridQueryRequest {
     pub vector: Vector,
@@ -130,15 +122,11 @@ pub struct HybridQueryResponse {
     pub results: Vec<ScoredResult>,
 }
 
-// ── Enriched ranked response ─────────────────────────────────────────────────
-
 #[cfg(feature = "enriched-search")]
 #[derive(Serialize)]
 pub struct RankedQueryResponse {
     pub results: Vec<likhadb_query::pipeline::PipelineResult>,
 }
-
-// ── Lakehouse I/O ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct ImportParquetRequest {
@@ -158,8 +146,6 @@ pub struct ImportParquetResponse {
 pub struct ExportParquetRequest {
     pub path: String,
 }
-
-// ── Metric helpers ────────────────────────────────────────────────────────────
 
 pub fn parse_metric(s: &str) -> Result<Metric, ApiError> {
     match s.to_lowercase().as_str() {

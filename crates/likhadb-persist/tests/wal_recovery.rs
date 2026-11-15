@@ -13,8 +13,6 @@ fn tmp_dir(label: &str) -> std::path::PathBuf {
     dir
 }
 
-// ── Basic open / create ────────────────────────────────────────────────────
-
 #[test]
 fn open_empty_dir_succeeds() {
     let dir = tmp_dir("open_empty");
@@ -321,8 +319,6 @@ fn legacy_crc32_frame_is_rejected_instead_of_ignored_as_a_crash_tail() {
     );
 }
 
-// ── Insert survives restart ────────────────────────────────────────────────
-
 #[test]
 fn insert_survives_restart() {
     let dir = tmp_dir("insert_restart");
@@ -344,8 +340,6 @@ fn insert_survives_restart() {
         .unwrap();
     assert_eq!(results.len(), 10);
 }
-
-// ── Batch insert uses one group commit and survives restart ────────────────
 
 #[test]
 fn batch_insert_survives_restart() {
@@ -513,8 +507,6 @@ fn batch_insert_tracks_each_unflushed_entry() {
         .all(|entry| matches!(&entry.op, likhadb_persist::wal::WalOp::Insert { .. })));
 }
 
-// ── Delete survives restart ────────────────────────────────────────────────
-
 #[test]
 fn delete_survives_restart() {
     let dir = tmp_dir("delete_restart");
@@ -541,8 +533,6 @@ fn delete_survives_restart() {
     assert!(!ids.contains(&0));
     assert!(!ids.contains(&1));
 }
-
-// ── Payload survives restart ───────────────────────────────────────────────
 
 #[test]
 fn payload_survives_restart() {
@@ -574,8 +564,6 @@ fn payload_survives_restart() {
     let r2 = results.iter().find(|r| r.id == 2).unwrap();
     assert!(r2.payload.is_none());
 }
-
-// ── DDL survives restart ───────────────────────────────────────────────────
 
 #[test]
 fn create_drop_collection_survives_restart() {
@@ -637,8 +625,6 @@ fn apply_failure_is_reported_and_later_entries_are_replayed() {
             if name == "dropped"
     ));
 }
-
-// ── Source binding survives restart ────────────────────────────────────────
 
 #[test]
 fn source_binding_survives_restart() {
@@ -812,8 +798,6 @@ fn stale_source_delta_is_discarded() {
     assert!(mgr.get("col").unwrap().is_empty());
 }
 
-// ── Checkpoint clears WAL ──────────────────────────────────────────────────
-
 #[test]
 fn checkpoint_clears_wal() {
     let dir = tmp_dir("checkpoint");
@@ -939,8 +923,6 @@ fn recovered_entries_count_toward_auto_checkpoint_threshold() {
     assert_eq!(std::fs::metadata(dir.join("wal.log")).unwrap().len(), 0);
 }
 
-// ── Recovery across checkpoint boundary ───────────────────────────────────
-
 #[test]
 fn recovery_across_checkpoint_boundary() {
     let dir = tmp_dir("checkpoint_boundary");
@@ -970,8 +952,6 @@ fn recovery_across_checkpoint_boundary() {
     assert!(ids.contains(&2));
     assert!(ids.contains(&3));
 }
-
-// ── Truncated tail is silently ignored ────────────────────────────────────
 
 #[test]
 fn truncated_wal_tail_is_ignored() {
@@ -1006,8 +986,6 @@ fn truncated_wal_tail_is_ignored() {
     );
 }
 
-// ── Mid-log checksum corruption returns an error ───────────────────────────
-
 #[test]
 fn mid_log_corruption_is_error() {
     let dir = tmp_dir("mid_log_corrupt");
@@ -1034,13 +1012,6 @@ fn mid_log_corruption_is_error() {
         "mid-log checksum corruption should surface as PersistError::Crc"
     );
 }
-
-// ── Mid-log corruption on the second frame returns an error ───────────────
-//
-// Regression: the original guard used `frames_read() <= 1`, which silently
-// swallowed a corrupt second frame even when valid frames followed it.
-// The correct signal is whether bytes remain after the corrupt frame — if they
-// do, it is genuine mid-log corruption and must be a hard error.
 
 #[test]
 fn second_frame_mid_log_corruption_is_error() {
@@ -1071,8 +1042,6 @@ fn second_frame_mid_log_corruption_is_error() {
         "second-frame mid-log corruption must surface as PersistError::Crc"
     );
 }
-
-// ── All index types survive restart ───────────────────────────────────────
 
 #[test]
 fn all_index_types_survive_restart() {
@@ -1111,7 +1080,6 @@ fn all_index_types_survive_restart() {
     }
 }
 
-// ── 1000-vector full replay after drop (sync_data guarantee) ──────────────
 //
 // Exercises the fsync path introduced to close the WAL sync_data gap: every
 // append must be durable before the writer is dropped, so a simulated restart
@@ -1144,8 +1112,6 @@ fn thousand_vectors_survive_restart() {
     );
 }
 
-// ── IVF-SQ8 survives restart ───────────────────────────────────────────────
-
 #[test]
 fn ivf_sq8_survives_restart() {
     let dir = tmp_dir("ivf_sq8_restart");
@@ -1169,8 +1135,6 @@ fn ivf_sq8_survives_restart() {
         .unwrap();
     assert_eq!(results.len(), 5);
 }
-
-// ── FTS survives restart without re-indexing ──────────────────────────────
 
 #[cfg(feature = "fts")]
 #[test]

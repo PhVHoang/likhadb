@@ -11,18 +11,15 @@ service LikhaDb {
   rpc GetVector        (GetVectorRequest)        returns (VectorRecord);
   rpc DeleteVector     (DeleteVectorRequest)     returns (DeleteVectorResponse);
   rpc Query            (QueryRequest)            returns (QueryResponse);
-  // Server-streaming variant — results arrive as an async stream.
   rpc QueryStream      (QueryRequest)            returns (stream ScoredResult);
   // Hybrid vector + full-text search using Reciprocal Rank Fusion.
   rpc HybridQuery      (HybridQueryRequest)      returns (HybridQueryResponse);
 }
 
-// ── Health ───────────────────────────────────────────────────────────────────
 
 message HealthRequest  {}
 message HealthResponse { string status = 1; }
 
-// ── Collections ──────────────────────────────────────────────────────────────
 
 message ListCollectionsRequest  {}
 message ListCollectionsResponse { repeated string collections = 1; }
@@ -59,7 +56,6 @@ message CollectionInfo {
 message DropCollectionRequest  { string name = 1; }
 message DropCollectionResponse {}
 
-// ── Vectors ───────────────────────────────────────────────────────────────────
 
 message InsertVectorRequest {
   string         collection   = 1;
@@ -84,7 +80,6 @@ message VectorRecord {
 message DeleteVectorRequest  { string collection = 1; uint64 id = 2; }
 message DeleteVectorResponse {}
 
-// ── Query ─────────────────────────────────────────────────────────────────────
 
 message QueryRequest {
   string         collection      = 1;
@@ -103,7 +98,6 @@ message ScoredResult {
 
 message QueryResponse { repeated ScoredResult results = 1; }
 
-// ── Hybrid Query ──────────────────────────────────────────────────────────────
 
 message HybridQueryRequest {
   string         collection      = 1;

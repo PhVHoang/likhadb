@@ -13,10 +13,6 @@ use crate::traits::VectorIndex;
 const MAX_KMEANS_ITER: usize = 25;
 const KMEANS_TOL: f32 = 1e-4;
 
-// ---------------------------------------------------------------------------
-// Sq8Quantizer — per-dimension scalar quantization (f32 → u8)
-// ---------------------------------------------------------------------------
-
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct Sq8Quantizer {
@@ -84,10 +80,6 @@ impl Sq8Quantizer {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// PostingList — flat-slab storage for one IVF bucket
-// ---------------------------------------------------------------------------
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
@@ -169,14 +161,9 @@ impl PostingList {
     }
 }
 
-// ---------------------------------------------------------------------------
-// K-means (Lloyd's algorithm)
-// ---------------------------------------------------------------------------
-
 /// Run Lloyd's k-means on `data` (flat slab of `n` vectors of length `dim`).
 /// Returns a flat slab of `k` centroids of length `dim`.
 fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f32> {
-    // --- Initialisation: stride-sample k vectors from data ---
     let mut centroids = vec![0.0f32; k * dim];
     for i in 0..k {
         let src = (i * n) / k; // evenly spaced indices; no RNG needed
@@ -184,7 +171,6 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
     }
 
     for _ in 0..MAX_KMEANS_ITER {
-        // --- Assignment step (rayon parallel) ---
         let assignments: Vec<usize> = (0..n)
             .into_par_iter()
             .map(|i| {
@@ -248,7 +234,6 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
             }
         }
 
-        // --- Convergence check ---
         let converged = (0..k).all(|c| {
             let old = &centroids[c * dim..(c + 1) * dim];
             let new = &new_centroids[c * dim..(c + 1) * dim];
@@ -265,10 +250,6 @@ fn kmeans(data: &[f32], n: usize, dim: usize, k: usize, metric: Metric) -> Vec<f
 
     centroids
 }
-
-// ---------------------------------------------------------------------------
-// IvfIndex
-// ---------------------------------------------------------------------------
 
 /// Approximate nearest-neighbour index using Inverted File (IVF) structure.
 ///
@@ -289,17 +270,14 @@ pub struct IvfIndex {
     nlist: usize,  // cluster count; also the training trigger threshold
     nprobe: usize, // clusters searched per query
 
-    // Pre-training staging buffer (drained and cleared on training).
     staging_ids: Vec<VecId>,
     staging_data: Vec<f32>, // flat slab; len == staging_ids.len() * dim
 
-    // Post-training state.
     trained: bool,
     centroids: Vec<f32>,     // flat slab of nlist centroids; len == nlist * dim
     lists: Vec<PostingList>, // one per centroid; len == nlist when trained
     id_to_list: HashMap<VecId, usize>, // O(1) cluster lookup for delete / overwrite
 
-    // SQ8 scalar quantization (optional, set at construction time).
     quantize: bool,
     quantizer: Option<Sq8Quantizer>, // None until training; Some after if quantize=true
 }
@@ -535,10 +513,6 @@ fn sorted_results(heap: BinaryHeap<(OrderedFloat<f32>, VecId)>) -> Vec<ScoredRes
     results
 }
 
-// ---------------------------------------------------------------------------
-// VectorIndex implementation
-// ---------------------------------------------------------------------------
-
 impl VectorIndex for IvfIndex {
     fn get(&self, id: VecId) -> Option<Vector> {
         if !self.trained {
@@ -709,10 +683,6 @@ impl VectorIndex for IvfIndex {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 // decode is only needed in tests (asym_distance uses a thread-local buffer instead).
 #[cfg(test)]
 impl Sq8Quantizer {
@@ -741,8 +711,6 @@ mod tests {
         }
     }
 
-    // --- Construction ---
-
     #[test]
     fn construction_invalid_params() {
         assert!(IvfIndex::new(0, Metric::L2, 4, 2).is_err(), "dim=0");
@@ -759,19 +727,17 @@ mod tests {
         assert_eq!(idx.index_type(), "IvfIndex");
     }
 
-    // --- Staging (pre-training) ---
-
     #[test]
     fn staging_insert_and_search() {
         let mut idx = make_ivf(4, 2);
-        insert_n(&mut idx, 3); // nlist=4, so still in staging
+        insert_n(&mut idx, 3);
         assert!(!idx.trained);
         assert_eq!(idx.len(), 3);
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let res = idx.search(&query, 2, None).unwrap();
         assert_eq!(res.len(), 2);
-        assert_eq!(res[0].id, 0); // [0,0,0,0] is nearest to query
+        assert_eq!(res[0].id, 0);
         assert!(res[0].score <= res[1].score);
     }
 
@@ -779,7 +745,7 @@ mod tests {
     fn staging_insert_overwrites() {
         let mut idx = make_ivf(4, 2);
         idx.insert(1, vec![5.0, 0.0, 0.0, 0.0]).unwrap();
-        idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap(); // overwrite
+        idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 1);
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
@@ -805,26 +771,22 @@ mod tests {
         assert!(!idx.delete(99));
     }
 
-    // --- Training ---
-
     #[test]
     fn training_triggers_at_nlist() {
         let mut idx = make_ivf(4, 2);
-        insert_n(&mut idx, 4); // exactly nlist
+        insert_n(&mut idx, 4);
         assert!(idx.trained);
         assert!(idx.staging_ids.is_empty());
         assert_eq!(idx.lists.len(), 4);
         assert_eq!(idx.len(), 4);
     }
 
-    // --- Post-training ---
-
     #[test]
     fn post_training_insert_and_search() {
         // Use nprobe=nlist so all clusters are probed, guaranteeing k results
         // regardless of how vectors are distributed across clusters.
         let mut idx = make_ivf(4, 4);
-        insert_n(&mut idx, 12); // 3 × nlist
+        insert_n(&mut idx, 12);
         assert!(idx.trained);
         assert_eq!(idx.len(), 12);
 
@@ -841,7 +803,7 @@ mod tests {
         // With nprobe < nlist, results may be fewer than k when the nearest vectors
         // are distributed across more clusters than nprobe covers. This verifies
         // the index does not panic or return garbage — just fewer results.
-        let mut idx = make_ivf(4, 1); // only probe 1 cluster
+        let mut idx = make_ivf(4, 1);
         insert_n(&mut idx, 12);
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let res = idx.search(&query, 10, None).unwrap();
@@ -853,14 +815,13 @@ mod tests {
 
     #[test]
     fn post_training_overwrite() {
-        let mut idx = make_ivf(4, 4); // nprobe=nlist for exact recall
-        insert_n(&mut idx, 4); // triggers training
+        let mut idx = make_ivf(4, 4);
+        insert_n(&mut idx, 4);
         assert_eq!(idx.len(), 4);
 
-        idx.insert(0, vec![99.0, 0.0, 0.0, 0.0]).unwrap(); // overwrite id=0
+        idx.insert(0, vec![99.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 4, "len unchanged after overwrite");
 
-        // id=0 should now be far from origin
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let res = idx.search(&query, 4, None).unwrap();
         assert_eq!(res[3].id, 0, "id=0 should be farthest from origin");
@@ -892,18 +853,15 @@ mod tests {
         let mut idx = make_ivf(4, 4);
         insert_n(&mut idx, 8);
 
-        assert!(idx.delete(0)); // delete a non-last element in some list
+        assert!(idx.delete(0));
         let query = [5.0_f32, 0.0, 0.0, 0.0];
         let res = idx.search(&query, 7, None).unwrap();
         assert_eq!(res.len(), 7);
         assert!(res.iter().all(|r| r.id != 0));
-        // All remaining ids should be findable
         for id in 1u64..8 {
             assert!(res.iter().any(|r| r.id == id), "id {id} missing");
         }
     }
-
-    // --- Filters ---
 
     #[test]
     fn filter_in_staging() {
@@ -927,8 +885,6 @@ mod tests {
         assert!(!res.is_empty());
         assert!(res.iter().all(|r| r.id % 2 == 0));
     }
-
-    // --- Correctness: nprobe == nlist gives exact recall ---
 
     #[test]
     fn nprobe_equals_nlist_exact_recall() {
@@ -965,8 +921,6 @@ mod tests {
         }
     }
 
-    // --- Error cases ---
-
     #[test]
     fn dim_mismatch_insert() {
         let mut idx = make_ivf(4, 2);
@@ -1000,7 +954,7 @@ mod tests {
     #[test]
     fn search_empty_post_training() {
         let mut idx = make_ivf(4, 4);
-        insert_n(&mut idx, 4); // triggers training
+        insert_n(&mut idx, 4);
         for i in 0..4u64 {
             idx.delete(i);
         }
@@ -1019,15 +973,15 @@ mod tests {
     #[test]
     fn len_invariant() {
         let mut idx = make_ivf(4, 2);
-        insert_n(&mut idx, 3); // staging
+        insert_n(&mut idx, 3);
         assert_eq!(idx.len(), 3);
-        idx.insert(10, vec![10.0, 0.0, 0.0, 0.0]).unwrap(); // triggers training (4th insert)
+        idx.insert(10, vec![10.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 4);
-        idx.insert(11, vec![11.0, 0.0, 0.0, 0.0]).unwrap(); // post-training
+        idx.insert(11, vec![11.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 5);
         idx.delete(0);
         assert_eq!(idx.len(), 4);
-        idx.delete(999); // nonexistent
+        idx.delete(999);
         assert_eq!(idx.len(), 4);
     }
 
@@ -1049,10 +1003,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // SQ8 tests
-    // -----------------------------------------------------------------------
-
     fn make_ivf_sq8(nlist: usize, nprobe: usize) -> IvfIndex {
         IvfIndex::new_sq8(4, Metric::L2, nlist, nprobe).unwrap()
     }
@@ -1065,13 +1015,11 @@ mod tests {
 
     #[test]
     fn sq8_construction() {
-        // Valid construction
         let idx = make_ivf_sq8(4, 2);
         assert_eq!(idx.len(), 0);
         assert!(idx.quantize);
-        assert!(idx.quantizer.is_none()); // not yet trained
+        assert!(idx.quantizer.is_none());
 
-        // new_sq8 shares validation with new
         assert!(IvfIndex::new_sq8(0, Metric::L2, 4, 2).is_err(), "dim=0");
         assert!(IvfIndex::new_sq8(4, Metric::L2, 4, 0).is_err(), "nprobe=0");
         assert!(
@@ -1083,7 +1031,7 @@ mod tests {
     #[test]
     fn sq8_training_triggers_and_quantizer_built() {
         let mut idx = make_ivf_sq8(4, 4);
-        insert_n_sq8(&mut idx, 4); // triggers training
+        insert_n_sq8(&mut idx, 4);
         assert!(idx.trained);
         assert!(idx.quantizer.is_some());
         assert!(idx.staging_ids.is_empty());
@@ -1138,7 +1086,7 @@ mod tests {
 
         let n = 50usize;
         let dim = 4;
-        let nlist = n; // all vectors go through staging → training
+        let nlist = n;
         let k = 5;
 
         let mut ivf = IvfIndex::new_sq8(dim, Metric::L2, nlist, nlist).unwrap();
@@ -1150,7 +1098,7 @@ mod tests {
             flat.insert(i, v).unwrap();
         }
 
-        let query = [100.0_f32, 0.0, 0.0, 0.0]; // nearest: v10(0), v9(10), v11(10), ...
+        let query = [100.0_f32, 0.0, 0.0, 0.0];
         let ivf_res = ivf.search(&query, k, None).unwrap();
         let flat_res = flat.search(&query, k, None).unwrap();
 
@@ -1187,10 +1135,9 @@ mod tests {
     #[test]
     fn sq8_overwrite() {
         let mut idx = make_ivf_sq8(4, 4);
-        insert_n_sq8(&mut idx, 4); // triggers training
+        insert_n_sq8(&mut idx, 4);
         assert_eq!(idx.len(), 4);
 
-        // Overwrite id=0 with a far-from-origin vector
         idx.insert(0, vec![99.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 4, "len unchanged after overwrite");
 
@@ -1242,10 +1189,9 @@ mod tests {
     #[test]
     fn get_post_training_returns_vector() {
         let mut idx = make_ivf(4, 2);
-        insert_n(&mut idx, 5); // nlist=4 → training fires at 4th insert
+        insert_n(&mut idx, 5);
         assert!(idx.trained);
         let v = idx.get(2).unwrap();
-        // insert_n stores [i, 0, 0, 0] for id=i
         assert_eq!(v, vec![2.0, 0.0, 0.0, 0.0]);
     }
 
@@ -1261,9 +1207,8 @@ mod tests {
     #[test]
     fn get_sq8_returns_approximate_vector() {
         let mut idx = make_ivf_sq8(4, 4);
-        insert_n_sq8(&mut idx, 4); // nlist=4 → training fires
+        insert_n_sq8(&mut idx, 4);
         assert!(idx.trained);
-        // Decoded value should be close to the original [2, 0, 0, 0]
         let v = idx.get(2).unwrap();
         assert!(
             (v[0] - 2.0_f32).abs() < 1.0,
@@ -1277,7 +1222,7 @@ mod tests {
         let mut idx = make_ivf_sq8(4, 4);
         insert_n_sq8(&mut idx, 3);
         assert_eq!(idx.len(), 3);
-        idx.insert(10, vec![10.0, 0.0, 0.0, 0.0]).unwrap(); // 4th insert triggers training
+        idx.insert(10, vec![10.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 4);
         idx.insert(11, vec![11.0, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 5);
@@ -1285,12 +1230,10 @@ mod tests {
         assert_eq!(idx.len(), 4);
     }
 
-    // --- Compaction ---
-
     #[test]
     fn compact_none_before_training() {
         let mut idx = make_ivf(4, 2);
-        insert_n(&mut idx, 3); // still staging
+        insert_n(&mut idx, 3);
         assert!(!idx.trained);
         assert!(idx.compact().is_none(), "nothing to compact pre-training");
     }
@@ -1298,7 +1241,7 @@ mod tests {
     #[test]
     fn compact_retrains_and_preserves_live_set() {
         let mut idx = make_ivf(4, 4);
-        insert_n(&mut idx, 12); // > nlist, so trained
+        insert_n(&mut idx, 12);
         assert!(idx.trained);
         idx.delete(0);
         idx.delete(1);
@@ -1316,7 +1259,6 @@ mod tests {
             assert!(live.contains(&id), "live id {id} dropped after compaction");
         }
 
-        // Exact search (nprobe == nlist) still finds the nearest live vector.
         let res = compacted
             .search(&[5.0_f32, 0.0, 0.0, 0.0], 1, None)
             .unwrap();

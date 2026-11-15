@@ -5,8 +5,6 @@ use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tokio::{task::JoinSet, time::timeout};
 
-// ─── CLI ──────────────────────────────────────────────────────────────────────
-
 #[derive(Parser, Debug)]
 #[command(
     name = "likhadb-stress",
@@ -49,7 +47,6 @@ struct Args {
     #[arg(long)]
     no_cleanup: bool,
 
-    // ── Stress controls ───────────────────────────────────────────────────────
     /// Per-request timeout in milliseconds (0 = disabled)
     #[arg(long, default_value_t = 5_000)]
     timeout_ms: u64,
@@ -78,7 +75,6 @@ struct Args {
     #[arg(long, default_value_t = 1_000)]
     chaos_ops: usize,
 
-    // ── Phase toggles ─────────────────────────────────────────────────────────
     #[arg(long)]
     skip_baseline: bool,
 
@@ -95,8 +91,6 @@ struct Args {
     skip_chaos: bool,
 }
 
-// ─── Vector helpers ───────────────────────────────────────────────────────────
-
 fn make_vec(seed: u64, dim: usize) -> Vec<f32> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..dim).map(|_| rng.gen::<f32>() * 2.0 - 1.0).collect()
@@ -107,11 +101,9 @@ fn make_query(seed: u64, dim: usize) -> Vec<f32> {
     make_vec(seed.wrapping_add(u64::MAX / 2), dim)
 }
 
-// ─── Phase result ─────────────────────────────────────────────────────────────
-
 struct PhaseResult {
-    latencies_us: Vec<u64>, // successful ops only, sorted
-    errors: u64,            // HTTP non-2xx responses
+    latencies_us: Vec<u64>,
+    errors: u64,
     timeouts: u64,
     total: u64,
     elapsed: Duration,
@@ -158,10 +150,8 @@ impl PhaseResult {
     }
 }
 
-// ─── HTTP outcome ─────────────────────────────────────────────────────────────
-
 enum Outcome {
-    Success(u64), // latency µs
+    Success(u64),
     HttpError(u16),
     Timeout,
     NetworkError,
@@ -184,8 +174,6 @@ async fn send_timed(req: reqwest::RequestBuilder, timeout_ms: u64) -> Outcome {
         Ok(r) => Outcome::HttpError(r.status().as_u16()),
     }
 }
-
-// ─── Server helpers ───────────────────────────────────────────────────────────
 
 async fn health_check(client: &Client, host: &str) -> Result<(), String> {
     client
@@ -236,8 +224,6 @@ async fn drop_collection(client: &Client, host: &str, name: &str) {
         .await;
 }
 
-// ─── Shared worker collectors ─────────────────────────────────────────────────
-
 // Returns (latencies, errors, timeouts) collected by one worker task.
 type WorkerStats = (Vec<u64>, u64, u64);
 
@@ -253,11 +239,6 @@ fn merge_workers(collected: Vec<WorkerStats>) -> (Vec<u64>, u64, u64) {
     (lats, errs, tos)
 }
 
-// ─── Query context ────────────────────────────────────────────────────────────
-//
-// Bundles the five per-call parameters that every phase function needs, keeping
-// individual argument counts below Clippy's too_many_arguments threshold.
-
 #[derive(Clone)]
 struct QueryCtx {
     client: Client,
@@ -266,8 +247,6 @@ struct QueryCtx {
     dim: usize,
     timeout_ms: u64,
 }
-
-// ─── Baseline insert / query ──────────────────────────────────────────────────
 
 async fn insert_phase(ctx: QueryCtx, n: usize, concurrency: usize) -> PhaseResult {
     let per = n.div_ceil(concurrency);
@@ -356,8 +335,6 @@ async fn query_phase(ctx: QueryCtx, q: usize, k: usize, concurrency: usize) -> P
     let (lats, errs, tos) = merge_workers(collected);
     PhaseResult::new(lats, errs, tos, wall.elapsed())
 }
-
-// ─── Hybrid (baseline sub-phase) ─────────────────────────────────────────────
 
 const CORPUS: &[&str] = &[
     "vector database semantic similarity embeddings retrieval augmented",
@@ -487,8 +464,6 @@ async fn hybrid_query_phase(ctx: QueryCtx, q: usize, k: usize, concurrency: usiz
     PhaseResult::new(lats, errs, tos, wall.elapsed())
 }
 
-// ─── Stress phase: Ramp ───────────────────────────────────────────────────────
-//
 // Doubles concurrency from 1 → max_concurrency, stopping when error rate exceeds
 // the threshold or p99 breaches the SLO. The last step is the breaking point.
 
@@ -537,8 +512,6 @@ async fn ramp_phase(
     steps
 }
 
-// ─── Stress phase: Spike ──────────────────────────────────────────────────────
-//
 // Models a sudden traffic surge: warm-up at base load, spike to spike_factor×
 // concurrency with proportionally more queries, then recover to base load.
 // Measures the degradation ratio and whether the system recovers cleanly.
@@ -570,8 +543,6 @@ async fn spike_phase(
     }
 }
 
-// ─── Stress phase: Soak ───────────────────────────────────────────────────────
-//
 // Runs sustained load for `total_duration`, split into `n_windows` equal windows.
 // Windowed reporting reveals latency drift (memory leaks, GC pressure, lock contention).
 // Within each window, workers loop continuously until the window deadline.
@@ -643,15 +614,12 @@ async fn soak_phase(
     results
 }
 
-// ─── Stress phase: Chaos ──────────────────────────────────────────────────────
-//
 // Fires a mix of five operation types at full concurrency:
 //   0 — valid query (expect 200)
 //   1 — valid insert with fresh IDs (expect 204)
 //   2 — query against a nonexistent collection (expect 404)
 //   3 — insert with wrong vector dimension (expect 400)
 //   4 — GET a nonexistent vector ID (expect 404)
-//
 // Unexpected errors: any 5xx from op 0/1, or network failures from any op.
 // Expected errors: 4xx from op 2/3/4 (correct error handling, not a fault).
 // After the chaos, a health check confirms the server survived.
@@ -700,7 +668,6 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
 
                 let outcome = match op {
                     0 => {
-                        // Valid query against the populated collection.
                         let vec = make_query(id, dim);
                         send_timed(
                             c.post(format!("{h}/collections/{col}/query"))
@@ -710,7 +677,6 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
                         .await
                     }
                     1 => {
-                        // Valid insert using IDs well above the pre-seeded range.
                         let vec = make_vec(id + 10_000_000, dim);
                         send_timed(
                             c.post(format!("{h}/collections/{col}/vectors"))
@@ -720,7 +686,6 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
                         .await
                     }
                     2 => {
-                        // Query a collection that does not exist (expect 404).
                         let vec = make_query(id, dim);
                         send_timed(
                             c.post(format!("{h}/collections/ghost_chaos_{id}/query"))
@@ -730,7 +695,6 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
                         .await
                     }
                     3 => {
-                        // Insert with one extra dimension — server must reject with 400.
                         let wrong: Vec<f32> = vec![0.5_f32; dim + 1];
                         send_timed(
                             c.post(format!("{h}/collections/{col}/vectors"))
@@ -740,7 +704,6 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
                         .await
                     }
                     _ => {
-                        // Fetch a vector ID that was never inserted (expect 404).
                         send_timed(
                             c.get(format!("{h}/collections/{col}/vectors/{}", id + 9_000_000)),
                             timeout_ms,
@@ -750,15 +713,11 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
                 };
 
                 match (op, outcome) {
-                    // Valid ops succeeded as expected.
                     (0 | 1, Outcome::Success(_)) => wr.valid_ok += 1,
-                    // Invalid ops got the expected 4xx rejection.
                     (2..=4, Outcome::HttpError(s)) if (400..500).contains(&s) => {
                         wr.expected_err += 1
                     }
-                    // Timeouts — server may be overloaded but not crashed.
                     (_, Outcome::Timeout) => wr.timeouts += 1,
-                    // Anything else: unexpected 5xx, network error, or wrong status.
                     _ => wr.unexpected_err += 1,
                 }
             }
@@ -788,8 +747,6 @@ async fn chaos_phase(ctx: QueryCtx, n_ops: usize, concurrency: usize) -> ChaosRe
         server_healthy,
     }
 }
-
-// ─── Display helpers ──────────────────────────────────────────────────────────
 
 fn fmt_us(us: u64) -> String {
     if us < 1_000 {
@@ -830,8 +787,6 @@ fn slo_mark(passes: bool) -> &'static str {
     }
 }
 
-// ─── Summary ──────────────────────────────────────────────────────────────────
-
 fn print_baseline_summary(results: &[(&str, PhaseResult, PhaseResult)], args: &Args) {
     println!("  ══════════════════════════════════════════════════════════════════════════════");
     println!(
@@ -863,8 +818,6 @@ fn print_baseline_summary(results: &[(&str, PhaseResult, PhaseResult)], args: &A
     println!();
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -890,7 +843,6 @@ async fn main() {
     );
     println!();
 
-    // ── Preflight ─────────────────────────────────────────────────────────────
     print!("  Checking server health... ");
     match health_check(&client, &args.host).await {
         Ok(()) => println!("OK"),
@@ -905,7 +857,6 @@ async fn main() {
     let mut all_collections: Vec<String> = Vec::new();
     let mut baseline_results: Vec<(&str, PhaseResult, PhaseResult)> = Vec::new();
 
-    // ── Phase 1: Baseline ─────────────────────────────────────────────────────
     if !args.skip_baseline {
         struct Config {
             tag: &'static str,
@@ -986,7 +937,6 @@ async fn main() {
             baseline_results.push((cfg.tag, ins, qry));
         }
 
-        // Hybrid sub-phase
         {
             let n_hybrid = (args.vectors / 10).max(500);
             let q_hybrid = (args.queries / 5).max(50);
@@ -1040,7 +990,6 @@ async fn main() {
         print_baseline_summary(&baseline_results, &args);
     }
 
-    // ── Stress collection setup ───────────────────────────────────────────────
     // A flat collection pre-seeded with `vectors` entries is shared across
     // ramp, spike, soak, and chaos phases so each phase begins with a warm index.
 
@@ -1084,7 +1033,6 @@ async fn main() {
         println!();
     }
 
-    // ── Phase 2: Ramp ─────────────────────────────────────────────────────────
     if !args.skip_ramp {
         println!("  ── PHASE 2: RAMP  (concurrency doubles until breaking point)");
         separator();
@@ -1155,7 +1103,6 @@ async fn main() {
         println!();
     }
 
-    // ── Phase 3: Spike ────────────────────────────────────────────────────────
     if !args.skip_spike {
         let spike_concurrency = args.concurrency * args.spike_factor;
         println!(
@@ -1219,7 +1166,6 @@ async fn main() {
         println!();
     }
 
-    // ── Phase 4: Soak ─────────────────────────────────────────────────────────
     if !args.skip_soak {
         const N_WINDOWS: usize = 5;
         println!(
@@ -1285,7 +1231,6 @@ async fn main() {
         println!();
     }
 
-    // ── Phase 5: Chaos ────────────────────────────────────────────────────────
     if !args.skip_chaos {
         let chaos_concurrency = (args.concurrency * 2).max(4);
         println!(
@@ -1333,7 +1278,6 @@ async fn main() {
         println!();
     }
 
-    // ── Final SLO verdict ─────────────────────────────────────────────────────
     println!("  ══════════════════════════════════════════════════════════════════════════════");
     println!("  SLO VERDICT  (p99 threshold = {}ms)", args.p99_slo_ms);
     println!("  {}", "─".repeat(78));

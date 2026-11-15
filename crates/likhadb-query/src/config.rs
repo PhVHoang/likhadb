@@ -5,10 +5,6 @@ use crate::{QueryError, Result};
 /// Tolerance for floating-point weight sum validation.
 const WEIGHT_SUM_TOLERANCE: f32 = 1e-5;
 
-// ---------------------------------------------------------------------------
-// Top-level config
-// ---------------------------------------------------------------------------
-
 /// Top-level configuration for the DataFusion post-ANN query pipeline.
 ///
 /// Constructed once at service startup. Individual sub-configs validate their
@@ -42,10 +38,6 @@ pub struct QueryConfig {
     /// Requires `bi_encoder` to also be set.
     pub cross_encoder: Option<CrossEncoderConfig>,
 }
-
-// ---------------------------------------------------------------------------
-// DataFusion runtime
-// ---------------------------------------------------------------------------
 
 /// DataFusion `SessionContext` runtime parameters.
 pub struct DataFusionRuntimeConfig {
@@ -99,10 +91,6 @@ impl Default for DataFusionRuntimeConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ANN retrieval
-// ---------------------------------------------------------------------------
-
 /// ANN retrieval parameters.
 pub struct AnnConfig {
     /// Number of ANN candidates retrieved from the index per query.
@@ -119,10 +107,6 @@ impl Default for AnnConfig {
         Self { top_n: 500 }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Scoring
-// ---------------------------------------------------------------------------
 
 /// Score fusion configuration (Stage 4a).
 pub struct ScoringConfig {
@@ -238,10 +222,6 @@ impl RecencyConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Reranking configs
-// ---------------------------------------------------------------------------
-
 /// Bi-encoder reranking configuration (Stage 4b).
 ///
 /// The bi-encoder receives the top-M candidates from Stage 4a and produces
@@ -321,15 +301,9 @@ impl CrossEncoderConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- ScoringWeights ---
 
     #[test]
     fn weights_valid_sum_to_one() {
@@ -384,8 +358,6 @@ mod tests {
         assert!(ScoringWeights::new(0.6, 0.401).is_err());
     }
 
-    // --- RecencyConfig ---
-
     #[test]
     fn recency_valid() {
         let r = RecencyConfig::new(30, 0.01).unwrap();
@@ -419,8 +391,6 @@ mod tests {
         assert!(err.to_string().contains("strictly positive"));
     }
 
-    // --- SessionStrategy ---
-
     #[test]
     fn session_strategy_variants_are_distinct() {
         assert_ne!(SessionStrategy::Child, SessionStrategy::Pool { size: 4 });
@@ -430,8 +400,6 @@ mod tests {
         );
     }
 
-    // --- DataFusionRuntimeConfig default ---
-
     #[test]
     fn runtime_config_default_is_sane() {
         let cfg = DataFusionRuntimeConfig::default();
@@ -440,14 +408,10 @@ mod tests {
         assert_eq!(cfg.session_strategy, SessionStrategy::Child);
     }
 
-    // --- AnnConfig default ---
-
     #[test]
     fn ann_config_default_top_n() {
         assert_eq!(AnnConfig::default().top_n, 500);
     }
-
-    // --- BiEncoderConfig ---
 
     #[test]
     fn bi_encoder_valid() {
@@ -474,8 +438,6 @@ mod tests {
         let err = BiEncoderConfig::new("http://localhost:8000", 0.5, 0).unwrap_err();
         assert!(err.to_string().contains("top_p"));
     }
-
-    // --- CrossEncoderConfig ---
 
     #[test]
     fn cross_encoder_valid() {

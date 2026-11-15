@@ -1,4 +1,3 @@
-// Metrics route and maintenance coverage.
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use likhadb_persist::WalManager;
@@ -40,7 +39,6 @@ fn build_app() -> (axum::Router, TempDir) {
     let prometheus = install_prometheus();
     seed_collection_gauges(&wal);
     let state = AppState::new(wal);
-    // Auth disabled so existing assertions exercise the handlers directly.
     (router(state, prometheus, ApiToken::new(None)), dir)
 }
 
@@ -97,8 +95,6 @@ async fn metrics_endpoint_is_reachable() {
 async fn metrics_endpoint_contains_expected_metric_names() {
     let (app, _dir) = build_app();
 
-    // Create a collection then insert a vector so the insert histogram and
-    // the vector-count gauge are both emitted before we scrape /metrics.
     let res = app
         .clone()
         .oneshot(json_request(
@@ -132,7 +128,6 @@ async fn metrics_endpoint_contains_expected_metric_names() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    // Scrape /metrics and verify all four instrumented names appear.
     let res = app
         .oneshot(
             Request::builder()
@@ -163,7 +158,6 @@ async fn metrics_endpoint_contains_expected_metric_names() {
 async fn metrics_histogram_uses_custom_buckets() {
     let (app, _dir) = build_app();
 
-    // Trigger the insert histogram.
     app.clone()
         .oneshot(json_request(
             "POST",

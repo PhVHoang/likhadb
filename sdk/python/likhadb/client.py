@@ -1,5 +1,3 @@
-"""Top-level LikhaDB clients — sync (LikhaDB) and async (AsyncLikhaDB)."""
-
 from __future__ import annotations
 
 from typing import Any, Literal, Union, cast
@@ -67,8 +65,6 @@ class LikhaDB:
     ) -> None:
         self._http = HttpClient(base_url=url, timeout=timeout, api_token=api_token)
 
-    # ── Lifecycle ────────────────────────────────────────────────────────────
-
     def close(self) -> None:
         self._http.close()
 
@@ -78,13 +74,9 @@ class LikhaDB:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    # ── Health ───────────────────────────────────────────────────────────────
-
     def health(self) -> dict[str, Any]:
         """Return the server health payload."""
         return cast(dict[str, Any], self._http.get("/health").json())
-
-    # ── Collection DDL ───────────────────────────────────────────────────────
 
     def list_collections(self) -> list[str]:
         """Return the names of all collections."""
@@ -160,8 +152,6 @@ class AsyncLikhaDB:
     ) -> None:
         self._http = AsyncHttpClient(base_url=url, timeout=timeout, api_token=api_token)
 
-    # ── Lifecycle ────────────────────────────────────────────────────────────
-
     async def aclose(self) -> None:
         await self._http.aclose()
 
@@ -171,13 +161,9 @@ class AsyncLikhaDB:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    # ── Health ───────────────────────────────────────────────────────────────
-
     async def health(self) -> dict[str, Any]:
         r = await self._http.get("/health")
         return cast(dict[str, Any], r.json())
-
-    # ── Collection DDL ───────────────────────────────────────────────────────
 
     async def list_collections(self) -> list[str]:
         r = await self._http.get("/collections")

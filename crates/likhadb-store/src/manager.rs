@@ -321,8 +321,6 @@ mod tests {
         assert!(results.iter().all(|r| r.id % 2 == 0));
     }
 
-    // --- IVF integration tests ---
-
     #[test]
     fn create_ivf_collection_duplicate_errors() {
         let mut mgr = CollectionManager::new();
@@ -429,8 +427,6 @@ mod tests {
             Err(LikhaDbError::CollectionAlreadyExists(_))
         ));
     }
-
-    // --- HNSW integration tests ---
 
     #[test]
     fn create_hnsw_collection_duplicate_errors() {

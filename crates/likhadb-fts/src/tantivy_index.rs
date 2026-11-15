@@ -246,7 +246,7 @@ mod tests {
     fn delete_nonexistent_is_a_noop() {
         let mut idx = make_index();
         idx.index_document(1, "only document").unwrap();
-        idx.delete_document(999).unwrap(); // should not error
+        idx.delete_document(999).unwrap();
         let results = idx.search("only", 5).unwrap();
         assert_eq!(results.len(), 1);
     }

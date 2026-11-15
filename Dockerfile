@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1
 
-# ── Stage 1: install cargo-chef on a slim Rust image ─────────────────────────
 FROM rust:1.88-slim AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential protobuf-compiler \
@@ -8,12 +7,10 @@ RUN apt-get update \
 RUN cargo install cargo-chef --locked
 WORKDIR /build
 
-# ── Stage 2: compute the dependency recipe ───────────────────────────────────
 # Rebuilds only when Cargo.toml / Cargo.lock change.
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
-# ── Stage 3: build dependencies, then the binary ─────────────────────────────
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
 # Use the workspace's declared toolchain while cooking dependencies, just as the
@@ -24,7 +21,6 @@ RUN cargo chef cook --release -p likhadb-server --recipe-path recipe.json
 COPY . .
 RUN cargo build --release -p likhadb-server
 
-# ── Stage 4: minimal runtime image ───────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \
@@ -33,7 +29,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /build/target/release/likhadb-server /app/likhadb-server
 
-# Persistent data directory — mount a named volume or host path here.
 RUN mkdir /data
 VOLUME ["/data"]
 

@@ -1,4 +1,3 @@
-// Query limit validation coverage.
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use likhadb_persist::WalManager;
@@ -48,11 +47,8 @@ async fn k_is_clamped() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    // k = 0 is rejected.
     assert_eq!(query_status(&app, 0).await, StatusCode::BAD_REQUEST);
-    // k beyond MAX_K (1024) is rejected.
     assert_eq!(query_status(&app, 5000).await, StatusCode::BAD_REQUEST);
-    // A sane k succeeds (empty collection still returns 200 with no results).
     assert_eq!(query_status(&app, 5).await, StatusCode::OK);
 }
 
@@ -60,7 +56,6 @@ async fn k_is_clamped() {
 async fn oversized_body_is_rejected() {
     let (app, _dir) = build_app();
 
-    // ~5 MiB payload — over the 4 MiB DefaultBodyLimit.
     let big = "x".repeat(5 * 1024 * 1024);
     let body = format!(r#"{{"name":"c","dim":3,"metric":"l2","junk":"{big}"}}"#);
 
