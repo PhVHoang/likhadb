@@ -271,11 +271,6 @@ impl LikhaDb for LikhaDbGrpc {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-// tonic::Status is 176 bytes; boxing it throughout a tonic service file adds
-// more noise than the lint saves.
-#[allow(clippy::result_large_err)]
 fn decode_filter(raw: &[u8]) -> Result<Option<serde_json::Value>, Status> {
     if raw.is_empty() {
         Ok(None)
@@ -286,7 +281,6 @@ fn decode_filter(raw: &[u8]) -> Result<Option<serde_json::Value>, Status> {
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn payload_to_bytes(payload: Option<serde_json::Value>) -> Result<Vec<u8>, Status> {
     match payload {
         Some(p) => serde_json::to_vec(&p).map_err(|e| Status::internal(e.to_string())),
@@ -294,7 +288,6 @@ fn payload_to_bytes(payload: Option<serde_json::Value>) -> Result<Vec<u8>, Statu
     }
 }
 
-#[allow(clippy::result_large_err)]
 fn encode_scored_result(
     r: likhadb_core::ScoredResult,
 ) -> Result<Result<ScoredResult, Status>, serde_json::Error> {
@@ -309,7 +302,6 @@ fn encode_scored_result(
     }))
 }
 
-#[allow(clippy::result_large_err)]
 fn encode_scored_results(
     results: Vec<likhadb_core::ScoredResult>,
 ) -> Result<Vec<ScoredResult>, Status> {

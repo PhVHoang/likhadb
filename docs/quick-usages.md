@@ -101,7 +101,6 @@ col.insert(1, vec![0.1; 384], Some(json!({"title": "Rust async runtime", "body":
 col.insert(2, vec![0.2; 384], Some(json!({"title": "Python data science", "body": "numpy pandas sklearn"}))).unwrap();
 col.insert(3, vec![0.3; 384], Some(json!({"title": "Rust memory model", "body": "ownership borrowing lifetimes"}))).unwrap();
 
-// BM25 full-text search — returns top-k results ranked by relevance
 let results = col.fts_search("Rust ownership", 5).unwrap();
 // results[0].id == 3  (highest BM25 score for "ownership")
 // results[1].id == 1  (matches "Rust")
@@ -134,7 +133,6 @@ col.insert(1, vec![0.1; 384], Some(json!({"title": "Rust async runtime", "body":
 col.insert(2, vec![0.5; 384], Some(json!({"title": "Python ML", "body": "numpy sklearn"}))).unwrap();
 col.insert(3, vec![0.2; 384], Some(json!({"title": "Rust memory model", "body": "ownership lifetimes"}))).unwrap();
 
-// Returns top-5 fusing semantic + keyword signals
 let results = col.hybrid_search(
     &vec![0.15; 384],  // query embedding
     "Rust ownership",  // keyword query

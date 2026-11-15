@@ -210,7 +210,6 @@ fn bench_ivf_search(
     }
     let query = random_vec(&mut rng, dim);
 
-    // Warm up: first search triggers nothing (training already happened at insert time).
     let bench_label = format!("ivf_search/np{nprobe}");
     c.bench_with_input(BenchmarkId::new(bench_label, label), &query, |b, q| {
         let col = mgr.get(&col_name).unwrap();
@@ -255,7 +254,6 @@ fn bench_hnsw_search(
 }
 
 fn benchmarks(c: &mut Criterion) {
-    // FlatIndex baselines (scalar / SIMD / SIMD+rayon)
     for &(label, n, dim) in &[
         ("1k_d128", 1_000usize, 128usize),
         ("10k_d384", 10_000, 384),
@@ -266,7 +264,6 @@ fn benchmarks(c: &mut Criterion) {
         bench_simd_rayon(c, label, n, dim, 10);
     }
 
-    // IVF training cost
     for &(label, n, dim, nlist) in &[
         ("10k_d384_nl256", 10_000usize, 384usize, 256usize),
         ("100k_d384_nl1024", 100_000, 384, 1024),
@@ -274,7 +271,6 @@ fn benchmarks(c: &mut Criterion) {
         bench_ivf_training(c, label, n, dim, nlist);
     }
 
-    // IVF search at varying nprobe
     for &(label, n, dim, nlist, nprobe) in &[
         ("10k_d384_nl256", 10_000usize, 384usize, 256usize, 8usize),
         ("10k_d384_nl256", 10_000, 384, 256, 32),
@@ -284,7 +280,6 @@ fn benchmarks(c: &mut Criterion) {
         bench_ivf_search(c, label, n, dim, nlist, nprobe);
     }
 
-    // IVF-SQ8 search at varying nprobe (same matrix for direct comparison)
     for &(label, n, dim, nlist, nprobe) in &[
         ("10k_d384_nl256", 10_000usize, 384usize, 256usize, 8usize),
         ("10k_d384_nl256", 10_000, 384, 256, 32),
@@ -294,7 +289,6 @@ fn benchmarks(c: &mut Criterion) {
         bench_ivf_sq8_search(c, label, n, dim, nlist, nprobe);
     }
 
-    // HNSW search at varying ef_search (index pre-built outside the timing loop)
     for &(label, n, dim, ef_search) in &[
         ("10k_d384", 10_000usize, 384usize, 50usize),
         ("10k_d384", 10_000, 384, 100),

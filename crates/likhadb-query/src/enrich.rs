@@ -107,10 +107,6 @@ WHERE {where_clause}"
     ctx.sql(&sql).await.map_err(QueryError::DataFusion)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,7 +136,6 @@ mod tests {
     async fn make_ctx() -> SessionContext {
         let ctx = SessionContext::new();
 
-        // --- candidates ---
         let cand_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("ann_distance", DataType::Float32, false),
@@ -161,7 +156,6 @@ mod tests {
         )
         .unwrap();
 
-        // --- embeddings ---
         let emb_schema = Arc::new(Schema::new(vec![
             Field::new("chunk_id", DataType::Utf8, false),
             Field::new("doc_id", DataType::Utf8, false),
@@ -182,7 +176,6 @@ mod tests {
         )
         .unwrap();
 
-        // --- documents ---
         let doc_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("author_id", DataType::Utf8, false),
@@ -207,7 +200,6 @@ mod tests {
         )
         .unwrap();
 
-        // --- authors ---
         let auth_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("reputation_score", DataType::Float64, false),
@@ -228,7 +220,6 @@ mod tests {
         )
         .unwrap();
 
-        // --- classifications ---
         let cls_schema = Arc::new(Schema::new(vec![
             Field::new("doc_id", DataType::Utf8, false),
             Field::new("sensitivity_label", DataType::Utf8, false),
@@ -247,7 +238,6 @@ mod tests {
         )
         .unwrap();
 
-        // --- access_control (allowed_teams as List<Utf8>) ---
         let teams_field = Field::new("item", DataType::Utf8, true);
         let acl_schema = Arc::new(Schema::new(vec![
             Field::new("doc_id", DataType::Utf8, false),

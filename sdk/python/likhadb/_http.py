@@ -1,5 +1,3 @@
-"""Thin httpx wrappers that map HTTP status codes to SDK exceptions."""
-
 from __future__ import annotations
 
 from typing import Any

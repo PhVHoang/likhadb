@@ -88,7 +88,6 @@ impl VectorIndex for FlatIndex {
             });
         }
         if let Some(pos) = self.position(id) {
-            // Overwrite in-place — no allocation needed.
             self.data[pos * self.dim..(pos + 1) * self.dim].copy_from_slice(&vec);
         } else {
             self.ids.push(id);
@@ -103,7 +102,6 @@ impl VectorIndex for FlatIndex {
         };
         let last = self.ids.len() - 1;
 
-        // Swap-remove the id.
         self.ids.swap_remove(pos);
 
         // Move the last vector's data into the vacated slot, then truncate.
@@ -182,7 +180,6 @@ impl VectorIndex for FlatIndex {
             })
             .collect();
 
-        // Sort ascending by score (best first).
         results.sort_by(|a, b| {
             OrderedFloat(a.score)
                 .partial_cmp(&OrderedFloat(b.score))
@@ -264,14 +261,12 @@ mod tests {
 
     #[test]
     fn delete_swap_preserves_remaining_vectors() {
-        // Delete the first element (not the last) to exercise the swap-copy path.
         let mut idx = make_index();
-        insert_n(&mut idx, 5); // ids 0..4, data=[0,0,0,0, 1,0,0,0, ...]
+        insert_n(&mut idx, 5);
 
         assert!(idx.delete(0));
         assert_eq!(idx.len(), 4);
 
-        // All ids 1..4 must still be findable with correct data.
         let query = [3.0_f32, 0.0, 0.0, 0.0];
         let results = idx.search(&query, 1, None).unwrap();
         assert_eq!(results[0].id, 3);
@@ -282,7 +277,7 @@ mod tests {
     fn delete_last_element() {
         let mut idx = make_index();
         insert_n(&mut idx, 3);
-        assert!(idx.delete(2)); // delete the last slot directly
+        assert!(idx.delete(2));
         assert_eq!(idx.len(), 2);
         assert_eq!(idx.data.len(), 2 * idx.dim);
     }
@@ -327,7 +322,7 @@ mod tests {
         idx.insert(1, vec![10.0, 0.0, 0.0, 0.0]).unwrap();
         idx.insert(1, vec![0.1, 0.0, 0.0, 0.0]).unwrap();
         assert_eq!(idx.len(), 1);
-        assert_eq!(idx.data.len(), idx.dim); // still one slot
+        assert_eq!(idx.data.len(), idx.dim);
 
         let query = [0.0_f32, 0.0, 0.0, 0.0];
         let results = idx.search(&query, 1, None).unwrap();

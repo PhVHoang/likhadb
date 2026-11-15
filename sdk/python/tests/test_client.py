@@ -1,5 +1,3 @@
-"""Client tests using respx to mock the httpx transport — no server required."""
-
 import httpx
 import pytest
 import respx
@@ -15,9 +13,6 @@ from likhadb import (
 
 BASE = "http://localhost:8080"
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 COLLECTION_INFO = {
     "name": "docs",
@@ -31,10 +26,6 @@ SCORED_RESULTS = [
     {"id": 1, "score": 0.95, "payload": {"title": "a"}},
     {"id": 3, "score": 0.80, "payload": {"title": "c"}},
 ]
-
-# ---------------------------------------------------------------------------
-# Sync client — collection DDL
-# ---------------------------------------------------------------------------
 
 
 @respx.mock
@@ -157,11 +148,6 @@ def test_delete_collection():
         db.delete_collection("docs")
 
 
-# ---------------------------------------------------------------------------
-# Sync client — Collection handle
-# ---------------------------------------------------------------------------
-
-
 @respx.mock
 def test_insert_vector():
     route = respx.post(f"{BASE}/collections/docs/vectors").mock(return_value=httpx.Response(204))
@@ -258,11 +244,6 @@ def test_export_parquet():
         db.collection("docs").export_parquet("/data/out.parquet")
 
 
-# ---------------------------------------------------------------------------
-# Error mapping
-# ---------------------------------------------------------------------------
-
-
 @respx.mock
 def test_bad_request_raises():
     respx.post(f"{BASE}/collections/docs/query").mock(
@@ -271,11 +252,6 @@ def test_bad_request_raises():
     with LikhaDB(BASE) as db:
         with pytest.raises(LikhaDBBadRequestError, match="dim mismatch"):
             db.collection("docs").search([0.1], k=1)
-
-
-# ---------------------------------------------------------------------------
-# Async client
-# ---------------------------------------------------------------------------
 
 
 @respx.mock
@@ -315,11 +291,6 @@ async def test_async_not_found():
     async with AsyncLikhaDB(BASE) as db:
         with pytest.raises(LikhaDBNotFoundError):
             await db.get_collection("ghost")
-
-
-# ---------------------------------------------------------------------------
-# _parse_index helper
-# ---------------------------------------------------------------------------
 
 
 def test_parse_index_unknown_raises():

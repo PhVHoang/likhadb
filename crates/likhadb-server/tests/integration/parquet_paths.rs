@@ -1,4 +1,3 @@
-// Parquet import-path validation coverage.
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use likhadb_persist::WalManager;
@@ -31,12 +30,10 @@ fn import_req(path: &str) -> Request<Body> {
 async fn parquet_paths_are_confined() {
     let (app, _dir) = build_app();
 
-    // No root configured → endpoint disabled.
     std::env::remove_var("LIKHADB_PARQUET_ROOT");
     let res = app.clone().oneshot(import_req("x.parquet")).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
-    // With a root set, traversal and absolute escapes are rejected.
     let root = TempDir::new().unwrap();
     std::env::set_var("LIKHADB_PARQUET_ROOT", root.path());
 

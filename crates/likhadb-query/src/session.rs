@@ -100,10 +100,6 @@ pub fn register_candidates_in(ctx: &SessionContext, batch: RecordBatch) -> Resul
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 fn base_context(config: &QueryConfig) -> SessionContext {
     let session_config = SessionConfig::new()
         .with_batch_size(config.datafusion.batch_size)
@@ -179,10 +175,6 @@ async fn register_iceberg_table(
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -8,10 +8,6 @@ VecId = int
 Vector = list[float]
 Payload = dict[str, Any]
 
-# ---------------------------------------------------------------------------
-# Index configs — mirror IndexConfig in likhadb-server/src/types.rs
-# ---------------------------------------------------------------------------
-
 
 class FlatIndex(BaseModel):
     type: Literal["flat"] = "flat"
@@ -50,11 +46,6 @@ class SourceBinding(BaseModel):
     id_column: str
     vector_column: str
     payload_columns: list[str] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
 
 
 class CreateCollectionRequest(BaseModel):
@@ -100,11 +91,6 @@ class ImportParquetRequest(BaseModel):
 
 class ExportParquetRequest(BaseModel):
     path: str
-
-
-# ---------------------------------------------------------------------------
-# Response models
-# ---------------------------------------------------------------------------
 
 
 class ScoredResult(BaseModel):

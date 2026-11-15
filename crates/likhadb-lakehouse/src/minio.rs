@@ -120,10 +120,6 @@ impl ObjectStoreLakehouseExt for CollectionManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 fn collection_to_parquet_bytes(
     manager: &CollectionManager,
     collection_name: &str,

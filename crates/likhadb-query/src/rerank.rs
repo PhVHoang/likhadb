@@ -20,10 +20,6 @@ use serde::Serialize;
 
 use crate::{QueryError, Result};
 
-// ---------------------------------------------------------------------------
-// Model client traits
-// ---------------------------------------------------------------------------
-
 /// Batched bi-encoder similarity client.
 ///
 /// A single call receives the query and the full candidate text slice, and must
@@ -42,10 +38,6 @@ pub trait BiEncoderClient: Send + Sync {
 pub trait CrossEncoderClient: Send + Sync {
     async fn score(&self, query: &str, passages: &[String]) -> Result<Vec<f32>>;
 }
-
-// ---------------------------------------------------------------------------
-// HTTP implementations (reqwest)
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "rerank")]
 #[derive(Serialize)]
@@ -99,10 +91,6 @@ impl CrossEncoderClient for HttpCrossEncoderClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Result types
-// ---------------------------------------------------------------------------
-
 /// Stage 4b output: a candidate scored by the bi-encoder and a combined score.
 #[derive(Debug, Clone)]
 pub struct BiRankedCandidate {
@@ -123,10 +111,6 @@ pub struct CrossRankedResult {
     pub cross_score: f32,
     pub chunk_text: String,
 }
-
-// ---------------------------------------------------------------------------
-// Stage 4b — Bi-encoder reranking
-// ---------------------------------------------------------------------------
 
 /// Stage 4b: materialize top-M `DataFrame` → single batched bi-encoder call → top-P.
 ///
@@ -221,10 +205,6 @@ pub async fn rerank_biencoder(
     Ok(candidates)
 }
 
-// ---------------------------------------------------------------------------
-// Stage 4c — Cross-encoder reranking
-// ---------------------------------------------------------------------------
-
 /// Stage 4c: top-P `BiRankedCandidate`s → single batched cross-encoder call → top-K.
 ///
 /// Steps:
@@ -271,10 +251,6 @@ pub async fn rerank_crossencoder(
     Ok(results)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,8 +260,6 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-
-    // --- Mock clients ---
 
     struct MockBiEncoder {
         call_count: Arc<AtomicUsize>,
@@ -323,8 +297,6 @@ mod tests {
         }
     }
 
-    // --- Helpers ---
-
     /// Build a `DataFrame` that looks like Stage 4a output (has fusion_score column).
     async fn make_fused_df(n: usize) -> DataFrame {
         let ctx = SessionContext::new();
@@ -355,8 +327,6 @@ mod tests {
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
         ctx.read_table(Arc::new(table)).unwrap()
     }
-
-    // --- bi-encoder tests ---
 
     #[tokio::test]
     async fn biencoder_single_batched_call() {
@@ -418,8 +388,6 @@ mod tests {
         let results = rerank_biencoder(df, "q", &client, 0.5, 5).await.unwrap();
         assert!(results.is_empty());
     }
-
-    // --- cross-encoder tests ---
 
     fn make_bi_candidates(n: usize) -> Vec<BiRankedCandidate> {
         (0..n)

@@ -794,8 +794,6 @@ mod tests {
             assert_eq!(results[0].id, 42, "best match should be id 42");
         }
 
-        // ── hybrid_search tests ───────────────────────────────────────────────
-
         #[test]
         fn hybrid_rrf_scores_are_positive_and_top_k_respected() {
             let mut c = make_fts_collection();

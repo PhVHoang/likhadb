@@ -74,7 +74,6 @@ services:
       start_period: 10s
       retries: 3
 
-  # One-shot container that creates the default bucket on first start.
   minio-init:
     image: quay.io/minio/mc:latest
     depends_on:

@@ -2,23 +2,13 @@
 
 These resources declare one Argo CD project and one application for each LikhaDB
 environment. Argo CD is the only controller that applies LikhaDB workload
-resources to Kubernetes; Kargo changes the desired Git revision during a
+resources to Kubernetes; Kargo writes the desired manifests to Git during a
 promotion.
 
 ## Bootstrap
 
 Install Argo CD before applying this directory. The `argocd` namespace and Argo
 CD custom resource definitions must already exist.
-
-For the local OrbStack environment, install both controllers and apply the
-LikhaDB resources with:
-
-```sh
-./scripts/local/bootstrap-gitops.sh
-```
-
-The script pins the controller versions and refuses to operate outside the
-`orbstack` context unless `KUBE_CONTEXT` explicitly names the current context.
 
 ```sh
 kubectl apply --server-side --kustomize gitops/argocd

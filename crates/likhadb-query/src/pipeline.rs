@@ -23,10 +23,6 @@ use crate::rerank::{
 use crate::session::{register_candidates_in, DataFusionSession};
 use crate::{QueryError, Result};
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// A single ANN candidate, as returned by the vector index.
 ///
 /// The pipeline converts this into an Arrow `RecordBatch` for DataFusion registration.
@@ -60,10 +56,6 @@ pub struct PipelineResult {
     pub cross_score: Option<f32>,
     pub chunk_text: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Pipeline
-// ---------------------------------------------------------------------------
 
 /// Composed query pipeline.
 ///
@@ -202,10 +194,6 @@ impl Pipeline {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Convert `Vec<Candidate>` into an Arrow `RecordBatch` with schema
 /// `id: Utf8, ann_distance: Float32, ann_rank: UInt64`.
 fn candidates_to_batch(candidates: &[Candidate]) -> Result<RecordBatch> {
@@ -278,10 +266,6 @@ fn materialize_fused(batches: Vec<RecordBatch>, top_k: usize) -> Result<Vec<Pipe
     Ok(results)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,8 +280,6 @@ mod tests {
     use datafusion::datasource::MemTable;
     use datafusion::prelude::SessionContext;
     use std::sync::Arc;
-
-    // --- Test helpers ---
 
     fn test_config() -> QueryConfig {
         QueryConfig {

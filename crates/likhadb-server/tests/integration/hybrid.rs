@@ -1,4 +1,3 @@
-// Hybrid-search route coverage.
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use likhadb_persist::WalManager;
@@ -35,7 +34,6 @@ async fn body_json(res: axum::response::Response) -> serde_json::Value {
 async fn hybrid_query_returns_results() {
     let (app, _dir) = build_app();
 
-    // Create collection with FTS enabled
     let res = app
         .clone()
         .oneshot(json_req(
@@ -47,7 +45,6 @@ async fn hybrid_query_returns_results() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    // Insert documents
     for (id, body) in [
         (1u64, "the quick brown fox"),
         (2u64, "lazy dog sleeps all day"),
@@ -73,7 +70,6 @@ async fn hybrid_query_returns_results() {
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
     }
 
-    // Hybrid query
     let res = app
         .clone()
         .oneshot(json_req(
@@ -88,13 +84,11 @@ async fn hybrid_query_returns_results() {
     let body = body_json(res).await;
     let results = body["results"].as_array().unwrap();
     assert!(!results.is_empty(), "hybrid query should return results");
-    // top result should have a payload
     assert!(results[0]["payload"].is_object());
 }
 
 #[tokio::test]
 async fn hybrid_query_without_fts_still_returns_vector_results() {
-    // Collection without FTS: hybrid_search returns only vector results (no fts contribution)
     let (app, _dir) = build_app();
 
     let res = app
@@ -133,7 +127,6 @@ async fn hybrid_query_without_fts_still_returns_vector_results() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
     let results = body["results"].as_array().unwrap();
-    // Should still get vector results (FTS contributes nothing but vector ranks fill in)
     assert!(!results.is_empty());
 }
 
@@ -141,7 +134,6 @@ async fn hybrid_query_without_fts_still_returns_vector_results() {
 async fn create_collection_without_enable_fts_defaults_false() {
     let (app, _dir) = build_app();
 
-    // Omitting enable_fts should default to false (no FTS)
     let res = app
         .clone()
         .oneshot(json_req(
