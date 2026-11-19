@@ -55,7 +55,7 @@ Run the complete basic-search proof with:
 .agents/skills/verify-likhadb/scripts/verify-likhadb prove-basic-search
 ```
 
-Evidence is retained under `artifacts/verification/likhadb/$LIKHADB_VERIFY_RUN_ID/`: `server.log`, timestamped request/response transcripts, `assertions.txt`, and `persistence.txt`. Proof must exercise public REST routes rather than Rust setters or test-only endpoints. Capture each mutating request and its response, then confirm the result through a second user-facing read (`GET` and search). Confirm the WAL side effect alongside visible API state. For auth changes, capture public health plus unauthenticated and authenticated protected requests. Mocks are acceptable only at an already-isolated production boundary.
+Evidence is retained under `artifacts/verification/likhadb/$LIKHADB_VERIFY_RUN_ID/`: `server.log`, numbered request/response transcripts, `assertions.txt`, and `persistence.txt`. Proof must exercise public REST routes rather than Rust setters or test-only endpoints. Capture each mutating request and its response, then confirm the result through a second user-facing read (`GET` and search). Confirm the WAL side effect alongside visible API state. For auth changes, capture public health plus unauthenticated and authenticated protected requests. Mocks are acceptable only at an already-isolated production boundary.
 
 ## Cleanup
 

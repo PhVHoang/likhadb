@@ -17,7 +17,7 @@ Hybrid search fuses vector similarity and BM25 text ranks for an FTS-enabled col
 
 Preconditions:
 
-- Launch was built with FTS support; doctor passes.
+- Doctor passes. The `likhadb-server` crate enables `likhadb-store/fts` in its normal build.
 
 - **Create.** Create `articles` with dimension 3, cosine metric, and `enable_fts:true`; require `201`.
 - **Seed.** Insert distinct Rust and Python payloads; require `204` for each.
@@ -25,6 +25,6 @@ Preconditions:
 
 ## Gotchas
 
-- The default development build may not include the `fts` feature; report this path unverified rather than treating vector-only search as equivalent.
+- A custom server build that removes `likhadb-store/fts` cannot prove this recipe; report the path unverified rather than treating vector-only search as equivalent.
 - Newly inserted string payload values are the indexed text.
 - RRF scores are fusion scores, not raw vector distances.

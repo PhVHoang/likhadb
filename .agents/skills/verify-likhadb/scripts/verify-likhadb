@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 RUN_ID="${LIKHADB_VERIFY_RUN_ID:-default}"
+[[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+  echo "LIKHADB_VERIFY_RUN_ID must contain only letters, digits, dot, underscore, or hyphen and start with a letter or digit" >&2
+  exit 2
+}
 SCRATCH="/tmp/likhadb-verify-$RUN_ID"
 STATE="$SCRATCH/state.env"
 EVIDENCE="$ROOT/artifacts/verification/likhadb/$RUN_ID"
@@ -22,6 +26,24 @@ record_request() {
   else
     curl "${args[@]}" "$BASE_URL$path"
   fi
+}
+
+require_status() {
+  local transcript="$1" expected="$2"
+  [[ "$(sed -n 's/^HTTP_STATUS=//p' "$transcript" | tail -1)" == "$expected" ]] || {
+    echo "expected HTTP $expected in $transcript" >&2
+    return 1
+  }
+}
+
+abort_launch() {
+  local pid="$1"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid"
+    wait "$pid" 2>/dev/null || true
+  fi
+  cp "$SCRATCH/server.log" "$EVIDENCE/server.log"
+  rm -rf -- "$SCRATCH"
 }
 
 launch() {
@@ -48,12 +70,20 @@ launch() {
   } >"$STATE"
   local ready=0
   for _ in {1..100}; do
-    if ! kill -0 "$pid" 2>/dev/null; then tail -100 "$SCRATCH/server.log" >&2; exit 1; fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      tail -100 "$SCRATCH/server.log" >&2
+      abort_launch "$pid"
+      exit 1
+    fi
     if rg -q 'likhadb REST listening' "$SCRATCH/server.log" && \
        [[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://127.0.0.1:$http_port/collections" || true)" == 200 ]]; then ready=1; break; fi
     sleep 0.1
   done
-  [[ "$ready" == 1 ]] || { echo "server did not become usable" >&2; exit 1; }
+  if [[ "$ready" != 1 ]]; then
+    echo "server did not become usable" >&2
+    abort_launch "$pid"
+    exit 1
+  fi
   cp "$SCRATCH/server.log" "$EVIDENCE/server.log"
   echo "launched run=$RUN_ID pid=$pid url=http://127.0.0.1:$http_port evidence=$EVIDENCE"
 }
@@ -83,12 +113,17 @@ prove_basic_search() {
   record_request POST /collections/docs/vectors '{"id":2,"vector":[0,1,0],"payload":{"title":"beta","kind":"other"}}' "$EVIDENCE/03-insert-beta.txt" >/dev/null
   record_request GET /collections/docs/vectors/1 '' "$EVIDENCE/04-get-alpha.txt" >/dev/null
   record_request POST /collections/docs/query '{"vector":[0.99,0.01,0],"k":1,"include_payload":true}' "$EVIDENCE/05-query.txt" >/dev/null
+  require_status "$EVIDENCE/01-create.txt" 201
+  require_status "$EVIDENCE/02-insert-alpha.txt" 204
+  require_status "$EVIDENCE/03-insert-beta.txt" 204
+  require_status "$EVIDENCE/04-get-alpha.txt" 200
+  require_status "$EVIDENCE/05-query.txt" 200
   local got query wal_size
   got="$(curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE_URL/collections/docs/vectors/1")"
   query="$(curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data '{"vector":[0.99,0.01,0],"k":1,"include_payload":true}' "$BASE_URL/collections/docs/query")"
   jq -e '.id == 1 and .vector == [1,0,0] and .payload.title == "alpha"' <<<"$got" >/dev/null
   jq -e '.results | length == 1 and .[0].id == 1 and .[0].payload.title == "alpha"' <<<"$query" >/dev/null
-  wal_size="$(stat -f %z "$DATA_DIR/wal.log")"
+  wal_size="$(wc -c <"$DATA_DIR/wal.log" | tr -d '[:space:]')"
   [[ "$wal_size" -gt 0 ]] || { echo "WAL is empty" >&2; exit 1; }
   printf 'feature=vector-search\nentry_point=REST POST /collections/docs/query\nget_assertion=PASS id=1 payload.title=alpha\nquery_assertion=PASS first.id=1 first.payload.title=alpha\n' >"$EVIDENCE/assertions.txt"
   { printf 'data_dir=%s\nwal_path=%s\nwal_bytes=%s\n' "$DATA_DIR" "$DATA_DIR/wal.log" "$wal_size"; ls -la "$DATA_DIR"; } >"$EVIDENCE/persistence.txt"
