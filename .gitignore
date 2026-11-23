@@ -3,3 +3,16 @@ Cargo.lock
 .env
 .DS_Store
 gtm.md
+
+# Generated verification evidence
+/artifacts/verification/
+
+# Python and test-tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
